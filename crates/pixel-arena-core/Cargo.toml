@@ -1,0 +1,6 @@
+[package]
+name = "pixel-arena-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "像素竞技场核心库：解码、指标、编码编排（GUI 与 CLI 共用）"
