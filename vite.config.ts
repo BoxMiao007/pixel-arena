@@ -1,11 +1,11 @@
 import { defineConfig } from 'vite';
 
-// Tauri 窗口固定加载 http://localhost:5173：端口被占用时直接失败（strictPort），
-// 避免开发服务器静默漂移到别的端口导致窗口白屏。
+// 默认 5173；多 worktree 并行开发时用 VITE_PORT 指定各自的端口，
+// 需同步用 `tauri dev --config` 覆盖 src-tauri/tauri.conf.json 的 devUrl（见 .gitignore 的本地覆盖文件）。
 export default defineConfig({
   clearScreen: false,
   server: {
-    port: 5173,
+    port: Number(process.env.VITE_PORT) || 5173,
     strictPort: true,
   },
 });
