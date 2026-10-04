@@ -16,6 +16,10 @@ use pixel_arena_core::workspace::{Workspace, WorkspaceError};
 struct AppState {
     workspace: Arc<Mutex<Workspace>>,
     path: Arc<PathBuf>,
+    /// 编码器安装目录（应用数据目录 tools/，一站式模式首次使用时自动下载）。
+    tools_dir: Arc<PathBuf>,
+    /// 评测轮工作目录的父目录（应用数据目录 rounds/，一站式产物按 <rounds>/<轮 id>/ 存放）。
+    rounds_dir: Arc<PathBuf>,
 }
 
 /// IPC 命令：把核心库版本号交给前端显示。
@@ -158,6 +162,50 @@ async fn round_score_candidate(
     .map_err(|err| format!("跑分任务执行失败: {err}"))?
 }
 
+/// IPC 命令：一站式模式第一切片（T10）——用 MozJPEG 把原图编码为指定质量的 JPEG。
+///
+/// 产物写到应用数据目录 rounds/<轮 id>/<原图名>-q<质量>.jpg；是否纳入本轮由前端
+/// 在生成成功后调 round_add_candidates 决定（某档失败不影响其他档）。
+/// 下载/安装编码器与编码都可能耗时（首次使用要联网下载），放阻塞线程池执行。
+#[tauri::command]
+async fn onestop_encode_jpeg(
+    group_id: String,
+    round_id: String,
+    reference_path: String,
+    quality: u8,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    // 前置校验（持锁只做只读检查）：评测轮必须还在，且传入原图与本轮所选原图一致，
+    // 防止往已删除的轮目录里写产物或给 A 轮产物挂到 B 轮原图名下。
+    {
+        let ws = state.workspace.lock().expect("工作区锁不应中毒");
+        let round = ws
+            .groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .and_then(|g| g.rounds.iter().find(|r| r.id == round_id))
+            .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+        if round.reference_path.as_deref() != Some(reference_path.as_str()) {
+            return Err("传入的原图与本轮所选原图不一致，请重新触发一站式跑分".to_string());
+        }
+    }
+
+    let rounds_dir = state.rounds_dir.clone();
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        pixel_arena_core::encode::encode_jpeg(
+            &reference_path,
+            quality,
+            rounds_dir.join(&round_id),
+            tools_dir.as_path(),
+        )
+        .map(|product| product.to_string_lossy().into_owned())
+        .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("编码任务执行失败: {err}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -171,6 +219,8 @@ pub fn run() {
             app.manage(AppState {
                 workspace: Arc::new(Mutex::new(Workspace::new())),
                 path: Arc::new(dir.join("workspace.json")),
+                tools_dir: Arc::new(dir.join("tools")),
+                rounds_dir: Arc::new(dir.join("rounds")),
             });
             Ok(())
         })
@@ -189,6 +239,7 @@ pub fn run() {
             round_set_reference,
             round_add_candidates,
             round_score_candidate,
+            onestop_encode_jpeg,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

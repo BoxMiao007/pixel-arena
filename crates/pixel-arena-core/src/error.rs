@@ -20,6 +20,8 @@ pub enum CoreError {
     },
     /// 感知指标无法计算：图片尺寸低于指标的最小要求，或指标库内部报错。
     Metric { message: String },
+    /// 编码器获取或执行失败：下载/校验/解包失败，或编码器子进程非零退出。
+    Encode { message: String },
 }
 
 impl fmt::Display for CoreError {
@@ -41,6 +43,9 @@ impl fmt::Display for CoreError {
             CoreError::Metric { message } => {
                 write!(f, "无法计算感知指标：{message}")
             }
+            CoreError::Encode { message } => {
+                write!(f, "编码失败：{message}")
+            }
         }
     }
 }
@@ -51,7 +56,8 @@ impl std::error::Error for CoreError {
             CoreError::Io { source, .. } => Some(source),
             CoreError::Decode { .. }
             | CoreError::DimensionMismatch { .. }
-            | CoreError::Metric { .. } => None,
+            | CoreError::Metric { .. }
+            | CoreError::Encode { .. } => None,
         }
     }
 }
