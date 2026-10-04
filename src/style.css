@@ -442,3 +442,101 @@ body {
   left: auto;
   right: 0.5rem;
 }
+
+/* ---------- 多视图网格（T08，实现见 src/multiview.ts） ---------- */
+
+/* 网格行列数由 multiview 按模式内联写入（repeat(2|3, 1fr)），格子随窗口伸缩；
+   留白与格子边框沿用分屏的间距与 .viewer-pane 样式；
+   高度自适应窗口（小窗口不溢出，大窗口封顶 560px），上方固定.chrome 约 259px */
+.viewer-area.grid {
+  height: clamp(240px, calc(100vh - 259px), 560px);
+}
+
+.viewer-grid {
+  display: grid;
+  gap: 0.5rem;
+  width: 100%;
+  height: 100%;
+}
+
+/* 每格左上角的选图下拉：样式贴近 .viewer-tag，但可交互 */
+.viewer-cell-select {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  z-index: 1;
+  max-width: calc(100% - 0.8rem);
+  font: inherit;
+  font-size: 0.78rem;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  padding: 0.05rem 0.25rem;
+}
+
+/* ---------- 对比查看器扩展（T09：叠加 / 差异图 / 闪烁切换） ---------- */
+
+/* 单画布模式（叠加/差异/闪烁）的舞台，几何与滑动对比的 .viewer-slider 一致 */
+.viewer-stage {
+  position: relative;
+  height: 100%;
+  border: 1px solid #2a2d33;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #2b2b2b;
+}
+
+.viewer-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.viewer-stage canvas.panning {
+  cursor: grabbing;
+}
+
+/* 模式专属控件区：滑杆（不透明度/阈值）与闪烁按钮，风格沿用查看器工具条 */
+.viewer-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #9aa0a6;
+}
+
+.viewer-extra label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.viewer-extra input[type='range'] {
+  width: 9rem;
+  accent-color: #8ab4f8;
+}
+
+.viewer-extra .value {
+  min-width: 2.6rem;
+  font-variant-numeric: tabular-nums;
+  color: #e8eaed;
+}
+
+.viewer-extra button {
+  border: 1px solid #2a2d33;
+  background: #1d2127;
+  color: #9aa0a6;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.viewer-extra button:hover {
+  border-color: #8ab4f8;
+  color: #e8eaed;
+}

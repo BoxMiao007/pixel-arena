@@ -1,4 +1,6 @@
 // 对比查看器（T07）：左右分屏与滑动对比两种模式，共享同一份「视口状态」实现同步缩放平移。
+// T09 接线：叠加对比 / 差异图 / 闪烁切换三种模式并入同一份视口状态（实现见 src/compare-modes.ts，
+// 接线点在代码中均以「T09 接线」注释标记，便于与并行票 T08 的多视图做并集合并）。
 // 渲染用 Canvas；滚轮缩放（光标为锚点）、拖拽平移、分割线拖动只改视口状态，按 rAF 节流重绘。
 // 图片经 asset protocol（convertFileSrc）交给 WebView 原生解码，不经 IPC 传像素。
 // 界面与交互不写 DOM 级自动化，以截图/录屏作为验收证据（规格 Testing Decisions）。
@@ -12,7 +14,15 @@ import {
   type Size,
   type ViewportState,
 } from './viewport';
+import {
+  buildT09Controls,
+  compareUi,
+  renderDiffCanvas,
+  startBlink,
+  stopBlink,
+} from './compare-modes';
 import { fileName } from './util';
+import { mountMultiview } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
 
 export interface ViewerRound {
   roundId: string;
@@ -20,7 +30,8 @@ export interface ViewerRound {
   candidates: { path: string }[];
 }
 
-type ViewerMode = 'split' | 'slider';
+// T09 接线：模式并集——'overlay' 叠加 / 'diff' 差异图 / 'blink' 闪烁切换；T08 多视图 multiview2/3 并入
+type ViewerMode = 'split' | 'slider' | 'multiview2' | 'multiview3' | 'overlay' | 'diff' | 'blink';
 
 /** 缩放≥100% 后关闭平滑，按最近邻显示原始像素（像素级查看） */
 const NEAREST_ZOOM = 1;
@@ -34,6 +45,8 @@ let state: {
   divider: number;
   /** 当前在右栏/右侧显示的跑分图 */
   candidatePath: string | null;
+  /** 多视图每格显式选图（T08）：''=显式留空，null=默认布局；换轮重置 */
+  cellPaths: (string | null)[] | null;
   /** 共享视口；null = 待适配（图片就绪后按窗格尺寸 fit） */
   viewport: ViewportState | null;
 } | null = null;
@@ -51,6 +64,10 @@ interface ImageEntry {
 
 const imageCache = new Map<string, ImageEntry>();
 
+// T09 接线：差异图整图缓存（同两张图同阈值只算一次；换图/换阈值后 key 不匹配自动重算）。
+// 按原图分辨率整图生成，之后缩放平移走普通 drawImage 路径，交互全程零像素重算。
+let diffCache: { key: string; canvas: HTMLCanvasElement } | null = null;
+
 /** 确保图片开始加载；已加载的直接返回，加载中的登记回调。 */
 function ensureImage(path: string, onReady: () => void): ImageEntry {
   let entry = imageCache.get(path);
@@ -58,6 +75,9 @@ function ensureImage(path: string, onReady: () => void): ImageEntry {
     entry = { status: 'loading', width: 0, height: 0, listeners: [] };
     imageCache.set(path, entry);
     const img = new Image();
+    // T09：以匿名 CORS 方式加载 asset protocol 图片——差异图要把像素读进 canvas（getImageData），
+    // 不声明 crossOrigin 时画布会被跨源图片污染并抛 SecurityError（叠加/分屏不受影响，但必须统一声明）
+    img.crossOrigin = 'anonymous';
     const settle = (ok: boolean) => {
       const e = imageCache.get(path);
       if (!e) return;
@@ -86,12 +106,15 @@ function ensureImage(path: string, onReady: () => void): ImageEntry {
  * 同一轮内切换模式/跑分图/跑分刷新都保留视口与分割线。
  */
 export function mountViewer(container: HTMLElement, round: ViewerRound): void {
+  // T09 接线：重挂（换轮/切模式/跑分刷新）先停闪烁定时器；若仍处于闪烁模式，挂载尾部会重启
+  stopBlink();
   if (!state || state.roundId !== round.roundId) {
     state = {
       roundId: round.roundId,
       mode: 'split',
       divider: 0.5,
       candidatePath: round.candidates[0]?.path ?? null,
+      cellPaths: null,
       viewport: null,
     };
   }
@@ -113,35 +136,41 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   modes.className = 'viewer-modes';
   modes.role = 'group';
   modes.ariaLabel = '对比模式';
-  const splitBtn = document.createElement('button');
-  splitBtn.type = 'button';
-  splitBtn.textContent = '左右分屏';
-  const sliderBtn = document.createElement('button');
-  sliderBtn.type = 'button';
-  sliderBtn.textContent = '滑动对比';
+
+  // T09 接线：模式按钮统一注册（改循环以便各票做并集追加）；T08 的 multiview2/3 在此并入，
+  // 切模式行为与 T08 手写按钮一致（同模式不重挂、重新 fit），另加离开闪烁模式先停表
+  const MODES: Array<{ id: ViewerMode; label: string }> = [
+    { id: 'split', label: '左右分屏' },
+    { id: 'slider', label: '滑动对比' },
+    { id: 'multiview2', label: '2×2 网格' },
+    { id: 'multiview3', label: '3×3 网格' },
+    { id: 'overlay', label: '叠加对比' },
+    { id: 'diff', label: '差异图' },
+    { id: 'blink', label: '闪烁切换' },
+  ];
+  const modeButtons = new Map<ViewerMode, HTMLButtonElement>();
   const syncModeButtons = (): void => {
-    splitBtn.classList.toggle('active', state!.mode === 'split');
-    sliderBtn.classList.toggle('active', state!.mode === 'slider');
+    for (const [id, btn] of modeButtons) {
+      btn.classList.toggle('active', state!.mode === id);
+    }
   };
-  // 切模式后窗格几何变了，重新 fit
-  splitBtn.addEventListener('click', () => {
-    if (state!.mode !== 'split') {
-      state!.mode = 'split';
-      state!.viewport = null;
-      syncModeButtons();
-      mountViewer(container, round);
-    }
-  });
-  sliderBtn.addEventListener('click', () => {
-    if (state!.mode !== 'slider') {
-      state!.mode = 'slider';
-      state!.viewport = null;
-      syncModeButtons();
-      mountViewer(container, round);
-    }
-  });
+  const switchMode = (mode: ViewerMode): void => {
+    if (!state || state.mode === mode) return;
+    stopBlink(); // 离开闪烁模式先停表；若正切进闪烁模式，挂载尾部会重启
+    state.mode = mode;
+    state.viewport = null; // 切模式后窗格几何变了，重新 fit（沿用 T07 行为）
+    syncModeButtons();
+    mountViewer(container, round);
+  };
+  for (const { id, label } of MODES) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = label;
+    btn.addEventListener('click', () => switchMode(id));
+    modeButtons.set(id, btn);
+    modes.append(btn);
+  }
   syncModeButtons();
-  modes.append(splitBtn, sliderBtn);
 
   const candLabel = document.createElement('label');
   candLabel.className = 'viewer-cand';
@@ -165,19 +194,46 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   hint.className = 'viewer-hint';
   hint.textContent = '滚轮缩放 · 拖拽平移 · 双击复位';
 
-  bar.append(title, modes, candLabel, hint);
+  bar.append(title, modes);
+
+  // T09 接线：三种新模式的专属控件（叠加不透明度滑杆 / 差异阈值滑杆 / 闪烁播放与手动切换），
+  // 控件构建与状态在 compare-modes.ts；改动后回调整 scheduleDraw（闪烁还要管定时器启停）
+  if (state.mode === 'overlay' || state.mode === 'diff' || state.mode === 'blink') {
+    const onChange =
+      state.mode === 'blink'
+        ? (): void => {
+            if (compareUi.blinkPlaying) startBlink(onBlinkFlip);
+            else stopBlink();
+            scheduleDraw();
+          }
+        : (): void => scheduleDraw();
+    bar.append(buildT09Controls(state.mode, onChange));
+  }
+
+  bar.append(candLabel, hint);
 
   // ----- 画布区 -----
   const area = document.createElement('div');
   area.className = 'viewer-area';
   container.replaceChildren(bar, area);
 
-  let refCanvas: HTMLCanvasElement;
+  let refCanvas: HTMLCanvasElement | null = null;
   let candCanvas: HTMLCanvasElement | null = null; // 分屏模式的右栏画布
   let sliderCanvas: HTMLCanvasElement | null = null;
+  // T09 接线：叠加/差异/闪烁共用的单画布，以及随内容变化的角标（闪烁时显示当前是哪张）
+  let stageCanvas: HTMLCanvasElement | null = null;
+  let stageTag: HTMLSpanElement | null = null;
+  /** 差异图正在后台整图计算（防滑杆连续触发时排队重复计算） */
+  let diffComputing = false;
   let dividerEl: HTMLDivElement | null = null;
 
-  if (state.mode === 'split') {
+  if (state.mode === 'multiview2' || state.mode === 'multiview3') {
+    // ---- T08 接线点：多视图整体交给 multiview 模块渲染 ----
+    // 共享本查看器的 state（viewport + cellPaths）与解码缓存 ensureImage，
+    // 因此格子间同步、切模式保留状态、图片不重复解码都与现有模式一致。
+    area.className = 'viewer-area grid';
+    mountMultiview(area, round, state, state.mode === 'multiview3' ? 3 : 2, ensureImage);
+  } else if (state.mode === 'split') {
     const left = document.createElement('div');
     left.className = 'viewer-pane';
     const right = document.createElement('div');
@@ -194,7 +250,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     right.append(candCanvas, candTag);
     area.className = 'viewer-area split';
     area.append(left, right);
-  } else {
+  } else if (state.mode === 'slider') {
     const slider = document.createElement('div');
     slider.className = 'viewer-slider';
     sliderCanvas = document.createElement('canvas');
@@ -214,6 +270,18 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     slider.append(sliderCanvas, dividerEl, refTag, candTag);
     area.append(slider);
     refCanvas = sliderCanvas;
+  } else {
+    // T09 接线：叠加/差异图/闪烁切换——单画布 + 角标，与分屏/滑动共用同一份视口状态
+    const stage = document.createElement('div');
+    stage.className = 'viewer-stage';
+    stageCanvas = document.createElement('canvas');
+    stageTag = document.createElement('span');
+    stageTag.className = 'viewer-tag';
+    stageTag.textContent =
+      state.mode === 'overlay' ? '叠加对比' : state.mode === 'diff' ? '差异图' : '原图';
+    stage.append(stageCanvas, stageTag);
+    area.append(stage);
+    refCanvas = stageCanvas;
   }
 
   // ----- 重绘调度（rAF 节流：一帧内多次改动只画一次） -----
@@ -221,6 +289,12 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   function scheduleDraw(): void {
     if (!rafId) rafId = requestAnimationFrame(() => { rafId = 0; draw(); });
   }
+
+  // T09 接线：闪烁定时器每次到点把显示内容翻面（tag 文案在 draw 里随内容同步）
+  const onBlinkFlip = (): void => {
+    compareUi.blinkShowingRef = !compareUi.blinkShowingRef;
+    scheduleDraw();
+  };
 
   // ----- 通用交互：滚轮缩放（光标锚点）+ 拖拽平移 + 双击复位 -----
   function attachPanZoom(canvas: HTMLCanvasElement): void {
@@ -272,7 +346,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       scheduleDraw();
     });
   }
-  attachPanZoom(refCanvas);
+  // 多视图模式下画布归 multiview 模块管，这里只给分屏/滑动模式接交互
+  if (refCanvas) attachPanZoom(refCanvas);
   if (candCanvas) attachPanZoom(candCanvas);
 
   // ----- 分割线拖动 -----
@@ -349,18 +424,29 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     drawImage(ctx, size, entry);
   }
 
-  function drawImage(ctx: CanvasRenderingContext2D, size: Size, entry: ImageEntry): void {
+  /** 把一个可绘制源（图片或生成的差异画布）按当前视口画进窗格；只画可见部分保证流畅。 */
+  function drawSource(
+    ctx: CanvasRenderingContext2D,
+    size: Size,
+    source: CanvasImageSource,
+    width: number,
+    height: number,
+  ): void {
     const vp = state!.viewport;
     if (!vp) return;
-    const region = visibleRegion(vp, size, { width: entry.width, height: entry.height });
+    const region = visibleRegion(vp, size, { width, height });
     if (!region) return;
     ctx.imageSmoothingEnabled = vp.zoom < NEAREST_ZOOM;
     if (ctx.imageSmoothingEnabled) ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(
-      entry.img!,
+      source,
       region.src.x, region.src.y, region.src.width, region.src.height,
       region.dst.x, region.dst.y, region.dst.width, region.dst.height,
     );
+  }
+
+  function drawImage(ctx: CanvasRenderingContext2D, size: Size, entry: ImageEntry): void {
+    drawSource(ctx, size, entry.img!, entry.width, entry.height);
   }
 
   /** 视口待适配时，用已就绪的图（优先原图）按窗格尺寸 fit。 */
@@ -374,6 +460,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     const st = state;
     if (!st || !area.isConnected) return;
     if (st.mode === 'split') {
+      if (!refCanvas || !candCanvas) return; // 多视图模式下没有这两块画布
       const ctxA = prepare(refCanvas);
       const ctxB = candCanvas ? prepare(candCanvas) : null;
       if (!ctxA || !ctxB) return;
@@ -410,7 +497,81 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
         ctx.restore();
       }
       if (dividerEl) dividerEl.style.left = `${st.divider * size.width}px`;
+    } else if (stageCanvas) {
+      // ----- T09 接线：叠加 / 差异图 / 闪烁切换（与分屏/滑动共用同一份视口状态） -----
+      const prepared = prepare(stageCanvas);
+      if (!prepared) return;
+      const { ctx, size } = prepared;
+      ctx.fillStyle = '#2b2b2b';
+      ctx.fillRect(0, 0, size.width, size.height);
+      ensureFitted(size, refEntry.status === 'ok' ? refEntry : candEntry);
+      const refOk = refEntry.status === 'ok' && refEntry.img !== undefined;
+      const candOk = candEntry !== null && candEntry.status === 'ok' && candEntry.img !== undefined;
+
+      if (st.mode === 'overlay') {
+        // 先整幅画原图，再按不透明度把跑分图叠上去：两次 drawImage 走同一 visibleRegion
+        if (!refOk) {
+          drawPane(ctx, size, refEntry, '原图', round.referencePath);
+        } else {
+          drawImage(ctx, size, refEntry);
+          if (candOk && compareUi.opacity > 0) {
+            ctx.globalAlpha = compareUi.opacity;
+            drawImage(ctx, size, candEntry);
+            ctx.globalAlpha = 1;
+          } else if (!candOk) {
+            drawPane(ctx, size, candEntry, '跑分图', st.candidatePath ?? '');
+          }
+        }
+        if (stageTag) stageTag.textContent = '叠加对比';
+      } else if (st.mode === 'diff') {
+        if (!refOk) {
+          drawPane(ctx, size, refEntry, '原图', round.referencePath);
+        } else if (!candOk) {
+          drawPane(ctx, size, candEntry, '跑分图', st.candidatePath ?? '');
+        } else if (refEntry.width !== candEntry.width || refEntry.height !== candEntry.height) {
+          // 逐像素运算要求同尺寸：尺寸不一致给中文提示，应用不崩（与加载失败处理一致）
+          drawMessage(ctx, size, '原图与跑分图尺寸不一致，无法生成差异图');
+          if (stageTag) stageTag.textContent = '差异图';
+        } else {
+          const key = `${round.referencePath}|${st.candidatePath}|${compareUi.threshold}`;
+          if (diffCache && diffCache.key === key) {
+            drawSource(ctx, size, diffCache.canvas, refEntry.width, refEntry.height);
+          } else {
+            // 计算期间每帧都显示提示（整图计算放到宏任务里，本帧先画出来；算完回填缓存再重绘）
+            drawMessage(ctx, size, '正在计算差异图…');
+            if (!diffComputing) {
+              diffComputing = true;
+              const refImg = refEntry.img!;
+              const candImg = candEntry.img!;
+              const threshold = compareUi.threshold;
+              setTimeout(() => {
+                diffComputing = false;
+                const canvas = renderDiffCanvas(refImg, candImg, threshold);
+                if (canvas) diffCache = { key, canvas };
+                scheduleDraw();
+              }, 0);
+            }
+          }
+          if (stageTag) stageTag.textContent = '差异图';
+        }
+      } else {
+        // 闪烁切换：按固定间隔在原图/跑分图之间翻面（定时器启停见 compare-modes.ts 接线）
+        const showRef = compareUi.blinkShowingRef;
+        const entry = showRef ? refEntry : candEntry;
+        const role = showRef ? '原图' : '跑分图';
+        if (entry && entry.status === 'ok' && entry.img !== undefined) {
+          drawImage(ctx, size, entry);
+        } else {
+          drawPane(ctx, size, entry, role, showRef ? round.referencePath : st.candidatePath ?? '');
+        }
+        if (stageTag) stageTag.textContent = role;
+      }
     }
+  }
+
+  // T09 接线：重挂后仍处于闪烁模式且在播放中，恢复自动交替（定时器生命周期见 compare-modes.ts）
+  if (state.mode === 'blink' && compareUi.blinkPlaying) {
+    startBlink(onBlinkFlip);
   }
 
   scheduleDraw();
