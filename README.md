@@ -55,8 +55,10 @@ npm run tauri dev
 - 对比查看器：评测轮里选好原图与跑分图后，结果表上方出现「对比查看器」。用「左右分屏 / 滑动对比」按钮切换模式，下拉框选择要对比的跑分图；**滚轮**以光标为中心缩放，**按住拖动**平移画面，**双击**复位到整图，滑动模式下**拖动白色分割线**（带 ⟷ 把手）可左右扫动对比。
 - 命令行批量跑分（外部导入模式）：选好一张原图和几张已压缩的跑分图后，执行
   `cargo run -p pixel-arena-cli -- score --reference 原图.png --candidates 跑分图1.jpg 跑分图2.webp`，
-  就得到一张 CSV 指标表（PSNR、SSIM、文件大小、体积比），可存成文件或贴进表格；
-  加 `--format json` 则输出 JSON。进度与错误提示是简体中文，出错时按提示处理即可
+  就得到一张 CSV 指标表（PSNR、SSIM、MS-SSIM、Butteraugli、SSIMULACRA2、文件大小、体积比），
+  可存成文件或贴进表格；加 `--format json` 则输出 JSON。指标口径：MS-SSIM 越接近 1 越好；
+  Butteraugli 是距离分，0 表示完全一致、约 1.0 是刚好可察觉；SSIMULACRA2 是质量分，
+  100 表示完全一致。进度与错误提示是简体中文，出错时按提示处理即可
   （支持的图片格式：PNG/JPEG/WebP）。
 
 ## 工作区文件在哪

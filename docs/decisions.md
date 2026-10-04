@@ -45,7 +45,14 @@
 - 为什么：T04 新增 MS-SSIM / Butteraugli / SSIMULACRA2 时结果表自动多列，GUI 无需再改；serde_json 会把非有限浮点写成 null 导致读不回来，哨兵保证 JSON 往返无损。
 - 放弃了：固定指标列的结构体（加指标要改三处：核心库、TS 类型、GUI 表格）；把 PSNR 截断成有限大数（数值不诚实）。
 
-## 0007 · 对比查看器视口状态与 asset protocol 图片加载（已确认）
+## 0007 · 感知指标：MS-SSIM 自研 + Butteraugli/SSIMULACRA2 用社区 Rust 移植（已确认）
+
+- 日期：2026-10-04
+- 决策：MS-SSIM 在核心库自研（与现有 SSIM 共用 11x11 高斯窗机制，Wang 2003/2004 五层下采样标准流程，权重 [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]，三通道各自合成后平均，负项按 0 截断）；Butteraugli 用 `butteraugli` 0.9.3（imazen 维护，libjxl C++ 原版的纯 Rust 移植，自带 10.9k 行 C++ 对照回归表，本机全量通过）；SSIMULACRA2 用 `ssimulacra2` 0.5.1（rust-av 组织维护，官方测试 tank 样例期望值 ±0.25 本机复现）。输出口径：Butteraugli 输出原始距离分（0 = 完全一致，约 1.0 = 刚好可察觉），SSIMULACRA2 输出原始质量分（100 = 完全一致），都不做 DSSIM 之类变换，保持各指标社区通用口径。
+- 为什么：三个指标是感知质量评价的事实标准；`butteraugli` crate 维护活跃（2026-05 仍在发版、52k 下载）且把 C++ 原版对照值带进测试，可信度最高；`ssimulacra2` 是 Rust 生态事实上的唯一活跃移植（av1an 生态在用）。两个 crate 均纯 Rust、无系统依赖，保住三端编译。MS-SSIM 无可信 crate，公式约百行且复用已交叉验证的 SSIM 机制，与 numpy 定义性参照逐位对齐（scripts/msssim_reference.py）。
+- 放弃了：`butteraugli-oxide`（无 stable 版本、下载量低）、`butteraugli-sys`（绑 C++，引入系统依赖）；`ssimulacra2-cuda`（需 GPU）；MS-SSIM 引第三方 crate（无可信维护者）；Butteraugli 转 DSSIM 口径（丢失 JND 可解释性）。
+
+## 0008 · 对比查看器视口状态与 asset protocol 图片加载（已确认）
 
 - 日期：2026-10-04
 - 决策：查看器的缩放/平移收敛为纯 TS 模块 `src/viewport.ts` 的「视口状态」{centerX, centerY, zoom}（图片坐标系，窗格尺寸只作换算参数），提供 fit / 光标锚点缩放 / 平移 / 图片↔屏幕换算 / 可见区域裁剪，全部纯函数，由 vitest 前端单测守护（`npm test`）；左右分屏与滑动对比共享同一份视口状态。图片经 asset protocol（convertFileSrc）交给 WebView 原生解码：tauri.conf.json 开启 `assetProtocol` 且 scope 放行全部路径，tauri crate 增加 `protocol-asset` feature，capabilities 无需新增权限。
