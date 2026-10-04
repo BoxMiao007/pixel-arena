@@ -13,6 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# protocol-asset：asset protocol 让 WebView 直接读本地图片（对比查看器加载原图/跑分图）
+tauri = { version = "2", features = ["protocol-asset"] }
 pixel-arena-core = { path = "../crates/pixel-arena-core" }
 tauri-plugin-dialog = "2.8.1"

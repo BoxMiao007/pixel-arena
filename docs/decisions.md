@@ -44,3 +44,10 @@
 - 决策：评测轮（Round）扩展 `referencePath`（原图路径）与 `candidates`（跑分图列表：路径、文件大小、体积比、指标结果、失败原因）；指标结果存「指标名 → 值」键值表，GUI 结果表列由键驱动生成；无穷大指标（两图完全一致时的 PSNR）以字符串 `"inf"` 哨兵持久化。
 - 为什么：T04 新增 MS-SSIM / Butteraugli / SSIMULACRA2 时结果表自动多列，GUI 无需再改；serde_json 会把非有限浮点写成 null 导致读不回来，哨兵保证 JSON 往返无损。
 - 放弃了：固定指标列的结构体（加指标要改三处：核心库、TS 类型、GUI 表格）；把 PSNR 截断成有限大数（数值不诚实）。
+
+## 0007 · 对比查看器视口状态与 asset protocol 图片加载（已确认）
+
+- 日期：2026-10-04
+- 决策：查看器的缩放/平移收敛为纯 TS 模块 `src/viewport.ts` 的「视口状态」{centerX, centerY, zoom}（图片坐标系，窗格尺寸只作换算参数），提供 fit / 光标锚点缩放 / 平移 / 图片↔屏幕换算 / 可见区域裁剪，全部纯函数，由 vitest 前端单测守护（`npm test`）；左右分屏与滑动对比共享同一份视口状态。图片经 asset protocol（convertFileSrc）交给 WebView 原生解码：tauri.conf.json 开启 `assetProtocol` 且 scope 放行全部路径，tauri crate 增加 `protocol-asset` feature，capabilities 无需新增权限。
+- 为什么：视口用图片坐标描述，N 个尺寸不同的窗格可共用同一份状态，是 T08 多视图、叠加与视频逐帧对比的天然底座；asset protocol 免 base64 IPC，大图解码内存与开销最小。scope 放行全部路径：文件对话框本身即用户授权，且 Windows 多盘符无法用 $HOME 等变量穷举，限用户目录会造成任意盘选图「能选不能看」。
+- 放弃了：视口逻辑内嵌在组件渲染里（不可单测、难扩展）；IPC 回传 base64 图片数据（大图内存翻倍）；离屏 worker 解码（可见区域裁剪绘制在 3000×2000 实测已流畅，出现卡顿再引入）。
