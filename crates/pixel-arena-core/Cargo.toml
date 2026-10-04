@@ -9,3 +9,9 @@ description = "像素竞技场核心库：解码、指标、编码编排（GUI �
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[dev-dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+tempfile = "3.27.0"
+toml = { version = "1.1.6", features = ["serde"] }

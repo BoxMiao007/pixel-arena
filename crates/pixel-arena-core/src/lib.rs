@@ -1,6 +1,12 @@
 // 像素竞技场核心库。
-// T01 范围：只提供版本号查询，打通「核心库 -> GUI / CLI」的最小通路；
-// 解码、指标、编码编排等能力按后续票逐个加入，不预写。
+// 解码、指标、编码编排等能力按票逐个加入（T01 版本号通路 -> T02 图片指标链路 -> T05 工作区数据模型），
+// 不预写后续票才用得上的抽象。
+
+mod error;
+mod metrics;
+
+pub use error::CoreError;
+pub use metrics::{score_images, ImageMetrics};
 
 pub mod workspace;
 

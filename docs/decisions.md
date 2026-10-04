@@ -30,3 +30,10 @@
 - 决策：核心库新增 `workspace` 模块（Workspace → Group → Round 三层），持久化为应用数据目录下单个 `workspace.json`（format_version 字段 + 原子写入：先写临时文件再重命名）；字段序列化用 camelCase，新增字段一律带 serde 默认值保证旧文件可读。激活的标签页/轮次随状态一起保存。
 - 为什么：GUI（Tauri 命令）与将来的 CLI 复用同一套数据模型；原子写入让「改动即自动保存」不怕中途崩溃留半截文件。
 - 放弃了：SQLite（当前只有几百字节的层级数据，JSON 足够）；损坏文件自动备份（T05 只报中文错误，等真实损坏场景出现再加固）。
+
+## 0005 · 图片解码与 PSNR/SSIM 实现（已确认）
+
+- 日期：2026-10-04
+- 决策：解码用 `image` 0.25（PNG/JPEG/WebP，纯 Rust，统一 8-bit sRGB）；SSIM 按 Wang et al. 2004 自研实现（11x11 高斯窗 sigma=1.5、valid 边界、三通道平均）；PSNR 用全通道合并 MSE 口径（与 ffmpeg `psnr` 滤镜 `average` 相同）。指标锚点为黄金基准（入库样例 + 容差测试），并与 ffmpeg / numpy 定义性参照交叉验证。
+- 为什么：`image` 纯 Rust 三端编译无系统依赖；SSIM 无活跃维护的等价 crate，教科书公式约百行且可与定义性参照逐位对齐；ffmpeg 的 `ssim` 滤镜实为 8x8 均匀窗变体，不能当标准 SSIM 锚点（证据：pixel-arena-shared/evidence/T02-交叉验证.md）。
+- 放弃了：第三方 SSIM crate（无维护）；以 ffmpeg 口径为准（非标准，且测试须离线可跑）。
