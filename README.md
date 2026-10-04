@@ -53,8 +53,10 @@ npm run tauri dev
 - 自动保存：所有改动立即保存，退出应用再打开，跑分组与评测轮原样恢复（保存位置见下方「工作区文件在哪」）。
 - 命令行批量跑分（外部导入模式）：选好一张原图和几张已压缩的跑分图后，执行
   `cargo run -p pixel-arena-cli -- score --reference 原图.png --candidates 跑分图1.jpg 跑分图2.webp`，
-  就得到一张 CSV 指标表（PSNR、SSIM、文件大小、体积比），可存成文件或贴进表格；
-  加 `--format json` 则输出 JSON。进度与错误提示是简体中文，出错时按提示处理即可
+  就得到一张 CSV 指标表（PSNR、SSIM、MS-SSIM、Butteraugli、SSIMULACRA2、文件大小、体积比），
+  可存成文件或贴进表格；加 `--format json` 则输出 JSON。指标口径：MS-SSIM 越接近 1 越好；
+  Butteraugli 是距离分，0 表示完全一致、约 1.0 是刚好可察觉；SSIMULACRA2 是质量分，
+  100 表示完全一致。进度与错误提示是简体中文，出错时按提示处理即可
   （支持的图片格式：PNG/JPEG/WebP）。
 
 ## 工作区文件在哪

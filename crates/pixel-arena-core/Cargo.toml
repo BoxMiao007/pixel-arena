@@ -10,6 +10,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+# 感知指标（社区维护的 Rust 移植，选型依据见 docs/decisions.md 0007）：
+# Butteraugli——libjxl C++ 原版的纯 Rust 移植，自带 C++ 对照回归表
+butteraugli = "0.9.3"
+# SSIMULACRA2——rust-av 组织维护的移植，与 C++ 原版同源公式
+ssimulacra2 = "0.5.1"
+# butteraugli 的输入类型（Img<RGB8>）
+imgref = "1"
+rgb = "0.8"
 
 [dev-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }

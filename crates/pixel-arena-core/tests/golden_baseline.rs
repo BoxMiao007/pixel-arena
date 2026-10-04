@@ -6,6 +6,13 @@ use serde::Deserialize;
 
 const TOLERANCE_PSNR: f64 = 1e-6;
 const TOLERANCE_SSIM: f64 = 1e-9;
+const TOLERANCE_MS_SSIM: f64 = 1e-9;
+// 与 butteraugli crate 自带 C++ 对照回归同标准（相对 0.1%，观测 FMA 噪声约 0.002%）。
+const TOLERANCE_BUTTERAUGLI_RELATIVE: f64 = 1e-3;
+// 近零分数（相同图为 0、JPEG q85 为 0.85）的绝对下限兜底。
+const TOLERANCE_BUTTERAUGLI_FLOOR: f64 = 1e-3;
+// 与 ssimulacra2 crate 官方测试同款绝对容差（作者注明跨平台浮点/求和顺序有差异）。
+const TOLERANCE_SSIMULACRA2: f64 = 0.25;
 
 #[derive(Deserialize)]
 struct GoldenBaseline {
@@ -19,6 +26,9 @@ struct GoldenSample {
     distorted: String,
     psnr: f64,
     ssim: f64,
+    ms_ssim: f64,
+    butteraugli: f64,
+    ssimulacra2: f64,
 }
 
 #[test]
@@ -54,6 +64,37 @@ fn 指标与黄金基准在容差内一致() {
             sample.name,
             sample.ssim,
             score.ssim
+        );
+
+        let ms_ssim_diff = (score.ms_ssim - sample.ms_ssim).abs();
+        assert!(
+            ms_ssim_diff <= TOLERANCE_MS_SSIM,
+            "样例「{}」MS-SSIM 漂移：基准 {}，实测 {}（差 {ms_ssim_diff}）",
+            sample.name,
+            sample.ms_ssim,
+            score.ms_ssim
+        );
+
+        // Butteraugli 用相对容差（分数跨样例跨数量级），近零分数用绝对下限兜底。
+        let butteraugli_tolerance = TOLERANCE_BUTTERAUGLI_RELATIVE
+            * sample.butteraugli.abs().max(1.0)
+            + TOLERANCE_BUTTERAUGLI_FLOOR;
+        let butteraugli_diff = (score.butteraugli - sample.butteraugli).abs();
+        assert!(
+            butteraugli_diff <= butteraugli_tolerance,
+            "样例「{}」Butteraugli 漂移：基准 {}，实测 {}（差 {butteraugli_diff}，容差 {butteraugli_tolerance}）",
+            sample.name,
+            sample.butteraugli,
+            score.butteraugli
+        );
+
+        let ssimulacra2_diff = (score.ssimulacra2 - sample.ssimulacra2).abs();
+        assert!(
+            ssimulacra2_diff <= TOLERANCE_SSIMULACRA2,
+            "样例「{}」SSIMULACRA2 漂移：基准 {}，实测 {}（差 {ssimulacra2_diff}）",
+            sample.name,
+            sample.ssimulacra2,
+            score.ssimulacra2
         );
     }
 }
