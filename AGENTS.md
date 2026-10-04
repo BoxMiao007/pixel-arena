@@ -48,7 +48,7 @@
 
 ### Issue tracker
 
-Issue 记在 GitHub Issues,用 `gh` CLI 操作(仓库尚无远程,首次使用前需先创建)。See `docs/agents/issue-tracker.md`.
+Issue 记在 GitHub Issues(远程仓库 BoxMiao007/pixel-arena 已创建),用 `gh` CLI 操作。See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

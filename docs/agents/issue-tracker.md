@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
-> 备注:本仓库尚未配置远程,首次使用 issue 前需先创建 GitHub 远程仓库(如 `gh repo create`)。
+> 备注:远程仓库已配置(https://github.com/BoxMiao007/pixel-arena),五个分诊标签已建齐。
 
 ## Conventions
 
