@@ -38,7 +38,14 @@
 - 为什么：`image` 纯 Rust 三端编译无系统依赖；SSIM 无活跃维护的等价 crate，教科书公式约百行且可与定义性参照逐位对齐；ffmpeg 的 `ssim` 滤镜实为 8x8 均匀窗变体，不能当标准 SSIM 锚点（证据：pixel-arena-shared/evidence/T02-交叉验证.md）。
 - 放弃了：第三方 SSIM crate（无维护）；以 ffmpeg 口径为准（非标准，且测试须离线可跑）。
 
-## 0006 · 感知指标：MS-SSIM 自研 + Butteraugli/SSIMULACRA2 用社区 Rust 移植（已确认）
+## 0006 · 评测轮内容与指标结果的数据模型（已确认）
+
+- 日期：2026-10-04
+- 决策：评测轮（Round）扩展 `referencePath`（原图路径）与 `candidates`（跑分图列表：路径、文件大小、体积比、指标结果、失败原因）；指标结果存「指标名 → 值」键值表，GUI 结果表列由键驱动生成；无穷大指标（两图完全一致时的 PSNR）以字符串 `"inf"` 哨兵持久化。
+- 为什么：T04 新增 MS-SSIM / Butteraugli / SSIMULACRA2 时结果表自动多列，GUI 无需再改；serde_json 会把非有限浮点写成 null 导致读不回来，哨兵保证 JSON 往返无损。
+- 放弃了：固定指标列的结构体（加指标要改三处：核心库、TS 类型、GUI 表格）；把 PSNR 截断成有限大数（数值不诚实）。
+
+## 0007 · 感知指标：MS-SSIM 自研 + Butteraugli/SSIMULACRA2 用社区 Rust 移植（已确认）
 
 - 日期：2026-10-04
 - 决策：MS-SSIM 在核心库自研（与现有 SSIM 共用 11x11 高斯窗机制，Wang 2003/2004 五层下采样标准流程，权重 [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]，三通道各自合成后平均，负项按 0 截断）；Butteraugli 用 `butteraugli` 0.9.3（imazen 维护，libjxl C++ 原版的纯 Rust 移植，自带 10.9k 行 C++ 对照回归表，本机全量通过）；SSIMULACRA2 用 `ssimulacra2` 0.5.1（rust-av 组织维护，官方测试 tank 样例期望值 ±0.25 本机复现）。输出口径：Butteraugli 输出原始距离分（0 = 完全一致，约 1.0 = 刚好可察觉），SSIMULACRA2 输出原始质量分（100 = 完全一致），都不做 DSSIM 之类变换，保持各指标社区通用口径。
