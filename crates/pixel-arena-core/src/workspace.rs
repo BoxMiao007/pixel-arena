@@ -39,7 +39,7 @@ pub struct Group {
     pub active_round_id: Option<String>,
 }
 
-/// 评测轮：跑分组内的一次评测（一张原图 + 若干张跑分图）。
+/// 评测轮：跑分组内的一次评测（一张原图/一段原视频 + 若干张跑分图/若干段跑分视频）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Round {
@@ -51,6 +51,12 @@ pub struct Round {
     /// 跑分图列表，含各自的跑分结果。
     #[serde(default)]
     pub candidates: Vec<CandidateImage>,
+    /// 原视频路径（视频评测的基准，与原图相互独立，可只用其中一边）。T14 新增。
+    #[serde(default)]
+    pub video_reference_path: Option<String>,
+    /// 跑分视频列表，含各自的跑分结果。T14 新增。
+    #[serde(default)]
+    pub video_candidates: Vec<CandidateVideo>,
 }
 
 /// 评测轮内容里的一张跑分图及其跑分结果。
@@ -72,6 +78,28 @@ pub struct CandidateImage {
     /// 跑分失败原因（中文，可直接展示）。成功或未跑分时为 None。
     #[serde(default)]
     pub error: Option<String>,
+}
+
+/// 评测轮内容里的一段跑分视频及其跑分结果（T14）。字段语义与 [`CandidateImage`] 一致。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateVideo {
+    /// 跑分视频文件路径（绝对路径）。
+    pub path: String,
+    /// 文件大小（字节），选入时从磁盘读取。
+    pub file_size: u64,
+    /// 相对原视频的体积比（跑分视频大小 / 原视频大小）。未选原视频前未知。
+    #[serde(default)]
+    pub size_ratio: Option<f64>,
+    /// 跑分结果：指标名 → 值（VMAF / PSNR / SSIM）。未跑分或失败时为 None。
+    #[serde(default)]
+    pub metrics: Option<BTreeMap<String, MetricValue>>,
+    /// 跑分失败原因（中文，可直接展示）。成功或未跑分时为 None。
+    #[serde(default)]
+    pub error: Option<String>,
+    /// 本对跑分耗时（毫秒，含 ffmpeg 子进程）。未跑分时为 None；失败也会记录已耗时。
+    #[serde(default)]
+    pub elapsed_ms: Option<u64>,
 }
 
 /// 单个指标值：有限数值，或无穷大（两图逐像素完全一致时 PSNR 的情形）。
@@ -149,8 +177,12 @@ pub enum WorkspaceError {
     RoundNotFound(String),
     #[error("跑分图不存在: {0}")]
     CandidateNotFound(String),
+    #[error("跑分视频不存在: {0}")]
+    VideoCandidateNotFound(String),
     #[error("尚未选择原图，无法跑分")]
     ReferenceNotSet,
+    #[error("尚未选择原视频，无法跑分")]
+    VideoReferenceNotSet,
     #[error("名称不能为空")]
     BlankName,
     #[error("JSON 解析失败: {0}")]
@@ -313,6 +345,123 @@ impl Workspace {
         Ok(())
     }
 
+    // ---------- T14：视频评测轮（原视频 / 跑分视频 / VMAF-PSNR-SSIM） ----------
+    // 语义与图片侧三个方法一一对应；跑分需要调用方传入含 libvmaf 滤镜的 ffmpeg 路径。
+
+    /// 选入原视频（可重复选换视频）。换视频时旧跑分结果与体积比一并作废；
+    /// 已在列表里的跑分视频按新原视频重算体积比。原视频文件必须存在（fail-fast）。
+    pub fn set_round_video_reference(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        path: &str,
+    ) -> Result<(), WorkspaceError> {
+        let path = path.trim();
+        let reference_size = std::fs::metadata(path)?.len();
+
+        let round = self.round_mut(group_id, round_id)?;
+        round.video_reference_path = Some(path.to_string());
+        for candidate in &mut round.video_candidates {
+            candidate.metrics = None;
+            candidate.error = None;
+            candidate.elapsed_ms = None;
+            candidate.size_ratio = Some(candidate.file_size as f64 / reference_size as f64);
+        }
+        Ok(())
+    }
+
+    /// 把若干段跑分视频加入评测轮（外部导入模式的多选）。
+    /// 文件大小选入时从磁盘读取；重复路径跳过；任一文件不存在时整批失败（fail-fast）。
+    pub fn add_round_video_candidates(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        paths: &[&str],
+    ) -> Result<(), WorkspaceError> {
+        let round = self.round_mut(group_id, round_id)?;
+        let reference_size = match &round.video_reference_path {
+            Some(reference) => Some(std::fs::metadata(reference)?.len()),
+            None => None,
+        };
+
+        // 先全部读盘校验，确认无误再改内存
+        let mut fresh: Vec<CandidateVideo> = Vec::new();
+        for path in paths {
+            let path = path.trim();
+            let already = round.video_candidates.iter().any(|c| c.path == path)
+                || fresh.iter().any(|c| c.path == path);
+            if already {
+                continue;
+            }
+            let file_size = std::fs::metadata(path)?.len();
+            fresh.push(CandidateVideo {
+                path: path.to_string(),
+                file_size,
+                size_ratio: reference_size.map(|r| file_size as f64 / r as f64),
+                metrics: None,
+                error: None,
+                elapsed_ms: None,
+            });
+        }
+        round.video_candidates.extend(fresh);
+        Ok(())
+    }
+
+    /// 对一段跑分视频跑分（经 ffmpeg 计算 VMAF/PSNR/SSIM 相对原视频），结果写回该行。
+    ///
+    /// 单段失败不让整轮失败：中文原因写进行内 error 字段并记录已耗时；只有找不到
+    /// 组/轮/跑分视频或没选原视频才返回错误。`ffmpeg` 须指向含 libvmaf 滤镜的可执行文件。
+    pub fn score_round_video_candidate(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        candidate_path: &str,
+        ffmpeg: &std::path::Path,
+    ) -> Result<(), WorkspaceError> {
+        // 先只读定位，确认前置条件都成立（错误先于任何内存变更抛出）
+        let reference_path = {
+            let round = self.round_mut(group_id, round_id)?;
+            let reference = round
+                .video_reference_path
+                .clone()
+                .ok_or(WorkspaceError::VideoReferenceNotSet)?;
+            if !round.video_candidates.iter().any(|c| c.path == candidate_path) {
+                return Err(WorkspaceError::VideoCandidateNotFound(
+                    candidate_path.to_string(),
+                ));
+            }
+            reference
+        };
+
+        // ffmpeg 跑分可能耗时（长视频分钟级），不持有工作区借用
+        let started = std::time::Instant::now();
+        let result = crate::video::score_videos(ffmpeg, &reference_path, candidate_path);
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        let candidate = self
+            .round_mut(group_id, round_id)?
+            .video_candidates
+            .iter_mut()
+            .find(|c| c.path == candidate_path)
+            .expect("上面刚确认过跑分视频在列表里");
+        match result {
+            Ok(metrics) => {
+                candidate.metrics = Some(BTreeMap::from([
+                    ("VMAF".to_string(), MetricValue::new(metrics.vmaf)),
+                    ("PSNR".to_string(), MetricValue::new(metrics.psnr)),
+                    ("SSIM".to_string(), MetricValue::new(metrics.ssim)),
+                ]));
+                candidate.error = None;
+            }
+            Err(err) => {
+                candidate.metrics = None;
+                candidate.error = Some(err.to_string());
+            }
+        }
+        candidate.elapsed_ms = Some(elapsed_ms);
+        Ok(())
+    }
+
     /// 重命名跑分组。名称首尾空白会被去除。
     pub fn rename_group(&mut self, group_id: &str, name: &str) -> Result<(), WorkspaceError> {
         let name = name.trim();
@@ -368,6 +517,8 @@ impl Workspace {
             name: name.to_string(),
             reference_path: None,
             candidates: Vec::new(),
+            video_reference_path: None,
+            video_candidates: Vec::new(),
         };
         group.active_round_id = Some(round.id.clone());
         group.rounds.push(round);
@@ -937,5 +1088,267 @@ mod tests {
         assert_eq!(restored.groups[0].rounds.len(), 1);
         assert_eq!(restored.active_group_id.as_deref(), Some(g.as_str()));
         std::fs::remove_file(&path).ok();
+    }
+
+    // ---------- T14：视频评测轮（原视频 / 跑分视频 / VMAF-PSNR-SSIM） ----------
+
+    fn video_data(name: &str) -> String {
+        format!("{}/tests/data/video/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// 找一个带 libvmaf 滤镜的 ffmpeg（与 tests/video_scoring.rs 同规则；没有则跳过相关断言）。
+    fn ffmpeg_with_libvmaf() -> Option<std::path::PathBuf> {
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(env_path) = std::env::var("PIXEL_ARENA_FFMPEG") {
+            candidates.push(std::path::PathBuf::from(env_path));
+        }
+        let data_home = std::env::var("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+                    .unwrap_or_default()
+            });
+        candidates.push(data_home.join("io.github.boxmiao007.pixelarena/tools/ffmpeg"));
+        candidates.push(std::path::PathBuf::from("ffmpeg"));
+        for candidate in candidates {
+            let has_vmaf = std::process::Command::new(&candidate)
+                .args(["-hide_banner", "-filters"])
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).contains("libvmaf"))
+                .unwrap_or(false);
+            if has_vmaf {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn old_json_without_video_fields_loads_with_empty_video_section() {
+        // T06 时期的评测轮 JSON：没有 videoReferencePath / videoCandidates 字段，加载后为空
+        let old = r#"{
+            "formatVersion": 1,
+            "groups": [{"id": "g-1", "name": "组", "rounds": [{"id": "r-1", "name": "轮"}]}]
+        }"#;
+        let ws = Workspace::from_json(old).unwrap();
+        let round = &ws.groups[0].rounds[0];
+        assert_eq!(round.video_reference_path, None);
+        assert!(round.video_candidates.is_empty());
+    }
+
+    #[test]
+    fn video_candidates_json_roundtrip_preserves_elapsed_and_metrics() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.groups[0].rounds[0].video_reference_path = Some("/tmp/ref.mp4".to_string());
+        ws.groups[0].rounds[0].video_candidates.push(CandidateVideo {
+            path: "/tmp/dis.mp4".to_string(),
+            file_size: 27050,
+            size_ratio: Some(0.4531),
+            metrics: Some(BTreeMap::from([
+                ("VMAF".to_string(), MetricValue::Number(94.87)),
+                ("PSNR".to_string(), MetricValue::Inf),
+                ("SSIM".to_string(), MetricValue::Number(0.9926)),
+            ])),
+            error: None,
+            elapsed_ms: Some(1234),
+        });
+        let restored = Workspace::from_json(&ws.to_json()).unwrap();
+        let round = &restored.groups[0].rounds[0];
+        assert_eq!(round.video_reference_path.as_deref(), Some("/tmp/ref.mp4"));
+        let candidate = &round.video_candidates[0];
+        assert_eq!(candidate.file_size, 27050);
+        assert_eq!(candidate.elapsed_ms, Some(1234));
+        let metrics = candidate.metrics.as_ref().unwrap();
+        assert_eq!(metrics["VMAF"], MetricValue::Number(94.87));
+        assert_eq!(metrics["PSNR"], MetricValue::Inf);
+        assert_eq!(metrics["SSIM"], MetricValue::Number(0.9926));
+    }
+
+    #[test]
+    fn set_round_video_reference_stores_path_and_computes_ratios() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        // 先选跑分视频（还没有原视频，体积比未知），再补选原视频 → 比重算出来
+        ws.add_round_video_candidates(&g, &r, &[&video_data("video-dis-150k.mp4")])
+            .unwrap();
+        assert_eq!(ws.groups[0].rounds[0].video_candidates[0].size_ratio, None);
+
+        ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
+            .unwrap();
+        let round = &ws.groups[0].rounds[0];
+        assert_eq!(
+            round.video_reference_path.as_deref(),
+            Some(video_data("video-ref-500k.mp4").as_str())
+        );
+        // video-dis-150k.mp4 27050 字节 / video-ref-500k.mp4 59771 字节
+        let ratio = round.video_candidates[0].size_ratio.expect("选完原视频应有体积比");
+        assert!((ratio - 27050.0 / 59771.0).abs() < 1e-12);
+        // 不存在的原视频路径 fail-fast
+        assert!(ws
+            .set_round_video_reference(&g, &r, "/不存在/的/视频.mp4")
+            .is_err());
+    }
+
+    #[test]
+    fn add_round_video_candidates_dedupes_and_fails_fast() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.add_round_video_candidates(
+            &g,
+            &r,
+            &[&video_data("video-dis-150k.mp4"), &video_data("video-small-160x120.mp4")],
+        )
+        .unwrap();
+        let candidates = &ws.groups[0].rounds[0].video_candidates;
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].file_size, 27050);
+        // 同一批内与跨批次的重复路径都跳过
+        ws.add_round_video_candidates(
+            &g,
+            &r,
+            &[&video_data("video-dis-150k.mp4"), &video_data("video-dis-150k.mp4")],
+        )
+        .unwrap();
+        assert_eq!(ws.groups[0].rounds[0].video_candidates.len(), 2);
+        // 不存在的文件 fail-fast，不落半批
+        assert!(ws.add_round_video_candidates(&g, &r, &["/不存在.mp4"]).is_err());
+        assert_eq!(ws.groups[0].rounds[0].video_candidates.len(), 2);
+    }
+
+    #[test]
+    fn reselecting_video_reference_invalidates_old_results() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
+            .unwrap();
+        ws.add_round_video_candidates(&g, &r, &[&video_data("video-dis-150k.mp4")])
+            .unwrap();
+        if let Some(ffmpeg) = ffmpeg_with_libvmaf() {
+            ws.score_round_video_candidate(
+                &g,
+                &r,
+                &video_data("video-dis-150k.mp4"),
+                &ffmpeg,
+            )
+            .unwrap();
+            assert!(ws.groups[0].rounds[0].video_candidates[0].metrics.is_some());
+        }
+
+        ws.set_round_video_reference(&g, &r, &video_data("video-small-160x120.mp4"))
+            .unwrap();
+        let candidate = &ws.groups[0].rounds[0].video_candidates[0];
+        assert_eq!(candidate.metrics, None);
+        assert_eq!(candidate.error, None);
+        assert_eq!(candidate.elapsed_ms, None);
+        let ratio = candidate.size_ratio.expect("体积比应按新原视频重算");
+        assert!((ratio - 27050.0 / 23032.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn score_round_video_candidate_stores_metrics_and_elapsed() {
+        let Some(ffmpeg) = ffmpeg_with_libvmaf() else {
+            eprintln!("跳过：找不到带 libvmaf 滤镜的 ffmpeg（可设 PIXEL_ARENA_FFMPEG）");
+            return;
+        };
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
+            .unwrap();
+        ws.add_round_video_candidates(
+            &g,
+            &r,
+            &[&video_data("video-dis-150k.mp4"), &video_data("video-ref-500k.mp4")],
+        )
+        .unwrap();
+
+        ws.score_round_video_candidate(&g, &r, &video_data("video-dis-150k.mp4"), &ffmpeg)
+            .unwrap();
+        let candidates = &ws.groups[0].rounds[0].video_candidates;
+        let metrics = candidates[0].metrics.as_ref().expect("跑分后应有指标");
+        // BTreeMap 按字典序迭代；前端结果表的列序在 video.ts 里按偏好重排（VMAF 优先展示）
+        assert_eq!(metrics.keys().collect::<Vec<_>>(), vec!["PSNR", "SSIM", "VMAF"]);
+        assert!(
+            (30.0..=100.0).contains(&metrics["VMAF"].value()),
+            "VMAF 应在合理区间，实际 {}",
+            metrics["VMAF"].value()
+        );
+        assert!(candidates[0].error.is_none());
+        assert!(candidates[0].elapsed_ms.unwrap() > 0, "应记录耗时");
+
+        // 自身对比：PSNR 无穷大走 "inf" 哨兵
+        ws.score_round_video_candidate(&g, &r, &video_data("video-ref-500k.mp4"), &ffmpeg)
+            .unwrap();
+        let metrics = &ws.groups[0].rounds[0].video_candidates[1]
+            .metrics
+            .as_ref()
+            .expect("跑分后应有指标");
+        assert_eq!(metrics["PSNR"], MetricValue::Inf);
+    }
+
+    #[test]
+    fn score_round_video_candidate_failure_marks_row_and_records_elapsed() {
+        let Some(ffmpeg) = ffmpeg_with_libvmaf() else {
+            eprintln!("跳过：找不到带 libvmaf 滤镜的 ffmpeg（可设 PIXEL_ARENA_FFMPEG）");
+            return;
+        };
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
+            .unwrap();
+        // 分辨率不一致：命令不报错，失败原因写进行里
+        ws.add_round_video_candidates(&g, &r, &[&video_data("video-small-160x120.mp4")])
+            .unwrap();
+
+        ws.score_round_video_candidate(
+            &g,
+            &r,
+            &video_data("video-small-160x120.mp4"),
+            &ffmpeg,
+        )
+        .unwrap();
+        let candidate = &ws.groups[0].rounds[0].video_candidates[0];
+        assert_eq!(candidate.metrics, None);
+        let error = candidate.error.as_deref().expect("失败行应有原因");
+        assert!(error.contains("ffmpeg"), "原因应可定位: {error}");
+        assert!(candidate.elapsed_ms.is_some(), "失败也应记录已耗时");
+    }
+
+    #[test]
+    fn score_round_video_candidate_reports_missing_prerequisites() {
+        let ffmpeg = std::path::PathBuf::from("ffmpeg"); // 前置检查先于 ffmpeg 启动，路径不会被用到
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        // 没选原视频不能跑分
+        assert!(matches!(
+            ws.score_round_video_candidate(&g, &r, &video_data("video-dis-150k.mp4"), &ffmpeg),
+            Err(WorkspaceError::VideoReferenceNotSet)
+        ));
+        ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
+            .unwrap();
+        // 跑分视频不在列表里
+        assert!(matches!(
+            ws.score_round_video_candidate(&g, &r, &video_data("video-dis-150k.mp4"), &ffmpeg),
+            Err(WorkspaceError::VideoCandidateNotFound(_))
+        ));
+        // 组/轮不存在
+        ws.add_round_video_candidates(&g, &r, &[&video_data("video-dis-150k.mp4")])
+            .unwrap();
+        assert!(matches!(
+            ws.score_round_video_candidate("不存在", &r, &video_data("video-dis-150k.mp4"), &ffmpeg),
+            Err(WorkspaceError::GroupNotFound(_))
+        ));
+        assert!(matches!(
+            ws.score_round_video_candidate(&g, "不存在", &video_data("video-dis-150k.mp4"), &ffmpeg),
+            Err(WorkspaceError::RoundNotFound(_))
+        ));
     }
 }

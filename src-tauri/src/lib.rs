@@ -3,19 +3,23 @@
 //
 // T05：跑分组与评测轮管理。核心库持全部数据模型与持久化逻辑，本文件只是薄客户端：
 // 每个命令改内存工作区后立即写盘（改动即自动保存），并把最新状态整份返回给前端。
+// T14：视频评测轮（原视频/跑分视频/ffmpeg 跑分）+ ffmpeg 工具下载（见 ffmpeg_setup.rs）。
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::{Manager, State};
+use tauri::{ipc::Channel, Manager, State};
 
 use pixel_arena_core::workspace::{Workspace, WorkspaceError};
 
-/// 全局应用状态：内存中的工作区 + 工作区 JSON 文件路径。
+mod ffmpeg_setup;
+
+/// 全局应用状态：内存中的工作区 + 工作区 JSON 文件路径 + ffmpeg 等外部工具目录。
 /// Arc 让跑分这类耗时命令能把引用带进阻塞线程池（不持锁跨 await）。
 struct AppState {
     workspace: Arc<Mutex<Workspace>>,
     path: Arc<PathBuf>,
+    tools_dir: Arc<PathBuf>,
 }
 
 /// IPC 命令：把核心库版本号交给前端显示。
@@ -158,19 +162,94 @@ async fn round_score_candidate(
     .map_err(|err| format!("跑分任务执行失败: {err}"))?
 }
 
+/// IPC 命令：为评测轮选入原视频（路径来自 tauri-plugin-dialog 文件对话框）。T14。
+#[tauri::command]
+fn round_set_video_reference(
+    group_id: String,
+    round_id: String,
+    path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.set_round_video_reference(&group_id, &round_id, &path)
+    })
+}
+
+/// IPC 命令：为评测轮添加若干段跑分视频（多选）。T14。
+#[tauri::command]
+fn round_add_video_candidates(
+    group_id: String,
+    round_id: String,
+    paths: Vec<String>,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    mutate(&state, |ws| {
+        ws.add_round_video_candidates(&group_id, &round_id, &paths)
+    })
+}
+
+/// IPC 命令：对一段跑分视频跑分（前端逐对调用，每对回来就更新一行）。
+/// ffmpeg 跑分可能耗时（长视频分钟级），放到阻塞线程池执行，不占用异步运行时；
+/// 单段失败不报错——中文原因由核心库写进行内（含耗时），界面标「失败」。
+/// 跑分前顺手确保 ffmpeg 就绪（已就绪零开销；正常路径下载进度由前端先调
+/// video_ensure_ffmpeg 展示，这里是兜底）。
+#[tauri::command]
+async fn round_score_video_candidate(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    state: State<'_, AppState>,
+) -> Result<Workspace, String> {
+    let workspace = state.workspace.clone();
+    let path = state.path.clone();
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let ffmpeg = ffmpeg_setup::ensure_ffmpeg(&tools_dir, &mut |_| {})?;
+        let mut ws = workspace.lock().expect("工作区锁不应中毒");
+        ws.score_round_video_candidate(&group_id, &round_id, &candidate_path, &ffmpeg)
+            .map_err(|err| err.to_string())?;
+        ws.save_to_file(&path).map_err(|err| err.to_string())?;
+        Ok(ws.clone())
+    })
+    .await
+    .map_err(|err| format!("视频跑分任务执行失败: {err}"))?
+}
+
+/// IPC 命令：确保视频跑分用的 ffmpeg 就绪。首次会下载锁定版本的静态构建（约 40MB，
+/// 一次性），下载/校验/解压进度经 Channel 推给前端显示在状态栏；返回 ffmpeg 路径。
+#[tauri::command]
+async fn video_ensure_ffmpeg(
+    on_progress: Channel<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg_setup::ensure_ffmpeg(&tools_dir, &mut |message| {
+            let _ = on_progress.send(message);
+        })
+        .map(|path| path.display().to_string())
+    })
+    .await
+    .map_err(|err| format!("ffmpeg 准备任务执行失败: {err}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // 工作区文件放应用数据目录：<系统数据目录>/<identifier>/workspace.json
+            // 工作区文件与外部工具放应用数据目录：<系统数据目录>/<identifier>/
             let dir = app
                 .path()
                 .app_data_dir()
                 .expect("无法确定应用数据目录");
             std::fs::create_dir_all(&dir).expect("无法创建应用数据目录");
+            let tools_dir = dir.join("tools");
+            std::fs::create_dir_all(&tools_dir).expect("无法创建工具目录");
             app.manage(AppState {
                 workspace: Arc::new(Mutex::new(Workspace::new())),
                 path: Arc::new(dir.join("workspace.json")),
+                tools_dir: Arc::new(tools_dir),
             });
             Ok(())
         })
@@ -189,6 +268,11 @@ pub fn run() {
             round_set_reference,
             round_add_candidates,
             round_score_candidate,
+            // T14 视频评测轮
+            round_set_video_reference,
+            round_add_video_candidates,
+            round_score_video_candidate,
+            video_ensure_ffmpeg,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

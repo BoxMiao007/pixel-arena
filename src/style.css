@@ -527,3 +527,19 @@ body {
   border-color: #8ab4f8;
   color: #e8eaed;
 }
+
+/* ---------- 视频评测区块（T14，实现见 src/video.ts） ---------- */
+
+/* 与图片流程的分隔：上边框划分独立小区块，标题行给出指标口径提示（title 属性） */
+.video-block {
+  margin-top: 1.1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #2a2d33;
+}
+
+.video-block-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #9aa0a6;
+  margin-bottom: 0.6rem;
+}

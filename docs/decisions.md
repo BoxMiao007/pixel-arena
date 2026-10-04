@@ -58,3 +58,10 @@
 - 决策：查看器的缩放/平移收敛为纯 TS 模块 `src/viewport.ts` 的「视口状态」{centerX, centerY, zoom}（图片坐标系，窗格尺寸只作换算参数），提供 fit / 光标锚点缩放 / 平移 / 图片↔屏幕换算 / 可见区域裁剪，全部纯函数，由 vitest 前端单测守护（`npm test`）；左右分屏与滑动对比共享同一份视口状态。图片经 asset protocol（convertFileSrc）交给 WebView 原生解码：tauri.conf.json 开启 `assetProtocol` 且 scope 放行全部路径，tauri crate 增加 `protocol-asset` feature，capabilities 无需新增权限。
 - 为什么：视口用图片坐标描述，N 个尺寸不同的窗格可共用同一份状态，是 T08 多视图、叠加与视频逐帧对比的天然底座；asset protocol 免 base64 IPC，大图解码内存与开销最小。scope 放行全部路径：文件对话框本身即用户授权，且 Windows 多盘符无法用 $HOME 等变量穷举，限用户目录会造成任意盘选图「能选不能看」。
 - 放弃了：视口逻辑内嵌在组件渲染里（不可单测、难扩展）；IPC 回传 base64 图片数据（大图内存翻倍）；离屏 worker 解码（可见区域裁剪绘制在 3000×2000 实测已流畅，出现卡顿再引入）。
+
+## 0010 · 视频跑分经 ffmpeg 子进程 + 静态构建下载到应用数据目录（已确认）
+
+- 日期：2026-10-05
+- 决策：视频指标（VMAF/PSNR/SSIM）统一经外部 ffmpeg 子进程一次算完（`split` 出 libvmaf/psnr/ssim 三个滤镜分支，结果从 stderr 汇总行解析，不落 JSON 日志文件）；ffmpeg 不依赖系统安装，首次使用视频跑分时把锁定版本的静态构建下载到应用数据目录 `tools/` 下，先做全量 sha256 校验再解压（不匹配即删除重下）。Linux 锁定 johnvansickle.com 的 ffmpeg 7.0.2 amd64 static（版本化 URL 固定不变，官方公告 md5 交叉一致，包内含 libvmaf）；Windows 侧同一机制但构建源不同（gyan.dev release-full 或 BtbN win64-gpl，均含 libvmaf），随打包票 T16 定稿并捆绑，本版 Windows 上仅识别手动放入 `tools/` 的 ffmpeg.exe，缺了报中文提示。口径：VMAF 用 libvmaf 默认内嵌模型 vmaf_v0.6.1；视频 SSIM 为 ffmpeg `ssim` 滤镜口径（8x8 均匀窗变体），与图片 SSIM（Wang 2004 标准实现）不可直接比较，已在 GLOSSARY.md 注明；音轨不参与评分。下载的压缩包（约 40MB）不入库，落在应用数据目录。
+- 为什么：系统发行版 ffmpeg 普遍不带 libvmaf（本机 Ubuntu 的 ffmpeg 8.0.1 只有 vmafmotion），动态链接系统 ffmpeg 会让 VMAF 完全不可用；静态构建免依赖、解压即用、跨机器结果可复现；锁定版本 + 双哈希校验（官方 md5 交叉、代码内 sha256）守住供应链；应用数据目录是用户可感知的标准位置，便于排查与手动升级。
+- 放弃了：从源码编译 libvmaf/ffmpeg（构建慢、难复现、三端脚本成本高）；Rust 原生 VMAF 实现（无成熟维护的 crate）；运行时用系统 PATH 上的 ffmpeg（libvmaf 可用性不可控）；把 ffmpeg 直接提交进仓库（体积与许可都不合适，GPL 构建以来源记录文件标明）。
