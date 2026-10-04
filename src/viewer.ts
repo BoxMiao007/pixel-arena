@@ -13,6 +13,7 @@ import {
   type ViewportState,
 } from './viewport';
 import { fileName } from './util';
+import { mountMultiview } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
 
 export interface ViewerRound {
   roundId: string;
@@ -20,7 +21,7 @@ export interface ViewerRound {
   candidates: { path: string }[];
 }
 
-type ViewerMode = 'split' | 'slider';
+type ViewerMode = 'split' | 'slider' | 'multiview2' | 'multiview3';
 
 /** 缩放≥100% 后关闭平滑，按最近邻显示原始像素（像素级查看） */
 const NEAREST_ZOOM = 1;
@@ -34,6 +35,8 @@ let state: {
   divider: number;
   /** 当前在右栏/右侧显示的跑分图 */
   candidatePath: string | null;
+  /** 多视图每格显式选图（T08）：''=显式留空，null=默认布局；换轮重置 */
+  cellPaths: (string | null)[] | null;
   /** 共享视口；null = 待适配（图片就绪后按窗格尺寸 fit） */
   viewport: ViewportState | null;
 } | null = null;
@@ -92,6 +95,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       mode: 'split',
       divider: 0.5,
       candidatePath: round.candidates[0]?.path ?? null,
+      cellPaths: null,
       viewport: null,
     };
   }
@@ -119,9 +123,18 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   const sliderBtn = document.createElement('button');
   sliderBtn.type = 'button';
   sliderBtn.textContent = '滑动对比';
+  // ---- T08 接线点：多视图（2×2 / 3×3）模式按钮，渲染与选图逻辑在 src/multiview.ts ----
+  const grid2Btn = document.createElement('button');
+  grid2Btn.type = 'button';
+  grid2Btn.textContent = '2×2 网格';
+  const grid3Btn = document.createElement('button');
+  grid3Btn.type = 'button';
+  grid3Btn.textContent = '3×3 网格';
   const syncModeButtons = (): void => {
     splitBtn.classList.toggle('active', state!.mode === 'split');
     sliderBtn.classList.toggle('active', state!.mode === 'slider');
+    grid2Btn.classList.toggle('active', state!.mode === 'multiview2');
+    grid3Btn.classList.toggle('active', state!.mode === 'multiview3');
   };
   // 切模式后窗格几何变了，重新 fit
   splitBtn.addEventListener('click', () => {
@@ -140,8 +153,25 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       mountViewer(container, round);
     }
   });
+  // ---- T08 接线点：切到多视图重新 fit；每格选图（cellPaths）在同一轮内保留 ----
+  grid2Btn.addEventListener('click', () => {
+    if (state!.mode !== 'multiview2') {
+      state!.mode = 'multiview2';
+      state!.viewport = null;
+      syncModeButtons();
+      mountViewer(container, round);
+    }
+  });
+  grid3Btn.addEventListener('click', () => {
+    if (state!.mode !== 'multiview3') {
+      state!.mode = 'multiview3';
+      state!.viewport = null;
+      syncModeButtons();
+      mountViewer(container, round);
+    }
+  });
   syncModeButtons();
-  modes.append(splitBtn, sliderBtn);
+  modes.append(splitBtn, sliderBtn, grid2Btn, grid3Btn);
 
   const candLabel = document.createElement('label');
   candLabel.className = 'viewer-cand';
@@ -172,12 +202,18 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   area.className = 'viewer-area';
   container.replaceChildren(bar, area);
 
-  let refCanvas: HTMLCanvasElement;
+  let refCanvas: HTMLCanvasElement | null = null;
   let candCanvas: HTMLCanvasElement | null = null; // 分屏模式的右栏画布
   let sliderCanvas: HTMLCanvasElement | null = null;
   let dividerEl: HTMLDivElement | null = null;
 
-  if (state.mode === 'split') {
+  if (state.mode === 'multiview2' || state.mode === 'multiview3') {
+    // ---- T08 接线点：多视图整体交给 multiview 模块渲染 ----
+    // 共享本查看器的 state（viewport + cellPaths）与解码缓存 ensureImage，
+    // 因此格子间同步、切模式保留状态、图片不重复解码都与现有模式一致。
+    area.className = 'viewer-area grid';
+    mountMultiview(area, round, state, state.mode === 'multiview3' ? 3 : 2, ensureImage);
+  } else if (state.mode === 'split') {
     const left = document.createElement('div');
     left.className = 'viewer-pane';
     const right = document.createElement('div');
@@ -272,7 +308,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       scheduleDraw();
     });
   }
-  attachPanZoom(refCanvas);
+  // 多视图模式下画布归 multiview 模块管，这里只给分屏/滑动模式接交互
+  if (refCanvas) attachPanZoom(refCanvas);
   if (candCanvas) attachPanZoom(candCanvas);
 
   // ----- 分割线拖动 -----
@@ -374,6 +411,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     const st = state;
     if (!st || !area.isConnected) return;
     if (st.mode === 'split') {
+      if (!refCanvas || !candCanvas) return; // 多视图模式下没有这两块画布
       const ctxA = prepare(refCanvas);
       const ctxB = candCanvas ? prepare(candCanvas) : null;
       if (!ctxA || !ctxB) return;
