@@ -18,6 +18,8 @@ pub enum CoreError {
         reference: (u32, u32),
         distorted: (u32, u32),
     },
+    /// 感知指标无法计算：图片尺寸低于指标的最小要求，或指标库内部报错。
+    Metric { message: String },
 }
 
 impl fmt::Display for CoreError {
@@ -36,6 +38,9 @@ impl fmt::Display for CoreError {
                 "原图与跑分图尺寸不一致：原图 {}x{}，跑分图 {}x{}。跑分图必须与原图同尺寸（被缩放或裁剪过的图无法按像素对比）。",
                 reference.0, reference.1, distorted.0, distorted.1
             ),
+            CoreError::Metric { message } => {
+                write!(f, "无法计算感知指标：{message}")
+            }
         }
     }
 }
@@ -44,7 +49,9 @@ impl std::error::Error for CoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             CoreError::Io { source, .. } => Some(source),
-            CoreError::Decode { .. } | CoreError::DimensionMismatch { .. } => None,
+            CoreError::Decode { .. }
+            | CoreError::DimensionMismatch { .. }
+            | CoreError::Metric { .. } => None,
         }
     }
 }

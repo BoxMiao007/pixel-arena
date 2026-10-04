@@ -42,12 +42,13 @@ fn score_csv_单张跑分图_输出表头与一行指标_退出码0() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2, "单张跑分图应输出表头加一行，实际：{stdout}");
     assert_eq!(
-        lines[0], "reference,candidate,psnr,ssim,reference_bytes,candidate_bytes,size_ratio",
-        "CSV 表头字段名固定，下游 T04/T13 以此为准"
+        lines[0],
+        "reference,candidate,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,reference_bytes,candidate_bytes,size_ratio",
+        "CSV 表头字段名固定：T03 的 7 列之后追加三个感知指标列，下游 T13 以此为准"
     );
 
     let fields: Vec<&str> = lines[1].split(',').collect();
-    assert_eq!(fields.len(), 7, "每行 7 列，实际：{}", lines[1]);
+    assert_eq!(fields.len(), 10, "每行 10 列，实际：{}", lines[1]);
     assert_eq!(fields[0], reference.to_str().unwrap(), "reference 列应原样回显传入路径");
     assert_eq!(fields[1], candidate.to_str().unwrap(), "candidate 列应原样回显传入路径");
 
@@ -61,18 +62,33 @@ fn score_csv_单张跑分图_输出表头与一行指标_退出码0() {
         (0.0..=1.0).contains(&ssim),
         "SSIM 应在 [0, 1]，实际 {ssim}"
     );
+    let ms_ssim: f64 = fields[4].parse().unwrap_or_else(|_| panic!("ms_ssim 列应是数字，实际 {}", fields[4]));
+    assert!(
+        (0.0..=1.0).contains(&ms_ssim) && ms_ssim >= ssim - 1e-6,
+        "MS-SSIM 应在 [0, 1] 且不低于单尺度 SSIM（多尺度对平滑失真更宽容），实际 {ms_ssim}"
+    );
+    let butteraugli: f64 = fields[5].parse().unwrap_or_else(|_| panic!("butteraugli 列应是数字，实际 {}", fields[5]));
+    assert!(
+        butteraugli.is_finite() && butteraugli > 0.0,
+        "Butteraugli 距离分应为有限正值（0 = 相同），实际 {butteraugli}"
+    );
+    let ssimulacra2: f64 = fields[6].parse().unwrap_or_else(|_| panic!("ssimulacra2 列应是数字，实际 {}", fields[6]));
+    assert!(
+        ssimulacra2.is_finite() && ssimulacra2 > 0.0 && ssimulacra2 < 100.0,
+        "有损跑分图的 SSIMULACRA2 应为有限正值且小于 100（100 = 相同），实际 {ssimulacra2}"
+    );
 
     assert_eq!(
-        fields[4].parse::<u64>().unwrap(),
+        fields[7].parse::<u64>().unwrap(),
         reference_bytes,
         "reference_bytes 应等于原图文件字节数"
     );
     assert_eq!(
-        fields[5].parse::<u64>().unwrap(),
+        fields[8].parse::<u64>().unwrap(),
         candidate_bytes,
         "candidate_bytes 应等于跑分图文件字节数"
     );
-    let size_ratio: f64 = fields[6].parse().unwrap_or_else(|_| panic!("size_ratio 列应是数字，实际 {}", fields[6]));
+    let size_ratio: f64 = fields[9].parse().unwrap_or_else(|_| panic!("size_ratio 列应是数字，实际 {}", fields[9]));
     let expected_ratio = candidate_bytes as f64 / reference_bytes as f64;
     assert!(
         (size_ratio - expected_ratio).abs() < 1e-6,
@@ -172,6 +188,18 @@ fn score_json_输出可解析_字段与_csv_同名单张退出码0() {
     assert!(psnr.is_finite() && psnr > 0.0 && psnr < 100.0, "实际 {psnr}");
     let ssim = row["ssim"].as_f64().expect("ssim 字段应是数字");
     assert!((0.0..=1.0).contains(&ssim), "SSIM 应在 [0, 1]，实际 {ssim}");
+    let ms_ssim = row["ms_ssim"].as_f64().expect("ms_ssim 字段应是数字");
+    assert!((0.0..=1.0).contains(&ms_ssim), "MS-SSIM 应在 [0, 1]，实际 {ms_ssim}");
+    let butteraugli = row["butteraugli"].as_f64().expect("butteraugli 字段应是数字");
+    assert!(
+        butteraugli.is_finite() && butteraugli > 0.0,
+        "Butteraugli 距离分应为有限正值，实际 {butteraugli}"
+    );
+    let ssimulacra2 = row["ssimulacra2"].as_f64().expect("ssimulacra2 字段应是数字");
+    assert!(
+        ssimulacra2.is_finite() && (0.0..100.0).contains(&ssimulacra2),
+        "有损跑分图的 SSIMULACRA2 应在 [0, 100)，实际 {ssimulacra2}"
+    );
 
     assert_eq!(
         row["reference_bytes"].as_u64(),
@@ -201,7 +229,10 @@ fn score_两图逐像素一致时psnr在csv与json中都表示为inf() {
     let fields: Vec<&str> = stdout.lines().nth(1).unwrap().split(',').collect();
     assert_eq!(fields[2], "inf", "同一张图 CSV 的 psnr 列应为 \"inf\"，实际：{stdout}");
     assert_eq!(fields[3], "1.000000", "同一张图 SSIM 应为 1，实际：{stdout}");
-    assert_eq!(fields[6], "1.000000", "同一张图体积比应为 1，实际：{stdout}");
+    assert_eq!(fields[4], "1.000000", "同一张图 MS-SSIM 应为 1，实际：{stdout}");
+    assert_eq!(fields[5], "0.000000", "同一张图 Butteraugli 应为 0（距离分），实际：{stdout}");
+    assert_eq!(fields[6], "100.000000", "同一张图 SSIMULACRA2 应为 100（质量分），实际：{stdout}");
+    assert_eq!(fields[9], "1.000000", "同一张图体积比应为 1，实际：{stdout}");
 
     let json_output = Command::cargo_bin("pixel-arena-cli")
         .unwrap()
@@ -224,6 +255,9 @@ fn score_两图逐像素一致时psnr在csv与json中都表示为inf() {
         "同一张图 JSON 的 psnr 字段应为字符串 \"inf\""
     );
     assert_eq!(parsed[0]["ssim"], serde_json::json!(1.0));
+    assert_eq!(parsed[0]["ms_ssim"], serde_json::json!(1.0));
+    assert_eq!(parsed[0]["butteraugli"], serde_json::json!(0.0));
+    assert_eq!(parsed[0]["ssimulacra2"], serde_json::json!(100.0));
 }
 
 #[test]

@@ -48,6 +48,9 @@ struct ScoreRow {
     candidate: String,
     psnr: f64,
     ssim: f64,
+    ms_ssim: f64,
+    butteraugli: f64,
+    ssimulacra2: f64,
     reference_bytes: u64,
     candidate_bytes: u64,
     size_ratio: f64,
@@ -98,6 +101,9 @@ fn run_score(reference: &Path, candidates: &[PathBuf], format: OutputFormat) -> 
             candidate: candidate.display().to_string(),
             psnr: metrics.psnr,
             ssim: metrics.ssim,
+            ms_ssim: metrics.ms_ssim,
+            butteraugli: metrics.butteraugli,
+            ssimulacra2: metrics.ssimulacra2,
             reference_bytes,
             candidate_bytes,
             size_ratio: candidate_bytes as f64 / reference_bytes as f64,
@@ -118,14 +124,19 @@ fn fail(error: &CoreError) -> ExitCode {
 }
 
 fn write_csv(rows: &[ScoreRow]) {
-    println!("reference,candidate,psnr,ssim,reference_bytes,candidate_bytes,size_ratio");
+    println!(
+        "reference,candidate,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,reference_bytes,candidate_bytes,size_ratio"
+    );
     for row in rows {
         println!(
-            "{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{}",
             csv_field(&row.reference),
             csv_field(&row.candidate),
             metric_text(row.psnr),
             metric_text(row.ssim),
+            metric_text(row.ms_ssim),
+            metric_text(row.butteraugli),
+            metric_text(row.ssimulacra2),
             row.reference_bytes,
             row.candidate_bytes,
             metric_text(row.size_ratio),
@@ -133,8 +144,9 @@ fn write_csv(rows: &[ScoreRow]) {
     }
 }
 
-/// JSON 输出：字段名与 CSV 表头一致。PSNR 无穷大时写为字符串 "inf"
-/// （serde_json 无法序列化无穷大，统一哨兵见 metric_text），其余为数字、全精度。
+/// JSON 输出：字段名与 CSV 表头一致。指标为无穷大时写为字符串 "inf"、
+/// NaN 时写为 "nan"（serde_json 无法序列化非有限数，统一哨兵见 metric_text），
+/// 其余为数字、全精度。
 fn write_json(rows: &[ScoreRow]) {
     let items: Vec<serde_json::Value> = rows
         .iter()
@@ -144,6 +156,9 @@ fn write_json(rows: &[ScoreRow]) {
                 "candidate": row.candidate,
                 "psnr": metric_value(row.psnr),
                 "ssim": metric_value(row.ssim),
+                "ms_ssim": metric_value(row.ms_ssim),
+                "butteraugli": metric_value(row.butteraugli),
+                "ssimulacra2": metric_value(row.ssimulacra2),
                 "reference_bytes": row.reference_bytes,
                 "candidate_bytes": row.candidate_bytes,
                 "size_ratio": metric_value(row.size_ratio),
@@ -157,9 +172,11 @@ fn write_json(rows: &[ScoreRow]) {
     );
 }
 
-/// 单个指标值转 JSON：无穷大写作字符串 "inf"，其余为数字。
+/// 单个指标值转 JSON：无穷大写作字符串 "inf"，NaN 写作 "nan"，其余为数字。
 fn metric_value(value: f64) -> serde_json::Value {
-    if value.is_infinite() {
+    if value.is_nan() {
+        serde_json::json!("nan")
+    } else if value.is_infinite() {
         serde_json::json!("inf")
     } else {
         serde_json::json!(value)
@@ -175,10 +192,13 @@ fn csv_field(value: &str) -> String {
     }
 }
 
-/// 指标数值的文本表示：无穷大（两图逐像素一致时 PSNR）写作 "inf"，
-/// 其余定点 6 位小数。该哨兵是 CSV 与 JSON 的统一约定。
+/// 指标数值的文本表示：无穷大（两图逐像素一致时 PSNR）写作 "inf"，NaN 写作
+/// "nan"（防 serde_json 静默变 null 的同类问题），其余定点 6 位小数。
+/// 该哨兵是 CSV 与 JSON 的统一约定。
 fn metric_text(value: f64) -> String {
-    if value.is_infinite() {
+    if value.is_nan() {
+        "nan".to_string()
+    } else if value.is_infinite() {
         "inf".to_string()
     } else {
         format!("{value:.6}")
