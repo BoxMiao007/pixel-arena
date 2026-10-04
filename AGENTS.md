@@ -57,3 +57,7 @@ Issue 记在 GitHub Issues(远程仓库 BoxMiao007/pixel-arena 已创建),用 `g
 ### Domain docs
 
 单上下文布局:根目录 `GLOSSARY.md` + `docs/adr/`。See `docs/agents/domain.md`.
+
+### Tauri v2 开发
+
+GUI 技术栈为 Tauri 2(见 `docs/adr/0001-tauri-rust-core.md`)。凡涉及 `src-tauri/`、`tauri.conf.json`、IPC 命令、capabilities 权限、sidecar 外部程序或桌面打包的改动,先加载 `tauri-v2` skill(`.agents/skills/tauri-v2`),按其模式与排错清单操作;skill 中的移动端部分与本仓库无关(仅做桌面三端)。

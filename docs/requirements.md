@@ -43,13 +43,13 @@
 
 ## 里程碑
 
-- **M0 技术栈落地**：Tauri 骨架在 WSL 启动真实桌面窗口（截图验收）；验证门命令与依赖安装命令实测后回填 `AGENTS.md` / README。
+- **M0 技术栈落地**：Tauri 骨架在 WSL 启动真实桌面窗口（截图验收），骨架按 `.agents/skills/tauri-v2` 的 Quick Start 与项目结构约定搭建（lib.rs/main.rs 拆分、capabilities/default.json、generate_handler! 注册）；验证门命令与依赖安装命令实测后回填 `AGENTS.md` / README。
 - **M1 核心库 + CLI（图片外部导入）**：解码、图片指标、`score` 子命令出指标表（示例图验收）。
-- **M2 GUI 最小可用**：跑分组/轮次管理、选图、触发跑分、左右分屏与滑动对比、结果表、跑分组自动保存。
+- **M2 GUI 最小可用**：跑分组/轮次管理、选图、触发跑分、左右分屏与滑动对比、结果表、跑分组自动保存（IPC 用 invoke/事件/Channel，文件选择用 dialog/fs 插件并配 capabilities 权限——模式见 tauri-v2 skill）。
 - **M3 查看器全模式**：多视图 2×2/3×3、叠加、差异图、闪烁切换。
-- **M4 一站式图片**：编码阶梯（含无损组）自动生成并跑分、BD-rate、导出报告。
+- **M4 一站式图片**：编码阶梯（含无损组）自动生成并跑分、BD-rate、导出报告（编码器分发评估 sidecar/externalBin 机制——tauri-v2 skill 的 advanced-runtime 参考；同样适用于 M5 的 ffmpeg）。
 - **M5 视频外部导入**：VMAF 接入（ffmpeg/libvmaf；Windows 侧依赖打包方案届时记入 `docs/decisions.md`）、逐帧同步对比、视频跑分结果。
-- **M6 三端打包**：GitHub Actions 产物，Windows 双击即用。
+- **M6 三端打包**：GitHub Actions 产物，Windows 双击即用（bundle 配置与签名约束按 tauri-v2 skill 的 updater/distribution 参考）。
 - **路线图（第二版起）**：视频一站式（编码器阶梯 + BD-rate）、连续同步播放对比、跨轮汇总排名。
 
 ## 拍板记录（2026-10-04）
