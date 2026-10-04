@@ -6,6 +6,7 @@
 // 新字段一律加 #[serde(default)]，保证旧文件仍能加载；本文件不预写用不到的字段。
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 /// JSON 文件格式版本。结构性变更时递增，并在这里写迁移逻辑。
@@ -38,12 +39,106 @@ pub struct Group {
     pub active_round_id: Option<String>,
 }
 
-/// 评测轮：跑分组内的一次评测。T05 只建模名称，原图/跑分图/结果由 T06 起补字段。
+/// 评测轮：跑分组内的一次评测（一张原图 + 若干张跑分图）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Round {
     pub id: String,
     pub name: String,
+    /// 原图路径（画质与压缩的基准）。尚未选图时为 None。
+    #[serde(default)]
+    pub reference_path: Option<String>,
+    /// 跑分图列表，含各自的跑分结果。
+    #[serde(default)]
+    pub candidates: Vec<CandidateImage>,
+}
+
+/// 评测轮内容里的一张跑分图及其跑分结果。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateImage {
+    /// 跑分图文件路径（绝对路径）。
+    pub path: String,
+    /// 文件大小（字节），选入时从磁盘读取。
+    pub file_size: u64,
+    /// 相对原图的体积比（跑分图大小 / 原图大小）。未选原图前未知。
+    #[serde(default)]
+    pub size_ratio: Option<f64>,
+    /// 跑分结果：指标名 → 值。结果表的指标列由这里的键驱动，
+    /// T04 新增指标（MS-SSIM / Butteraugli / SSIMULACRA2）时结果表自动多列。
+    /// 未跑分或跑分失败时为 None。
+    #[serde(default)]
+    pub metrics: Option<BTreeMap<String, MetricValue>>,
+    /// 跑分失败原因（中文，可直接展示）。成功或未跑分时为 None。
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// 单个指标值：有限数值，或无穷大（两图逐像素完全一致时 PSNR 的情形）。
+///
+/// JSON 数字表达不了无穷大，且 serde_json 会把非有限浮点写成 null（读不回来），
+/// 所以无穷大以字符串 `"inf"` 哨兵持久化；其余字符串是坏数据，反序列化直接报错。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MetricValue {
+    Number(f64),
+    Inf,
+}
+
+impl MetricValue {
+    /// 从 f64 构造：无穷大自动落为 [`MetricValue::Inf`] 哨兵。
+    pub fn new(value: f64) -> Self {
+        if value.is_infinite() {
+            MetricValue::Inf
+        } else {
+            MetricValue::Number(value)
+        }
+    }
+
+    /// 数值形式（Inf 即 f64::INFINITY），排序与格式化用。
+    pub fn value(&self) -> f64 {
+        match self {
+            MetricValue::Number(v) => *v,
+            MetricValue::Inf => f64::INFINITY,
+        }
+    }
+}
+
+impl Serialize for MetricValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            MetricValue::Number(v) => serializer.serialize_f64(*v),
+            MetricValue::Inf => serializer.serialize_str("inf"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MetricValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = MetricValue;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("指标数值或 \"inf\" 哨兵")
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(MetricValue::new(v))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(MetricValue::Number(v as f64))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(MetricValue::Number(v as f64))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v == "inf" {
+                    Ok(MetricValue::Inf)
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(v), &self))
+                }
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -52,6 +147,10 @@ pub enum WorkspaceError {
     GroupNotFound(String),
     #[error("评测轮不存在: {0}")]
     RoundNotFound(String),
+    #[error("跑分图不存在: {0}")]
+    CandidateNotFound(String),
+    #[error("尚未选择原图，无法跑分")]
+    ReferenceNotSet,
     #[error("名称不能为空")]
     BlankName,
     #[error("JSON 解析失败: {0}")]
@@ -94,6 +193,124 @@ impl Workspace {
             .iter_mut()
             .find(|g| g.id == group_id)
             .ok_or_else(|| WorkspaceError::GroupNotFound(group_id.to_string()))
+    }
+
+    /// 取组内的评测轮，组或轮找不到时返回错误。
+    fn round_mut(&mut self, group_id: &str, round_id: &str) -> Result<&mut Round, WorkspaceError> {
+        self.group_mut(group_id)?
+            .rounds
+            .iter_mut()
+            .find(|r| r.id == round_id)
+            .ok_or_else(|| WorkspaceError::RoundNotFound(round_id.to_string()))
+    }
+
+    /// 选入原图（外部导入模式：从文件对话框选一张基准图，可重复选换图）。
+    ///
+    /// 换原图时旧跑分结果都是相对旧原图算的，连同体积比、失败原因一起作废；
+    /// 已在列表里的跑分图按新原图重算体积比。原图文件必须存在（fail-fast）。
+    pub fn set_round_reference(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        path: &str,
+    ) -> Result<(), WorkspaceError> {
+        let path = path.trim();
+        let reference_size = std::fs::metadata(path)?.len();
+
+        let round = self.round_mut(group_id, round_id)?;
+        round.reference_path = Some(path.to_string());
+        for candidate in &mut round.candidates {
+            candidate.metrics = None;
+            candidate.error = None;
+            candidate.size_ratio = Some(candidate.file_size as f64 / reference_size as f64);
+        }
+        Ok(())
+    }
+
+    /// 把若干张跑分图加入评测轮（外部导入模式的多选）。
+    ///
+    /// 文件大小选入时从磁盘读取；已在列表里的路径跳过（重复选同一张不产生重复行）。
+    /// 任一文件不存在时整批失败、不落半批（fail-fast）。
+    pub fn add_round_candidates(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        paths: &[&str],
+    ) -> Result<(), WorkspaceError> {
+        let round = self.round_mut(group_id, round_id)?;
+        let reference_size = match &round.reference_path {
+            Some(reference) => Some(std::fs::metadata(reference)?.len()),
+            None => None,
+        };
+
+        // 先全部读盘校验，确认无误再改内存
+        let mut fresh: Vec<CandidateImage> = Vec::new();
+        for path in paths {
+            let path = path.trim();
+            let already = round.candidates.iter().any(|c| c.path == path)
+                || fresh.iter().any(|c| c.path == path);
+            if already {
+                continue;
+            }
+            let file_size = std::fs::metadata(path)?.len();
+            fresh.push(CandidateImage {
+                path: path.to_string(),
+                file_size,
+                size_ratio: reference_size.map(|r| file_size as f64 / r as f64),
+                metrics: None,
+                error: None,
+            });
+        }
+        round.candidates.extend(fresh);
+        Ok(())
+    }
+
+    /// 对一张跑分图跑分（计算相对原图的质量指标），结果写回该跑分图所在行。
+    ///
+    /// 单张失败（打不开、解不了码、尺寸不一致）不让整轮失败：中文原因写进行内
+    /// 的 error 字段，由界面标「失败」；只有找不到组/轮/跑分图或没选原图才返回错误。
+    pub fn score_round_candidate(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        candidate_path: &str,
+    ) -> Result<(), WorkspaceError> {
+        // 先只读定位，确认前置条件都成立（错误先于任何内存变更抛出）
+        let reference_path = {
+            let round = self.round_mut(group_id, round_id)?;
+            let reference = round
+                .reference_path
+                .clone()
+                .ok_or(WorkspaceError::ReferenceNotSet)?;
+            if !round.candidates.iter().any(|c| c.path == candidate_path) {
+                return Err(WorkspaceError::CandidateNotFound(candidate_path.to_string()));
+            }
+            reference
+        };
+
+        // 跑分可能耗时（大图 SSIM 秒级），不持有工作区借用
+        let result = crate::metrics::score_images(&reference_path, candidate_path);
+
+        let candidate = self
+            .round_mut(group_id, round_id)?
+            .candidates
+            .iter_mut()
+            .find(|c| c.path == candidate_path)
+            .expect("上面刚确认过跑分图在列表里");
+        match result {
+            Ok(metrics) => {
+                candidate.metrics = Some(BTreeMap::from([
+                    ("PSNR".to_string(), MetricValue::new(metrics.psnr)),
+                    ("SSIM".to_string(), MetricValue::new(metrics.ssim)),
+                ]));
+                candidate.error = None;
+            }
+            Err(err) => {
+                candidate.metrics = None;
+                candidate.error = Some(err.to_string());
+            }
+        }
+        Ok(())
     }
 
     /// 重命名跑分组。名称首尾空白会被去除。
@@ -149,6 +366,8 @@ impl Workspace {
         let round = Round {
             id: new_id("r"),
             name: name.to_string(),
+            reference_path: None,
+            candidates: Vec::new(),
         };
         group.active_round_id = Some(round.id.clone());
         group.rounds.push(round);
@@ -474,6 +693,232 @@ mod tests {
         let ws = Workspace::from_json(minimal).unwrap();
         assert_eq!(ws.active_group_id, None);
         assert_eq!(ws.groups[0].active_round_id, None);
+    }
+
+    // ---------- T06：评测轮内容（原图 / 跑分图 / 指标结果） ----------
+
+    #[test]
+    fn new_round_has_no_reference_and_no_candidates() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("人像测试").unwrap().id.clone();
+        let r = ws.create_round(&g, "评测轮 1").unwrap().id.clone();
+        let round = &ws.groups[0].rounds[0];
+        assert_eq!(round.id, r);
+        assert_eq!(round.reference_path, None);
+        assert!(round.candidates.is_empty());
+    }
+
+    #[test]
+    fn t05_json_without_round_content_still_loads() {
+        // T05 时期的 workspace.json：评测轮只有 id/name，加载后内容字段为空
+        let old = r#"{
+            "formatVersion": 1,
+            "groups": [{"id": "g-1", "name": "组", "rounds": [{"id": "r-1", "name": "轮"}]}]
+        }"#;
+        let ws = Workspace::from_json(old).unwrap();
+        let round = &ws.groups[0].rounds[0];
+        assert_eq!(round.reference_path, None);
+        assert!(round.candidates.is_empty());
+    }
+
+    #[test]
+    fn round_content_json_roundtrip() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        let round = &mut ws.groups[0].rounds[0];
+        round.reference_path = Some("/tmp/photo-ref.png".to_string());
+        round.candidates.push(CandidateImage {
+            path: "/tmp/photo-dis.jpg".to_string(),
+            file_size: 17341,
+            size_ratio: Some(0.1364),
+            metrics: Some(BTreeMap::from([
+                ("PSNR".to_string(), MetricValue::Number(27.5)),
+                ("SSIM".to_string(), MetricValue::Inf),
+            ])),
+            error: None,
+        });
+        let restored = Workspace::from_json(&ws.to_json()).unwrap();
+        let round = &restored.groups[0].rounds[0];
+        assert_eq!(round.reference_path.as_deref(), Some("/tmp/photo-ref.png"));
+        assert_eq!(round.candidates.len(), 1);
+        let candidate = &round.candidates[0];
+        assert_eq!(candidate.path, "/tmp/photo-dis.jpg");
+        assert_eq!(candidate.file_size, 17341);
+        assert_eq!(candidate.size_ratio, Some(0.1364));
+        let metrics = candidate.metrics.as_ref().unwrap();
+        assert_eq!(metrics["PSNR"], MetricValue::Number(27.5));
+        // 无穷大指标经 JSON 持久化后仍是无穷大（serde_json 把非有限浮点写成 null，读不回来）
+        assert_eq!(metrics["SSIM"], MetricValue::Inf);
+        assert_eq!(metrics["SSIM"].value(), f64::INFINITY);
+        assert_eq!(candidate.error, None);
+    }
+
+    #[test]
+    fn metric_value_rejects_garbage_string() {
+        // 指标值里的字符串只接受 "inf" 哨兵，其他字符串是坏数据，拒绝加载
+        let bad = r#"{"metrics": {"PSNR": "不是数字"}}"#;
+        assert!(serde_json::from_str::<CandidateImage>(bad).is_err());
+    }
+
+    #[test]
+    fn metric_value_new_maps_infinity_to_inf_sentinel() {
+        assert_eq!(MetricValue::new(f64::INFINITY), MetricValue::Inf);
+        assert_eq!(MetricValue::new(0.5), MetricValue::Number(0.5));
+    }
+
+    // ---------- T06：选图与跑分（公共 API 缝，用黄金基准样例图） ----------
+
+    fn data(name: &str) -> String {
+        format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn set_round_reference_stores_path_and_computes_ratios() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        // 先选跑分图（还没有原图，体积比未知），再补选原图 → 比重算出来
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")])
+            .unwrap();
+        assert_eq!(ws.groups[0].rounds[0].candidates[0].size_ratio, None);
+
+        ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
+        let round = &ws.groups[0].rounds[0];
+        assert_eq!(
+            round.reference_path.as_deref(),
+            Some(data("photo-ref.png").as_str())
+        );
+        // photo-dis.jpg 17341 字节 / photo-ref.png 127123 字节 ≈ 0.1364
+        let ratio = round.candidates[0].size_ratio.expect("选完原图应有体积比");
+        assert!((ratio - 17341.0 / 127123.0).abs() < 1e-12);
+        // 不存在的原图路径 fail-fast
+        assert!(ws
+            .set_round_reference(&g, &r, "/不存在/的/图.png")
+            .is_err());
+    }
+
+    #[test]
+    fn add_candidates_reads_file_sizes_and_dedupes() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg"), &data("photo-dis.webp")])
+            .unwrap();
+        let candidates = &ws.groups[0].rounds[0].candidates;
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].path, data("photo-dis.jpg"));
+        assert_eq!(candidates[0].file_size, 17341);
+        assert_eq!(candidates[1].file_size, 14532);
+        // 同一批内与跨批次的重复路径都跳过
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg"), &data("photo-dis.jpg")])
+            .unwrap();
+        assert_eq!(ws.groups[0].rounds[0].candidates.len(), 2);
+        // 不存在的文件 fail-fast，不落半批
+        assert!(ws.add_round_candidates(&g, &r, &["/不存在.png"]).is_err());
+        assert_eq!(ws.groups[0].rounds[0].candidates.len(), 2);
+    }
+
+    #[test]
+    fn reselecting_reference_invalidates_old_results() {
+        // 换原图后旧指标都是相对旧原图算的，作废；体积比不依赖画质，按新原图重算
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")]).unwrap();
+        ws.score_round_candidate(&g, &r, &data("photo-dis.jpg")).unwrap();
+        assert!(ws.groups[0].rounds[0].candidates[0].metrics.is_some());
+
+        ws.set_round_reference(&g, &r, &data("gradient-ref.png")).unwrap();
+        let candidate = &ws.groups[0].rounds[0].candidates[0];
+        assert_eq!(candidate.metrics, None);
+        assert_eq!(candidate.error, None);
+        // photo-dis.jpg 17341 字节 / gradient-ref.png 332 字节
+        let ratio = candidate.size_ratio.expect("体积比应按新原图重算");
+        assert!((ratio - 17341.0 / 332.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn score_round_candidate_stores_metrics_for_each_row() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
+        ws.add_round_candidates(
+            &g,
+            &r,
+            &[&data("photo-dis.png"), &data("photo-dis.webp"), &data("photo-ref.png")],
+        )
+        .unwrap();
+
+        ws.score_round_candidate(&g, &r, &data("photo-dis.png")).unwrap();
+        // 只有被跑分的那张有结果，另一张仍是未跑分
+        let candidates = &ws.groups[0].rounds[0].candidates;
+        let metrics = candidates[0].metrics.as_ref().expect("跑分后应有指标");
+        assert_eq!(candidates[0].error, None);
+        assert_eq!(metrics.keys().collect::<Vec<_>>(), vec!["PSNR", "SSIM"]);
+        // 独立锚点：T02 交叉验证记录的自然图像中段 SSIM ≈ 0.52（photo-ref vs photo-dis.png）
+        let ssim = metrics["SSIM"].value();
+        assert!((0.4..=0.65).contains(&ssim), "SSIM 应在中段，实际 {ssim}");
+        assert!(candidates[1].metrics.is_none());
+
+        // 逐像素相同的图 → PSNR 无穷大，走 "inf" 哨兵
+        ws.score_round_candidate(&g, &r, &data("photo-ref.png")).unwrap();
+        assert!(ws.groups[0].rounds[0].candidates.contains(&CandidateImage {
+            path: data("photo-ref.png"),
+            file_size: 127123,
+            size_ratio: Some(1.0),
+            metrics: Some(BTreeMap::from([
+                ("PSNR".to_string(), MetricValue::Inf),
+                ("SSIM".to_string(), MetricValue::Number(1.0)),
+            ])),
+            error: None,
+        }));
+    }
+
+    #[test]
+    fn score_round_candidate_failure_marks_row_and_keeps_going() {
+        // 尺寸不一致（128px vs 256px）：命令不报错，失败原因写进行里
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_reference(&g, &r, &data("gradient-ref.png")).unwrap();
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")]).unwrap();
+
+        ws.score_round_candidate(&g, &r, &data("photo-dis.jpg")).unwrap();
+        let candidate = &ws.groups[0].rounds[0].candidates[0];
+        assert_eq!(candidate.metrics, None);
+        let error = candidate.error.as_deref().expect("失败行应有原因");
+        assert!(error.contains("尺寸"), "原因应可定位: {error}");
+    }
+
+    #[test]
+    fn score_round_candidate_reports_missing_prerequisites() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        // 没选原图不能跑分
+        assert!(matches!(
+            ws.score_round_candidate(&g, &r, &data("photo-dis.jpg")),
+            Err(WorkspaceError::ReferenceNotSet)
+        ));
+        ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
+        // 跑分图不在列表里
+        assert!(matches!(
+            ws.score_round_candidate(&g, &r, &data("photo-dis.jpg")),
+            Err(WorkspaceError::CandidateNotFound(_))
+        ));
+        // 组/轮不存在
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")]).unwrap();
+        assert!(matches!(
+            ws.score_round_candidate("不存在", &r, &data("photo-dis.jpg")),
+            Err(WorkspaceError::GroupNotFound(_))
+        ));
+        assert!(matches!(
+            ws.score_round_candidate(&g, "不存在", &data("photo-dis.jpg")),
+            Err(WorkspaceError::RoundNotFound(_))
+        ));
     }
 
     #[test]

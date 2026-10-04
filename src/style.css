@@ -165,3 +165,103 @@ body {
 .content-placeholder {
   margin: 0;
 }
+
+/* 评测轮就位后的工作布局：操作区在上、结果表在下，左对齐 */
+.content.filled {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: stretch;
+  justify-content: flex-start;
+  text-align: left;
+  overflow: auto;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.toolbar .reference-label {
+  color: #9aa0a6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.score-btn {
+  border-color: #8ab4f8;
+  color: #8ab4f8;
+}
+
+.score-btn:disabled {
+  border-color: #2a2d33;
+  color: #9aa0a6;
+}
+
+/* ---------- 跑分结果表 ---------- */
+
+.result-table {
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-table th,
+.result-table td {
+  border-bottom: 1px solid #2a2d33;
+  padding: 0.3rem 0.75rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.result-table th {
+  color: #9aa0a6;
+  font-weight: normal;
+}
+
+.result-table th .sort-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0.15rem 0.3rem;
+  border-radius: 6px;
+}
+
+.result-table th .sort-btn:hover {
+  background: #1d2127;
+  color: #8ab4f8;
+}
+
+.result-table .rank {
+  color: #9aa0a6;
+}
+
+.result-table .cell-name {
+  text-align: left;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-table .cell-status {
+  max-width: 24rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-fail {
+  color: #f28b82;
+}
+
+.status-running {
+  color: #8ab4f8;
+}
+
+.status-pending {
+  color: #9aa0a6;
+}
