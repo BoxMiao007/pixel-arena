@@ -7,9 +7,24 @@
   </head>
   <body>
     <main class="shell">
-      <h1>像素竞技场</h1>
-      <p>多标签页编码评测工作台 · T01 技术栈骨架</p>
-      <p id="core-version" class="version">正在通过 IPC 读取核心库版本…</p>
+      <header class="titlebar">
+        <h1>像素竞技场</h1>
+        <span id="core-version" class="muted">正在读取核心库版本…</span>
+        <span id="status" class="status" role="status"></span>
+      </header>
+
+      <nav class="tabbar" aria-label="跑分组标签页">
+        <div id="tabs" class="tabs"></div>
+        <button id="add-group" class="add-btn" title="新建跑分组">＋ 新建跑分组</button>
+      </nav>
+
+      <nav class="roundbar" aria-label="评测轮">
+        <span class="roundbar-label">评测轮</span>
+        <div id="rounds" class="rounds"></div>
+        <button id="add-round" class="add-btn" title="新建评测轮">＋ 新建评测轮</button>
+      </nav>
+
+      <section id="content" class="content"></section>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

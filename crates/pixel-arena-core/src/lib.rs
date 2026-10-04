@@ -2,6 +2,8 @@
 // T01 范围：只提供版本号查询，打通「核心库 -> GUI / CLI」的最小通路；
 // 解码、指标、编码编排等能力按后续票逐个加入，不预写。
 
+pub mod workspace;
+
 /// 核心库版本号，与 Cargo.toml 的 package.version 保持一致。
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
