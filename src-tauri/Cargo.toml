@@ -1,0 +1,17 @@
+[package]
+name = "pixel-arena"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "像素竞技场桌面应用（Tauri 壳）"
+
+[lib]
+name = "pixel_arena_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+pixel-arena-core = { path = "../crates/pixel-arena-core" }

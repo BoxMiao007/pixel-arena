@@ -1,0 +1,9 @@
+[package]
+name = "pixel-arena-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "像素竞技场命令行入口：一行命令批量跑分（score 子命令在 T03 实现）"
+
+[dependencies]
+pixel-arena-core = { path = "../pixel-arena-core" }
