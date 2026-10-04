@@ -51,3 +51,10 @@
 - 决策：MS-SSIM 在核心库自研（与现有 SSIM 共用 11x11 高斯窗机制，Wang 2003/2004 五层下采样标准流程，权重 [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]，三通道各自合成后平均，负项按 0 截断）；Butteraugli 用 `butteraugli` 0.9.3（imazen 维护，libjxl C++ 原版的纯 Rust 移植，自带 10.9k 行 C++ 对照回归表，本机全量通过）；SSIMULACRA2 用 `ssimulacra2` 0.5.1（rust-av 组织维护，官方测试 tank 样例期望值 ±0.25 本机复现）。输出口径：Butteraugli 输出原始距离分（0 = 完全一致，约 1.0 = 刚好可察觉），SSIMULACRA2 输出原始质量分（100 = 完全一致），都不做 DSSIM 之类变换，保持各指标社区通用口径。
 - 为什么：三个指标是感知质量评价的事实标准；`butteraugli` crate 维护活跃（2026-05 仍在发版、52k 下载）且把 C++ 原版对照值带进测试，可信度最高；`ssimulacra2` 是 Rust 生态事实上的唯一活跃移植（av1an 生态在用）。两个 crate 均纯 Rust、无系统依赖，保住三端编译。MS-SSIM 无可信 crate，公式约百行且复用已交叉验证的 SSIM 机制，与 numpy 定义性参照逐位对齐（scripts/msssim_reference.py）。
 - 放弃了：`butteraugli-oxide`（无 stable 版本、下载量低）、`butteraugli-sys`（绑 C++，引入系统依赖）；`ssimulacra2-cuda`（需 GPU）；MS-SSIM 引第三方 crate（无可信维护者）；Butteraugli 转 DSSIM 口径（丢失 JND 可解释性）。
+
+## 0008 · 对比查看器视口状态与 asset protocol 图片加载（已确认）
+
+- 日期：2026-10-04
+- 决策：查看器的缩放/平移收敛为纯 TS 模块 `src/viewport.ts` 的「视口状态」{centerX, centerY, zoom}（图片坐标系，窗格尺寸只作换算参数），提供 fit / 光标锚点缩放 / 平移 / 图片↔屏幕换算 / 可见区域裁剪，全部纯函数，由 vitest 前端单测守护（`npm test`）；左右分屏与滑动对比共享同一份视口状态。图片经 asset protocol（convertFileSrc）交给 WebView 原生解码：tauri.conf.json 开启 `assetProtocol` 且 scope 放行全部路径，tauri crate 增加 `protocol-asset` feature，capabilities 无需新增权限。
+- 为什么：视口用图片坐标描述，N 个尺寸不同的窗格可共用同一份状态，是 T08 多视图、叠加与视频逐帧对比的天然底座；asset protocol 免 base64 IPC，大图解码内存与开销最小。scope 放行全部路径：文件对话框本身即用户授权，且 Windows 多盘符无法用 $HOME 等变量穷举，限用户目录会造成任意盘选图「能选不能看」。
+- 放弃了：视口逻辑内嵌在组件渲染里（不可单测、难扩展）；IPC 回传 base64 图片数据（大图内存翻倍）；离屏 worker 解码（可见区域裁剪绘制在 3000×2000 实测已流畅，出现卡顿再引入）。

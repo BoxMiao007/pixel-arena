@@ -4,6 +4,8 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { mountViewer } from './viewer';
+import { fileName } from './util';
 import './style.css';
 
 // 与核心库 workspace.rs 的 serde 输出（camelCase）一一对应
@@ -352,6 +354,18 @@ function renderContent(): void {
     $content.append(hint);
     return;
   }
+
+  // 对比查看器（T07）：选好原图与跑分图后即可用，跑分与否不影响查看
+  if (round.referencePath) {
+    const viewerBox = document.createElement('div');
+    $content.append(viewerBox);
+    mountViewer(viewerBox, {
+      roundId: round.id,
+      referencePath: round.referencePath,
+      candidates: round.candidates.map((c) => ({ path: c.path })),
+    });
+  }
+
   $content.append(buildResultTable(round.candidates));
 }
 
@@ -369,9 +383,7 @@ function metricKeys(candidates: CandidateImage[]): string[] {
   return keys;
 }
 
-function fileName(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
-}
+// fileName 移到 src/util.ts（查看器模块也要用）
 
 /** 排序取值：缺指标（未跑分/失败）的行返回 null，排序时沉底。 */
 function sortableValue(candidate: CandidateImage, key: string): number | string | null {
