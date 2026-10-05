@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{ipc::Channel, Manager, State};
 
-use pixel_arena_core::workspace::{Group, Round, Workspace, WorkspaceError};
+use pixel_arena_core::workspace::{Group, GroupKind, Round, Workspace, WorkspaceError};
 
 mod ffmpeg_setup;
 mod video_probe;
@@ -93,11 +93,12 @@ fn find_round<'a>(
     Ok((group, round))
 }
 
+/// IPC 命令：新建跑分组（T17 起带类型：kind = "image" | "video"，创建后不可更改，
+/// 组内评测轮的类型随组锁定；workspace_load 的旧文件迁移在核心库 from_json 内完成）。
 #[tauri::command]
-fn group_create(name: String, state: State<AppState>) -> Result<Workspace, String> {
-    mutate(&state, |ws| {
-        ws.create_group(&name).map(|_| ())
-    })
+fn group_create(name: String, kind: String, state: State<AppState>) -> Result<Workspace, String> {
+    let kind = GroupKind::parse(&kind).map_err(|err| err.to_string())?;
+    mutate(&state, |ws| ws.create_group(&name, kind).map(|_| ()))
 }
 
 #[tauri::command]

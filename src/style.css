@@ -113,6 +113,16 @@ body {
   white-space: nowrap;
 }
 
+/* 新建跑分组的类型下拉（T17）：与相邻按钮同外观 */
+.group-kind-select {
+  padding: 0.3rem 0.4rem;
+  border: 1px solid #2a2d33;
+  border-radius: 8px;
+  background: #1d2127;
+  color: #e8eaed;
+  white-space: nowrap;
+}
+
 .add-btn:hover:not(:disabled) {
   border-color: #8ab4f8;
 }
