@@ -123,8 +123,13 @@ function createRound(): void {
 
 // ---------- 选图与跑分（T06） ----------
 
-// 核心库按 image 0.25 开启的 feature 只支持这三种格式
-const IMAGE_FILTER = { name: '图片（PNG / JPEG / WebP）', extensions: ['png', 'jpg', 'jpeg', 'webp'] };
+// 文件对话框可选格式按核心库 decode.rs 实际支持范围开（PNG/JPEG/WebP 走 image crate
+// 进程内解码；JPEG XL 走 jxl-oxide 进程内，AVIF 走 avifdec 子进程——首次一站式生成
+// AVIF 产物时自动安装，外部直接导入 AVIF 时若尚未安装会在跑分时报中文提示）
+const IMAGE_FILTER = {
+  name: '图片（PNG / JPEG / WebP / AVIF / JPEG XL）',
+  extensions: ['png', 'jpg', 'jpeg', 'webp', 'avif', 'jxl'],
+};
 
 function activeRound(): { group: Group; round: Round } | null {
   const group = activeGroup();
