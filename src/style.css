@@ -214,6 +214,42 @@ body {
   color: #9aa0a6;
 }
 
+/* T11 接线点：编码阶梯勾选区（格式 / 质量档 / 无损组），单行排布、随工具栏换行 */
+.onestop-options {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem 0.9rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+  color: #9aa0a6;
+}
+
+.onestop-options .onestop-group-label {
+  margin-left: 0.35rem;
+}
+
+.onestop-options .onestop-group-label:first-child {
+  margin-left: 0;
+}
+
+.onestop-options .onestop-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.onestop-options .onestop-check input {
+  accent-color: #81c995;
+  cursor: pointer;
+}
+
+.onestop-options .onestop-check input:disabled {
+  cursor: not-allowed;
+}
+
 /* ---------- 跑分结果表 ---------- */
 
 .result-table {
