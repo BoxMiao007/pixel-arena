@@ -3,7 +3,7 @@
 // 全链路，覆盖 CSV / HTML 两种格式、错误路径与成功路径。
 // 序列化内容本身由核心库 report 模块的测试守护，这里钉住命令层的行为。
 
-use pixel_arena_core::workspace::{CandidateImage, CandidateVideo, MetricValue, Workspace};
+use pixel_arena_core::workspace::{CandidateImage, CandidateVideo, GroupKind, MetricValue, Workspace};
 use std::collections::BTreeMap;
 
 fn candidate(path: &str, bytes: u64, psnr: Option<f64>) -> CandidateImage {
@@ -51,7 +51,7 @@ fn workspace_with_round() -> (Workspace, String, String) {
     let video_reference = file("ref.mp4");
 
     let mut ws = Workspace::new();
-    let group = ws.create_group("验收组").unwrap().id.clone();
+    let group = ws.create_group("验收组", GroupKind::Image).unwrap().id.clone();
     let round = ws.create_round(&group, "验收轮").unwrap().id.clone();
     ws.set_round_reference(&group, &round, &reference).unwrap();
     let candidate_paths: Vec<String> = ["photo-q60.jpg", "photo-q75.jpg", "photo-q90.jpg", "photo-png.png"]
@@ -89,10 +89,11 @@ fn workspace_with_round() -> (Workspace, String, String) {
         ("PSNR".to_string(), MetricValue::Inf),
         ("SSIM".to_string(), MetricValue::new(1.0)),
     ]));
-    ws.set_round_video_reference(&group, &round, &video_reference).unwrap();
+    // T17 类型锁定后，同一轮不再能经 API 混用图片与视频；本夹具的混用形状对应
+    // 旧工作区迁移后的遗留数据（报告导出仍要兼容它），故视频字段直接构造、不经 API。
     let video_path = file("dis-150k.mp4");
-    ws.add_round_video_candidates(&group, &round, &[&video_path]).unwrap();
-    ws.groups[0].rounds[0].video_candidates[0] = video_candidate(&video_path, 27_050);
+    round_ref.video_reference_path = Some(video_reference);
+    round_ref.video_candidates.push(video_candidate(&video_path, 27_050));
     (ws, group, round)
 }
 

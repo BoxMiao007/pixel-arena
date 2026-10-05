@@ -15,11 +15,16 @@
 
       <nav class="tabbar" aria-label="跑分组标签页">
         <div id="tabs" class="tabs"></div>
+        <!-- T17：新建跑分组先选类型（图片/视频），创建后不可更改 -->
+        <select id="new-group-kind" class="group-kind-select" title="选择新建跑分组的类型（创建后不可更改）">
+          <option value="image">图片跑分组</option>
+          <option value="video">视频跑分组</option>
+        </select>
         <button id="add-group" class="add-btn" title="新建跑分组">＋ 新建跑分组</button>
       </nav>
 
       <nav class="roundbar" aria-label="评测轮">
-        <span class="roundbar-label">评测轮</span>
+        <span id="roundbar-label" class="roundbar-label">评测轮</span>
         <div id="rounds" class="rounds"></div>
         <button id="add-round" class="add-btn" title="新建评测轮">＋ 新建评测轮</button>
       </nav>

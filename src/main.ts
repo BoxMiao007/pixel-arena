@@ -46,9 +46,18 @@ interface Round {
   videoCandidates?: VideoCandidate[];
 }
 
+// T17：跑分组类型（核心库 GroupKind 的 serde 输出），新建时选定、后端无修改入口
+type GroupKind = 'image' | 'video';
+
+/** 类型的界面文案（标签页悬浮提示与评测轮栏用）。 */
+function groupKindLabel(kind: GroupKind): string {
+  return kind === 'video' ? '视频跑分组' : '图片跑分组';
+}
+
 interface Group {
   id: string;
   name: string;
+  kind: GroupKind;
   rounds: Round[];
   activeRoundId: string | null;
 }
@@ -81,6 +90,8 @@ const $rounds = document.querySelector<HTMLDivElement>('#rounds')!;
 const $content = document.querySelector<HTMLElement>('#content')!;
 const $status = document.querySelector<HTMLSpanElement>('#status')!;
 const $addGroup = document.querySelector<HTMLButtonElement>('#add-group')!;
+const $newGroupKind = document.querySelector<HTMLSelectElement>('#new-group-kind')!;
+const $roundbarLabel = document.querySelector<HTMLSpanElement>('#roundbar-label')!;
 const $addRound = document.querySelector<HTMLButtonElement>('#add-round')!;
 
 function activeGroup(): Group | null {
@@ -111,7 +122,9 @@ async function apply(action: () => Promise<Workspace>): Promise<void> {
 
 function createGroup(): void {
   const name = `跑分组 ${ws ? ws.groups.length + 1 : 1}`;
-  void apply(() => invoke('group_create', { name }));
+  // T17：类型随下拉菜单选定（image / video），后端创建后不可更改
+  const kind = $newGroupKind.value as GroupKind;
+  void apply(() => invoke('group_create', { name, kind }));
 }
 
 function createRound(): void {
@@ -529,7 +542,8 @@ function renderTabs(): void {
   for (const group of ws.groups) {
     const tab = document.createElement('div');
     tab.className = 'tab' + (group.id === ws.activeGroupId ? ' active' : '');
-    tab.title = `${group.name}（单击切换，双击重命名）`;
+    // T17：标签页悬浮提示带上类型（图片跑分组/视频跑分组）
+    tab.title = `${group.name}（${groupKindLabel(group.kind)}，单击切换，双击重命名）`;
 
     const label = document.createElement('span');
     label.className = 'tab-name';
@@ -563,6 +577,8 @@ function renderRounds(): void {
   $rounds.replaceChildren();
   const group = activeGroup();
   $addRound.disabled = !group;
+  // T17：评测轮栏标注当前跑分组类型
+  $roundbarLabel.textContent = group ? `评测轮 · ${groupKindLabel(group.kind)}` : '评测轮';
   if (!ws || !group) return;
 
   if (group.rounds.length === 0) {
@@ -624,6 +640,37 @@ function renderContent(): void {
 
   $content.classList.add('filled');
 
+  // T17：跑分组分类型——图片组只有图片流程（无视频导入），视频组只有视频导入与
+  // 逐帧同步对比（无一站式与编码阶梯入口）。类型创建时已锁定，界面没有更改入口。
+  if (session.group.kind === 'video') {
+    renderVideoGroupContent(session);
+  } else {
+    renderImageGroupContent(session);
+  }
+}
+
+/** T17：导出按钮（图片/视频组共用；exportable = 本轮有任何可导出的跑分内容）。 */
+function buildExportButtons(exportable: boolean): HTMLButtonElement[] {
+  const exportCsvBtn = document.createElement('button');
+  exportCsvBtn.className = 'add-btn export-btn';
+  exportCsvBtn.textContent = '导出 CSV';
+  exportCsvBtn.title = '把本轮指标表（含视频与 BD-rate 汇总）导出为 CSV 文件';
+  exportCsvBtn.disabled = scoring || !exportable;
+  exportCsvBtn.addEventListener('click', () => void exportRound('csv'));
+
+  const exportHtmlBtn = document.createElement('button');
+  exportHtmlBtn.className = 'add-btn export-btn';
+  exportHtmlBtn.textContent = '导出 HTML';
+  exportHtmlBtn.title = '把本轮结果生成为可直接分享的自包含 HTML 报告';
+  exportHtmlBtn.disabled = scoring || !exportable;
+  exportHtmlBtn.addEventListener('click', () => void exportRound('html'));
+  return [exportCsvBtn, exportHtmlBtn];
+}
+
+/** 图片跑分组的内容区（T17）：外部导入 + 一站式 + 编码阶梯 + 对比查看器；
+ * 不挂载视频评测区块（视频导入只在视频跑分组出现）。 */
+function renderImageGroupContent(session: { group: Group; round: Round }): void {
+  const { round } = session;
   const toolbar = document.createElement('div');
   toolbar.className = 'toolbar';
 
@@ -675,28 +722,13 @@ function renderContent(): void {
   // T13 接线点：导出评测轮报告（CSV / 自包含 HTML），无任何跑分内容时置灰
   const exportable =
     round.candidates.length > 0 || (round.videoCandidates?.length ?? 0) > 0;
-  const exportCsvBtn = document.createElement('button');
-  exportCsvBtn.className = 'add-btn export-btn';
-  exportCsvBtn.textContent = '导出 CSV';
-  exportCsvBtn.title = '把本轮指标表（含视频与 BD-rate 汇总）导出为 CSV 文件';
-  exportCsvBtn.disabled = scoring || !exportable;
-  exportCsvBtn.addEventListener('click', () => void exportRound('csv'));
-
-  const exportHtmlBtn = document.createElement('button');
-  exportHtmlBtn.className = 'add-btn export-btn';
-  exportHtmlBtn.textContent = '导出 HTML';
-  exportHtmlBtn.title = '把本轮结果生成为可直接分享的自包含 HTML 报告';
-  exportHtmlBtn.disabled = scoring || !exportable;
-  exportHtmlBtn.addEventListener('click', () => void exportRound('html'));
-
   toolbar.append(
     pickReferenceBtn,
     referenceLabel,
     addCandidatesBtn,
     scoreBtn,
     onestopBtn,
-    exportCsvBtn,
-    exportHtmlBtn,
+    ...buildExportButtons(exportable),
   );
   $content.append(toolbar);
   // T11 接线点：格式/质量档/无损组勾选区（有原图才可触发，故仅在已选原图时展示）
@@ -733,8 +765,31 @@ function renderContent(): void {
     $content.append(bdrateBox);
     void fillBdrateSummary(bdrateBox, session.group.id, round.id);
   }
+}
 
-  // T14 接线点：视频评测区块（选原视频/跑分视频/VMAF-PSNR-SSIM），与图片流程互不干扰
+/** 视频跑分组的内容区（T17）：只有视频导入与逐帧同步对比；选择原图/跑分图、
+ * 一站式与编码阶梯入口一概不出现。旧工作区迁移带来的遗留图片评测内容只读展示
+ * （结果表 + BD-rate 汇总），数据保留但不能新增图片内容（后端同样拒绝）。 */
+function renderVideoGroupContent(session: { group: Group; round: Round }): void {
+  const { round } = session;
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'toolbar';
+  const exportable = round.candidates.length > 0 || (round.videoCandidates?.length ?? 0) > 0;
+  toolbar.append(...buildExportButtons(exportable));
+  $content.append(toolbar);
+
+  // 遗留图片评测内容（旧工作区混用时期产生）：只读结果表，不提供图片操作入口
+  if (round.candidates.length > 0) {
+    $content.append(buildResultTable(round.candidates));
+    const bdrateBox = document.createElement('div');
+    bdrateBox.className = 'bdrate-summary';
+    bdrateBox.textContent = 'BD-rate 汇总计算中…';
+    $content.append(bdrateBox);
+    void fillBdrateSummary(bdrateBox, session.group.id, round.id);
+  }
+
+  // 视频评测区块：选原视频 / 添加跑分视频 / 开始视频跑分 / 逐帧同步对比
   const videoBlock = document.createElement('div');
   $content.append(videoBlock);
   mountVideoBlock(videoBlock, {
