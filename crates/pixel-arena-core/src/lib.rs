@@ -4,9 +4,11 @@
 
 mod error;
 mod metrics;
+pub mod video;
 
 pub use error::CoreError;
 pub use metrics::{score_images, ImageMetrics};
+pub use video::{score_videos, VideoError, VideoMetrics};
 
 pub mod encode;
 pub mod workspace;

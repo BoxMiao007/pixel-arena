@@ -65,3 +65,10 @@
 - 决策：一站式模式调用的权威参考编码器不随应用捆绑。首次使用时从版本锁定的 URL 下载 `.tar.gz` 工件，sha256 与清单登记值一致才解包安装到应用数据目录 `tools/<编码器>/<版本>/<可执行文件>`，并在旁边写 `<可执行文件>.sha256`；之后每次使用先校验已装文件，损坏或被改自动重新下载覆盖；下载内容哈希不符即报中文错误且不落盘。三端共用同一套「下载 → 校验 → 解包 → 复用」机制，只差来源清单（EncoderSource：版本 + URL + sha256 + 包内文件名）各平台一条条目；Linux x86_64 的 MozJPEG 4.1.5 条目随 T10 落地，其余平台与编码器的条目由打包票（T16）在 CI 构建并上传 GitHub Release 后补齐。网络受限环境可用 `PIXEL_ARENA_ENCODER_MIRROR` 环境变量把下载主机换成镜像目录（同名工件）。
 - 为什么：MozJPEG 等权威编码器没有跨平台系统包管理器统一来源，apt 无 mozjpeg 包；随应用捆绑会让安装包从约 15MB 涨到数十 MB，且任一平台构建出问题会卡住整个应用发版；首次使用下载把「取编码器」从发版链路里解耦，编码器升级只换清单条目。校验链双锚点：清单 sha256 锚定下载工件（防下载损坏/篡改），安装目录旁路 sha256 锚定已解包文件（启动免下载、防运行期损坏）。机制已在 Linux 端到端实测跑通（下载 → 校验 → 安装 → 编码 → 跑分）。
 - 放弃了：捆绑进安装包（体积大、构建链路耦合，Tauri `externalBin` sidecar 需为三平台分别准备二进制）；运行期用系统包管理器安装（Windows 无统一来源、macOS 需 Homebrew 依赖，都不可控）；npm @imagemin/mozjpeg 包（Node 生态工件，且它是构建期依赖不该进桌面应用运行时）。
+
+## 0010 · 视频跑分经 ffmpeg 子进程 + 静态构建下载到应用数据目录（已确认）
+
+- 日期：2026-10-05
+- 决策：视频指标（VMAF/PSNR/SSIM）统一经外部 ffmpeg 子进程一次算完（`split` 出 libvmaf/psnr/ssim 三个滤镜分支，结果从 stderr 汇总行解析，不落 JSON 日志文件）；ffmpeg 不依赖系统安装，首次使用视频跑分时把锁定版本的静态构建下载到应用数据目录 `tools/` 下，先做全量 sha256 校验再解压（不匹配即删除重下）。Linux 锁定 johnvansickle.com 的 ffmpeg 7.0.2 amd64 static（版本化 URL 固定不变，官方公告 md5 交叉一致，包内含 libvmaf）；Windows 侧同一机制但构建源不同（gyan.dev release-full 或 BtbN win64-gpl，均含 libvmaf），随打包票 T16 定稿并捆绑，本版 Windows 上仅识别手动放入 `tools/` 的 ffmpeg.exe，缺了报中文提示。口径：VMAF 用 libvmaf 默认内嵌模型 vmaf_v0.6.1；视频 SSIM 为 ffmpeg `ssim` 滤镜口径（8x8 均匀窗变体），与图片 SSIM（Wang 2004 标准实现）不可直接比较，已在 GLOSSARY.md 注明；音轨不参与评分。下载的压缩包（约 40MB）不入库，落在应用数据目录。
+- 为什么：系统发行版 ffmpeg 普遍不带 libvmaf（本机 Ubuntu 的 ffmpeg 8.0.1 只有 vmafmotion），动态链接系统 ffmpeg 会让 VMAF 完全不可用；静态构建免依赖、解压即用、跨机器结果可复现；锁定版本 + 双哈希校验（官方 md5 交叉、代码内 sha256）守住供应链；应用数据目录是用户可感知的标准位置，便于排查与手动升级。
+- 放弃了：从源码编译 libvmaf/ffmpeg（构建慢、难复现、三端脚本成本高）；Rust 原生 VMAF 实现（无成熟维护的 crate）；运行时用系统 PATH 上的 ffmpeg（libvmaf 可用性不可控）；把 ffmpeg 直接提交进仓库（体积与许可都不合适，GPL 构建以来源记录文件标明）。

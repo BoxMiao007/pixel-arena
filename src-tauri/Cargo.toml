@@ -17,3 +17,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["protocol-asset"] }
 pixel-arena-core = { path = "../crates/pixel-arena-core" }
 tauri-plugin-dialog = "2.8.1"
+# ffmpeg 静态构建下载（T14，决策 0010）：ureq 阻塞式 HTTP（rustls，无系统依赖），
+# 显式复用系统代理环境变量；sha2 做下载完整性校验
+ureq = { version = "2", default-features = false, features = ["tls"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

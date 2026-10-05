@@ -5,6 +5,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
+import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
 import { fileName } from './util';
 // T10 接线点：一站式跑分（JPEG 编码阶梯）实现在 src/onestop.ts，本文件只做触发与进度显示
 import { runOnestopJpeg, JPEG_QUALITIES } from './onestop';
@@ -28,6 +29,9 @@ interface Round {
   name: string;
   referencePath: string | null;
   candidates: CandidateImage[];
+  // T14 接线点：视频评测字段（核心库 serde default，旧文件为空；实现都在 src/video.ts）
+  videoReferencePath?: string | null;
+  videoCandidates?: VideoCandidate[];
 }
 
 interface Group {
@@ -241,6 +245,22 @@ async function runOnestop(): Promise<void> {
   }
 }
 
+/**
+ * T14 接线点：视频跑分单对执行（src/video.ts 的跑分循环逐对调用本函数），
+ * 与图片的 startScoring 同一模式：invoke → 替换工作区 → 重渲染。
+ */
+async function scoreVideoOne(candidatePath: string): Promise<void> {
+  const session = activeRound();
+  if (!session) return;
+  ws = await invoke('round_score_video_candidate', {
+    groupId: session.group.id,
+    roundId: session.round.id,
+    candidatePath,
+  });
+  render();
+  markSaved();
+}
+
 async function boot(): Promise<void> {
   const versionEl = document.querySelector<HTMLSpanElement>('#core-version');
   try {
@@ -422,21 +442,43 @@ function renderContent(): void {
       ? '原图已就位。点「添加跑分图」多选已压缩的图片，再「开始跑分」。'
       : '先「选择原图」作为基准，再添加跑分图。';
     $content.append(hint);
-    return;
+  } else {
+    // 对比查看器（T07）：选好原图与跑分图后即可用，跑分与否不影响查看
+    if (round.referencePath) {
+      const viewerBox = document.createElement('div');
+      $content.append(viewerBox);
+      mountViewer(viewerBox, {
+        roundId: round.id,
+        referencePath: round.referencePath,
+        candidates: round.candidates.map((c) => ({ path: c.path })),
+      });
+    }
+
+    $content.append(buildResultTable(round.candidates));
   }
 
-  // 对比查看器（T07）：选好原图与跑分图后即可用，跑分与否不影响查看
-  if (round.referencePath) {
-    const viewerBox = document.createElement('div');
-    $content.append(viewerBox);
-    mountViewer(viewerBox, {
-      roundId: round.id,
-      referencePath: round.referencePath,
-      candidates: round.candidates.map((c) => ({ path: c.path })),
-    });
-  }
-
-  $content.append(buildResultTable(round.candidates));
+  // T14 接线点：视频评测区块（选原视频/跑分视频/VMAF-PSNR-SSIM），与图片流程互不干扰
+  const videoBlock = document.createElement('div');
+  $content.append(videoBlock);
+  mountVideoBlock(videoBlock, {
+    groupId: session.group.id,
+    round: {
+      id: round.id,
+      videoReferencePath: round.videoReferencePath ?? null,
+      videoCandidates: round.videoCandidates ?? [],
+    },
+    scoring,
+    scoringPath,
+    apply,
+    scoreOne: scoreVideoOne,
+    setScoring: (active, path) => {
+      scoring = active;
+      scoringPath = path;
+      render();
+    },
+    setStatus,
+    rerender: () => render(),
+  });
 }
 
 // ---------- 结果表 ----------
