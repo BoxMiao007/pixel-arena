@@ -24,6 +24,9 @@ ureq = "2"
 sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
+# zip 解包（T16，决策 0014）：Windows 的 libwebp/libjxl 官方工件只有 zip 格式；
+# 关掉默认 feature 只留 deflate 读，避免拉入加密等无关依赖树
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 # 编码时写 PPM 中间临时文件
 tempfile = "3.27.0"
 # JPEG XL 产物的进程内解码（T11，方案见 docs/decisions.md 0012）：纯 Rust，三端无外部依赖
@@ -36,5 +39,7 @@ toml = { version = "1.1.6", features = ["serde"] }
 sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
+# 测试内构造 zip 工件（默认 feature 无妨，仅测试构建用）
+zip = "2.4.2"
 # 桩编码器测试要验证喂给 avifenc 的是真 PNG
 image = { version = "0.25.10", default-features = false, features = ["png"] }

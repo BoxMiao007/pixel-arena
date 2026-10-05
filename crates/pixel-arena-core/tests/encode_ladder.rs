@@ -444,6 +444,67 @@ fn install_encoder_members_missing_member_reports_chinese() {
     std::fs::remove_dir_all(&tools).ok();
 }
 
+/// 造一个 zip：条目路径按给定写法（可用 `\` 分隔，模拟官方 Windows zip），内容 = content。
+fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(cursor);
+    let options: zip::write::SimpleFileOptions = Default::default();
+    for (name, content) in entries {
+        writer.start_file(*name, options).unwrap();
+        writer.write_all(content).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+#[test]
+fn install_encoder_members_supports_zip_archives() {
+    // T16（决策 0014）：Windows 的 libwebp/libjxl 官方工件只有 zip。机制按魔数分流，
+    // 文件名匹配容忍 `\` 分隔（官方 Windows zip 的路径分隔）。桩 zip 模仿该形状。
+    let enc_script = b"#!/bin/sh\nexit 0\n";
+    let archive = zip_bytes(&[("libwebp-test\\nested\\cwebp.exe", enc_script)]);
+    let sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(&archive))
+    };
+    let (base, hits) = serve_bytes(Box::leak(archive.into_boxed_slice()));
+    let source = source_for(format!("{base}/libwebp-test.zip"), sha, "cwebp.exe");
+
+    let tools = std::env::temp_dir().join(format!("pixel-arena-t16-zip-{}", std::process::id()));
+    let installed =
+        install_encoder_members(&source, &tools, &["cwebp.exe"]).expect("zip 工件应可安装");
+    assert_eq!(
+        installed,
+        // source_for 桩固定 name="libavif"、version="test"，落位规则与 tar.gz 一致
+        vec![tools.join("libavif").join("test").join("cwebp.exe")],
+        "zip 成员落位与 tar.gz 同规则: {installed:?}"
+    );
+    assert_eq!(std::fs::read(&installed[0]).unwrap(), enc_script);
+
+    // 二次安装复用（不重新下载）
+    install_encoder_members(&source, &tools, &["cwebp.exe"]).expect("二次安装应成功");
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "第二次安装不应重新下载");
+    std::fs::remove_dir_all(&tools).ok();
+}
+
+#[test]
+fn install_encoder_members_zip_missing_member_reports_chinese() {
+    let archive = zip_bytes(&[("enc.exe", b"enc".as_slice())]);
+    let sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(&archive))
+    };
+    let (base, _hits) = serve_bytes(Box::leak(archive.into_boxed_slice()));
+    let source = source_for(format!("{base}/stub.zip"), sha, "enc.exe");
+
+    let tools = std::env::temp_dir().join(format!("pixel-arena-t16-zipmiss-{}", std::process::id()));
+    let message = install_encoder_members(&source, &tools, &["enc.exe", "dec.exe"])
+        .err()
+        .expect("zip 缺成员应报错")
+        .to_string();
+    assert!(message.contains("dec.exe"), "错误应点名缺的成员: {message}");
+    std::fs::remove_dir_all(&tools).ok();
+}
+
 // ---------- 解码分派（产物要能被 score_images 跑分） ----------
 
 #[test]
