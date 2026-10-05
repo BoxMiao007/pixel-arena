@@ -283,18 +283,12 @@ struct RunRow {
     size_ratio: f64,
 }
 
-/// 格式的进度显示名（与前端 onestop.ts 的 label 一致）。
+/// 格式的进度显示名：委托核心库 OnestopFormat::display_name（单一来源，
+/// 与前端 onestop.ts 的映射需人工同步）。
 fn format_label(format: &str) -> &'static str {
-    match format {
-        "jpeg" => "JPEG",
-        "webp" => "WebP",
-        "avif" => "AVIF",
-        "jxl" => "JPEG XL",
-        "png" => "PNG",
-        "webp-lossless" => "无损 WebP",
-        "jxl-lossless" => "无损 JXL",
-        _ => unreachable!("build_ladder 已校验格式"),
-    }
+    pixel_arena_core::encode::OnestopFormat::parse(format)
+        .expect("build_ladder 已校验格式")
+        .display_name()
 }
 
 /// 去重且保持首次出现顺序（用户重复选择同一格式/档位时按一项处理）。

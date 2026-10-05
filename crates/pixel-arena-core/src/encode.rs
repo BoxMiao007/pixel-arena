@@ -84,8 +84,9 @@ impl OnestopFormat {
         matches!(self, Self::Png | Self::WebpLossless | Self::JxlLossless)
     }
 
-    /// 用户可读的格式名（中文错误提示用）。
-    fn zh_name(self) -> &'static str {
+    /// 用户可读的显示名（进度文本、CLI 输出与中文错误提示共用此单一来源；
+    /// 前端 src/onestop.ts 的同名映射跨语言无法复用，新增格式需两处同步）。
+    pub fn display_name(self) -> &'static str {
         match self {
             Self::Jpeg => "JPEG",
             Self::Webp => "WebP",
@@ -93,7 +94,7 @@ impl OnestopFormat {
             Self::Jxl => "JPEG XL",
             Self::Png => "PNG",
             Self::WebpLossless => "无损 WebP",
-            Self::JxlLossless => "无损 JPEG XL",
+            Self::JxlLossless => "无损 JXL",
         }
     }
 }
@@ -229,7 +230,7 @@ pub fn encode_onestop(
     if format.is_lossless() {
         if quality.is_some() {
             return Err(CoreError::Encode {
-                message: format!("{} 为无损格式，不接受质量参数", format.zh_name()),
+                message: format!("{} 为无损格式，不接受质量参数", format.display_name()),
             });
         }
     } else {
@@ -878,4 +879,27 @@ fn sha256_file(path: &Path) -> Result<String, CoreError> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 显示名是 CLI 进度文本与结果表「编码参数」列的单一来源，文本改动会直接
+    /// 变更 CLI 输出，这里钉死（与前端 onestop.ts 的映射需人工同步）。
+    #[test]
+    fn display_name_pins_cli_visible_texts() {
+        let cases = [
+            ("jpeg", "JPEG"),
+            ("webp", "WebP"),
+            ("avif", "AVIF"),
+            ("jxl", "JPEG XL"),
+            ("png", "PNG"),
+            ("webp-lossless", "无损 WebP"),
+            ("jxl-lossless", "无损 JXL"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(OnestopFormat::parse(raw).unwrap().display_name(), expected);
+        }
+    }
 }
