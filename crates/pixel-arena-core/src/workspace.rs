@@ -27,12 +27,48 @@ pub struct Workspace {
     pub active_group_id: Option<String>,
 }
 
+/// 跑分组类型（T17）：新建时选定，之后不可更改；组内评测轮的类型随之锁定——
+/// 图片跑分组只能装图片评测内容，视频跑分组只能装视频评测内容（见各内容方法的类型校验）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupKind {
+    /// 图片跑分组：支持外部导入与一站式两种工作模式。
+    #[default]
+    Image,
+    /// 视频跑分组：仅支持外部导入模式。
+    Video,
+}
+
+impl GroupKind {
+    /// 解析 IPC/前端传来的类型标识（image / video），未知值报中文错误。
+    pub fn parse(value: &str) -> Result<Self, WorkspaceError> {
+        match value.trim() {
+            "image" => Ok(GroupKind::Image),
+            "video" => Ok(GroupKind::Video),
+            other => Err(WorkspaceError::UnknownGroupKind(other.to_string())),
+        }
+    }
+}
+
+impl std::fmt::Display for GroupKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GroupKind::Image => f.write_str("图片跑分组"),
+            GroupKind::Video => f.write_str("视频跑分组"),
+        }
+    }
+}
+
 /// 跑分组：一个标签页承载的独立评测工作单元。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
     pub id: String,
     pub name: String,
+    /// 跑分组类型（T17），新建时选定后不可更改。serde default 只兜底极端坏文件；
+    /// 旧文件的类型归类由 `from_json` 的迁移逻辑按组内内容判定，不走这个默认值。
+    #[serde(default)]
+    pub kind: GroupKind,
     pub rounds: Vec<Round>,
     /// 组内当前激活的评测轮；组存在但还没有轮次时为 None。
     #[serde(default)]
@@ -191,6 +227,10 @@ pub enum WorkspaceError {
     ReferenceNotSet,
     #[error("尚未选择原视频，无法跑分")]
     VideoReferenceNotSet,
+    #[error("跑分组类型不符：{0}内不能进行{1}评测操作")]
+    GroupKindMismatch(GroupKind, GroupKind),
+    #[error("未知的跑分组类型: {0}（支持 image / video）")]
+    UnknownGroupKind(String),
     #[error("名称不能为空")]
     BlankName,
     #[error("JSON 解析失败: {0}")]
@@ -211,7 +251,12 @@ impl Workspace {
     }
 
     /// 新建跑分组并把它设为激活组（界面上新标签页立即选中）。名称首尾空白会被去除。
-    pub fn create_group(&mut self, name: &str) -> Result<&Group, WorkspaceError> {
+    /// 类型（图片/视频）在创建时选定，之后没有修改类型的入口。
+    pub fn create_group(
+        &mut self,
+        name: &str,
+        kind: GroupKind,
+    ) -> Result<&Group, WorkspaceError> {
         let name = name.trim();
         if name.is_empty() {
             return Err(WorkspaceError::BlankName);
@@ -219,6 +264,7 @@ impl Workspace {
         let group = Group {
             id: new_id("g"),
             name: name.to_string(),
+            kind,
             rounds: Vec::new(),
             active_round_id: None,
         };
@@ -244,6 +290,21 @@ impl Workspace {
             .ok_or_else(|| WorkspaceError::RoundNotFound(round_id.to_string()))
     }
 
+    /// T17 类型锁定：校验跑分组类型与即将进行的评测操作匹配（图片组只收图片内容、
+    /// 视频组只收视频内容），组内新建评测轮的类型因此随组固定。放在各内容方法的
+    /// 第一步，错误先于任何内存变更与磁盘读取抛出。
+    fn ensure_group_kind(&self, group_id: &str, wanted: GroupKind) -> Result<(), WorkspaceError> {
+        let group = self
+            .groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| WorkspaceError::GroupNotFound(group_id.to_string()))?;
+        if group.kind != wanted {
+            return Err(WorkspaceError::GroupKindMismatch(group.kind, wanted));
+        }
+        Ok(())
+    }
+
     /// 选入原图（外部导入模式：从文件对话框选一张原图，可重复选换图）。
     ///
     /// 换原图时旧跑分结果都是相对旧原图算的，连同体积比、失败原因一起作废；
@@ -254,6 +315,7 @@ impl Workspace {
         round_id: &str,
         path: &str,
     ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Image)?;
         let path = path.trim();
         let reference_size = std::fs::metadata(path)?.len();
 
@@ -292,6 +354,7 @@ impl Workspace {
         paths: &[&str],
         encoding_params: Option<&[Option<String>]>,
     ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Image)?;
         let round = self.round_mut(group_id, round_id)?;
         let reference_size = match &round.reference_path {
             Some(reference) => Some(std::fs::metadata(reference)?.len()),
@@ -335,6 +398,7 @@ impl Workspace {
         candidate_path: &str,
     ) -> Result<(), WorkspaceError> {
         // 先只读定位，确认前置条件都成立（错误先于任何内存变更抛出）
+        self.ensure_group_kind(group_id, GroupKind::Image)?;
         let reference_path = {
             let round = self.round_mut(group_id, round_id)?;
             let reference = round
@@ -388,6 +452,7 @@ impl Workspace {
         round_id: &str,
         path: &str,
     ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Video)?;
         let path = path.trim();
         let reference_size = std::fs::metadata(path)?.len();
 
@@ -410,6 +475,7 @@ impl Workspace {
         round_id: &str,
         paths: &[&str],
     ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Video)?;
         let round = self.round_mut(group_id, round_id)?;
         let reference_size = match &round.video_reference_path {
             Some(reference) => Some(std::fs::metadata(reference)?.len()),
@@ -452,6 +518,7 @@ impl Workspace {
         ffmpeg: &std::path::Path,
     ) -> Result<(), WorkspaceError> {
         // 先只读定位，确认前置条件都成立（错误先于任何内存变更抛出）
+        self.ensure_group_kind(group_id, GroupKind::Video)?;
         let reference_path = {
             let round = self.round_mut(group_id, round_id)?;
             let reference = round
@@ -619,13 +686,40 @@ impl Workspace {
     }
 
     /// 从 JSON 反序列化。校验格式版本，未来版本拒绝加载（fail-fast，不做猜测式迁移）。
+    ///
+    /// T17 迁移：旧文件的组没有 kind 字段，加载时按「组内任一轮含视频 → 视频跑分组，
+    /// 否则（含空组）→ 图片跑分组」归类，老数据无损；已带 kind 的组不动
+    ///（新建的空视频跑分组不会被翻回图片）。
     pub fn from_json(json: &str) -> Result<Self, WorkspaceError> {
-        let ws: Workspace = serde_json::from_str(json)?;
-        if ws.format_version != FORMAT_VERSION {
+        let raw: serde_json::Value = serde_json::from_str(json)?;
+        let version = raw
+            .get("formatVersion")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(FORMAT_VERSION as u64);
+        if version != FORMAT_VERSION as u64 {
             return Err(WorkspaceError::UnsupportedVersion(
-                ws.format_version,
+                version as u32,
                 FORMAT_VERSION,
             ));
+        }
+        // 反序列化前先记下哪些组缺 kind 字段（serde default 会把缺字段兜成 Image，
+        // 之后再分不出「缺字段」和「明确是图片」，所以要在原始 JSON 上判一次）
+        let missing_kind: Vec<bool> = raw
+            .get("groups")
+            .and_then(serde_json::Value::as_array)
+            .map(|groups| groups.iter().map(|g| g.get("kind").is_none()).collect())
+            .unwrap_or_default();
+        let mut ws: Workspace = serde_json::from_value(raw)?;
+        for (group, missing) in ws.groups.iter_mut().zip(missing_kind) {
+            if missing {
+                group.kind = if group.rounds.iter().any(|round| {
+                    round.video_reference_path.is_some() || !round.video_candidates.is_empty()
+                }) {
+                    GroupKind::Video
+                } else {
+                    GroupKind::Image
+                };
+            }
         }
         Ok(ws)
     }
@@ -678,7 +772,7 @@ mod tests {
     #[test]
     fn create_group_adds_named_group_and_activates_it() {
         let mut ws = Workspace::new();
-        ws.create_group("人像测试").unwrap();
+        ws.create_group("人像测试", GroupKind::Image).unwrap();
         assert_eq!(ws.groups.len(), 1);
         assert_eq!(ws.groups[0].name, "人像测试");
         assert!(!ws.groups[0].id.is_empty());
@@ -688,14 +782,220 @@ mod tests {
     #[test]
     fn create_group_rejects_blank_name() {
         let mut ws = Workspace::new();
-        assert!(ws.create_group("   ").is_err());
+        assert!(ws.create_group("   ", GroupKind::Image).is_err());
         assert!(ws.groups.is_empty());
+    }
+
+    // ---------- T17：跑分组类型（图片/视频，新建时选定） ----------
+
+    #[test]
+    fn create_group_stores_kind_and_persists_camel_case() {
+        let mut ws = Workspace::new();
+        ws.create_group("人像测试", GroupKind::Image).unwrap();
+        ws.create_group("视频对比", GroupKind::Video).unwrap();
+        assert_eq!(ws.groups[0].kind, GroupKind::Image);
+        assert_eq!(ws.groups[1].kind, GroupKind::Video);
+        // camelCase 键名 kind，值为小写 image / video
+        let json = ws.to_json();
+        assert!(json.contains("\"kind\": \"image\""), "JSON 键名: {json}");
+        assert!(json.contains("\"kind\": \"video\""), "JSON 键名: {json}");
+        // JSON 往返后类型保持（含空的视频跑分组：迁移不得把它翻回图片）
+        let restored = Workspace::from_json(&json).unwrap();
+        assert_eq!(restored.groups[0].kind, GroupKind::Image);
+        assert_eq!(restored.groups[1].kind, GroupKind::Video);
+    }
+
+    #[test]
+    fn group_kind_parse_accepts_image_and_video_only() {
+        assert_eq!(GroupKind::parse("image").unwrap(), GroupKind::Image);
+        assert_eq!(GroupKind::parse(" video ").unwrap(), GroupKind::Video);
+        assert!(matches!(
+            GroupKind::parse("图片"),
+            Err(WorkspaceError::UnknownGroupKind(_))
+        ));
+    }
+
+    // ---------- T17：旧工作区迁移（组无 kind 字段 → 按组内内容归类，数据无损） ----------
+
+    #[test]
+    fn old_workspace_empty_group_migrates_to_image() {
+        // 旧文件：组没有 kind 字段且没有评测轮（空组）→ 图片跑分组
+        let old = r#"{
+            "formatVersion": 1,
+            "groups": [{"id": "g-1", "name": "空组", "rounds": []}]
+        }"#;
+        let ws = Workspace::from_json(old).unwrap();
+        assert_eq!(ws.groups[0].kind, GroupKind::Image);
+    }
+
+    #[test]
+    fn old_workspace_image_only_group_migrates_to_image() {
+        // 旧文件：评测轮只有图片评测内容 → 图片跑分组
+        let old = r#"{
+            "formatVersion": 1,
+            "groups": [{
+                "id": "g-1", "name": "人像测试",
+                "rounds": [{
+                    "id": "r-1", "name": "轮",
+                    "referencePath": "/tmp/ref.png",
+                    "candidates": [{"path": "/tmp/dis.jpg", "fileSize": 17341}]
+                }]
+            }]
+        }"#;
+        let ws = Workspace::from_json(old).unwrap();
+        assert_eq!(ws.groups[0].kind, GroupKind::Image);
+    }
+
+    #[test]
+    fn old_workspace_group_with_video_round_migrates_to_video() {
+        // 旧文件：任一轮含视频（有原视频或有跑分视频）→ 视频跑分组；两种形态都覆盖
+        let old = r#"{
+            "formatVersion": 1,
+            "groups": [{
+                "id": "g-1", "name": "视频对比",
+                "rounds": [
+                    {"id": "r-1", "name": "只有原视频", "videoReferencePath": "/tmp/ref.mp4"},
+                    {"id": "r-2", "name": "只有跑分视频",
+                     "videoCandidates": [{"path": "/tmp/dis.mp4", "fileSize": 27050}]}
+                ]
+            }]
+        }"#;
+        let ws = Workspace::from_json(old).unwrap();
+        assert_eq!(ws.groups[0].kind, GroupKind::Video);
+    }
+
+    #[test]
+    fn old_workspace_mixed_group_with_video_migrates_to_video_and_keeps_data() {
+        // 旧文件：同一轮图片+视频混用（分类型之前允许）→ 按规则归视频跑分组；
+        // 迁移只补类型，组/轮/结果一字不丢
+        let old = r#"{
+            "formatVersion": 1,
+            "activeGroupId": "g-1",
+            "groups": [{
+                "id": "g-1", "name": "混用组",
+                "activeRoundId": "r-1",
+                "rounds": [{
+                    "id": "r-1", "name": "混用轮",
+                    "referencePath": "/tmp/ref.png",
+                    "candidates": [{"path": "/tmp/dis.jpg", "fileSize": 17341,
+                                    "metrics": {"PSNR": 27.5}}],
+                    "videoReferencePath": "/tmp/ref.mp4",
+                    "videoCandidates": [{"path": "/tmp/dis.mp4", "fileSize": 27050}]
+                }]
+            }]
+        }"#;
+        let ws = Workspace::from_json(old).unwrap();
+        assert_eq!(ws.groups[0].kind, GroupKind::Video);
+        let round = &ws.groups[0].rounds[0];
+        assert_eq!(round.reference_path.as_deref(), Some("/tmp/ref.png"));
+        assert_eq!(round.candidates[0].file_size, 17341);
+        assert_eq!(
+            round.candidates[0].metrics.as_ref().unwrap()["PSNR"],
+            MetricValue::Number(27.5)
+        );
+        assert_eq!(round.video_reference_path.as_deref(), Some("/tmp/ref.mp4"));
+        assert_eq!(round.video_candidates[0].file_size, 27050);
+        assert_eq!(ws.groups[0].active_round_id.as_deref(), Some("r-1"));
+        assert_eq!(ws.active_group_id.as_deref(), Some("g-1"));
+    }
+
+    // ---------- T17：类型锁定（组内评测轮只能进行本类型的评测操作） ----------
+
+    #[test]
+    fn video_group_rejects_image_round_content() {
+        let mut ws = Workspace::new();
+        let g = ws
+            .create_group("视频对比", GroupKind::Video)
+            .unwrap()
+            .id
+            .clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        // 新建评测轮的类型随组锁定为视频：选原图 / 添加跑分图 / 图片跑分都被拒绝
+        assert!(matches!(
+            ws.set_round_reference(&g, &r, &data("photo-ref.png")),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Video,
+                GroupKind::Image
+            ))
+        ));
+        assert!(matches!(
+            ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")]),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Video,
+                GroupKind::Image
+            ))
+        ));
+        assert!(matches!(
+            ws.score_round_candidate(&g, &r, &data("photo-dis.jpg")),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Video,
+                GroupKind::Image
+            ))
+        ));
+        // 拒绝后轮内没有落下任何图片内容
+        assert_eq!(ws.groups[0].rounds[0].reference_path, None);
+        assert!(ws.groups[0].rounds[0].candidates.is_empty());
+    }
+
+    #[test]
+    fn image_group_rejects_video_round_content() {
+        let mut ws = Workspace::new();
+        let g = ws
+            .create_group("人像测试", GroupKind::Image)
+            .unwrap()
+            .id
+            .clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        // 新建评测轮的类型随组锁定为图片：选原视频 / 添加跑分视频 / 视频跑分都被拒绝
+        assert!(matches!(
+            ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4")),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Image,
+                GroupKind::Video
+            ))
+        ));
+        assert!(matches!(
+            ws.add_round_video_candidates(&g, &r, &[&video_data("video-dis-150k.mp4")]),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Image,
+                GroupKind::Video
+            ))
+        ));
+        assert!(matches!(
+            ws.score_round_video_candidate(
+                &g,
+                &r,
+                &video_data("video-dis-150k.mp4"),
+                std::path::Path::new("ffmpeg"),
+            ),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Image,
+                GroupKind::Video
+            ))
+        ));
+        // 拒绝后轮内没有落下任何视频内容
+        assert_eq!(ws.groups[0].rounds[0].video_reference_path, None);
+        assert!(ws.groups[0].rounds[0].video_candidates.is_empty());
+    }
+
+    #[test]
+    fn kind_check_keeps_existing_error_paths() {
+        // 组不存在时仍报 GroupNotFound（类型校验在定位之后，不改变既有错误语义）
+        let mut ws = Workspace::new();
+        assert!(matches!(
+            ws.set_round_reference("不存在", "r-1", "/tmp/x.png"),
+            Err(WorkspaceError::GroupNotFound(_))
+        ));
+        assert!(matches!(
+            ws.set_round_video_reference("不存在", "r-1", "/tmp/x.mp4"),
+            Err(WorkspaceError::GroupNotFound(_))
+        ));
     }
 
     #[test]
     fn rename_group_updates_name() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("旧名").unwrap().id.clone();
+        let g = ws.create_group("旧名", GroupKind::Image).unwrap().id.clone();
         ws.rename_group(&g, "人像测试").unwrap();
         assert_eq!(ws.groups[0].name, "人像测试");
     }
@@ -703,7 +1003,7 @@ mod tests {
     #[test]
     fn rename_group_rejects_blank_and_missing() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("甲").unwrap().id.clone();
+        let g = ws.create_group("甲", GroupKind::Image).unwrap().id.clone();
         assert!(matches!(
             ws.rename_group(&g, "  "),
             Err(WorkspaceError::BlankName)
@@ -717,9 +1017,9 @@ mod tests {
     #[test]
     fn close_group_removes_it_and_activates_neighbor() {
         let mut ws = Workspace::new();
-        let a = ws.create_group("甲").unwrap().id.clone();
-        let b = ws.create_group("乙").unwrap().id.clone();
-        let c = ws.create_group("丙").unwrap().id.clone();
+        let a = ws.create_group("甲", GroupKind::Image).unwrap().id.clone();
+        let b = ws.create_group("乙", GroupKind::Image).unwrap().id.clone();
+        let c = ws.create_group("丙", GroupKind::Image).unwrap().id.clone();
         // 关闭中间的乙（此时激活组是乙），激活组应落到右邻丙
         ws.close_group(&b).unwrap();
         assert_eq!(ws.groups.len(), 2);
@@ -736,8 +1036,8 @@ mod tests {
     #[test]
     fn close_group_keeps_active_when_closing_other_tab() {
         let mut ws = Workspace::new();
-        let a = ws.create_group("甲").unwrap().id.clone();
-        let b = ws.create_group("乙").unwrap().id.clone();
+        let a = ws.create_group("甲", GroupKind::Image).unwrap().id.clone();
+        let b = ws.create_group("乙", GroupKind::Image).unwrap().id.clone();
         ws.activate_group(&a).unwrap();
         ws.close_group(&b).unwrap();
         assert_eq!(ws.active_group_id.as_deref(), Some(a.as_str()));
@@ -750,7 +1050,7 @@ mod tests {
     #[test]
     fn create_round_adds_named_round_and_activates_it() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("人像测试").unwrap().id.clone();
+        let g = ws.create_group("人像测试", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "风景原图").unwrap().id.clone();
         assert_eq!(ws.groups[0].rounds.len(), 1);
         assert_eq!(ws.groups[0].rounds[0].name, "风景原图");
@@ -769,7 +1069,7 @@ mod tests {
     #[test]
     fn rename_round_updates_name() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "旧名").unwrap().id.clone();
         ws.rename_round(&g, &r, "新名").unwrap();
         assert_eq!(ws.groups[0].rounds[0].name, "新名");
@@ -782,7 +1082,7 @@ mod tests {
     #[test]
     fn delete_round_activates_neighbor_or_none() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r1 = ws.create_round(&g, "轮1").unwrap().id.clone();
         let r2 = ws.create_round(&g, "轮2").unwrap().id.clone();
         let r3 = ws.create_round(&g, "轮3").unwrap().id.clone();
@@ -811,8 +1111,8 @@ mod tests {
     #[test]
     fn activate_round_and_activate_group_switch_selection() {
         let mut ws = Workspace::new();
-        let g1 = ws.create_group("组1").unwrap().id.clone();
-        let _g2 = ws.create_group("组2").unwrap().id.clone();
+        let g1 = ws.create_group("组1", GroupKind::Image).unwrap().id.clone();
+        let _g2 = ws.create_group("组2", GroupKind::Image).unwrap().id.clone();
         let r1 = ws.create_round(&g1, "轮1").unwrap().id.clone();
         let r2 = ws.create_round(&g1, "轮2").unwrap().id.clone();
         ws.activate_round(&g1, &r1).unwrap();
@@ -837,8 +1137,8 @@ mod tests {
     #[test]
     fn json_roundtrip_preserves_everything() {
         let mut ws = Workspace::new();
-        let g1 = ws.create_group("人像测试").unwrap().id.clone();
-        let g2 = ws.create_group("风景测试").unwrap().id.clone();
+        let g1 = ws.create_group("人像测试", GroupKind::Image).unwrap().id.clone();
+        let g2 = ws.create_group("风景测试", GroupKind::Image).unwrap().id.clone();
         let r1 = ws.create_round(&g1, "轮1").unwrap().id.clone();
         ws.create_round(&g1, "轮2").unwrap();
         ws.activate_group(&g2).unwrap();
@@ -884,7 +1184,7 @@ mod tests {
     #[test]
     fn new_round_has_no_reference_and_no_candidates() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("人像测试").unwrap().id.clone();
+        let g = ws.create_group("人像测试", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "评测轮 1").unwrap().id.clone();
         let round = &ws.groups[0].rounds[0];
         assert_eq!(round.id, r);
@@ -908,8 +1208,8 @@ mod tests {
     #[test]
     fn round_content_json_roundtrip() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
-        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
+        let _r = ws.create_round(&g, "轮").unwrap().id.clone();
         let round = &mut ws.groups[0].rounds[0];
         round.reference_path = Some("/tmp/photo-ref.png".to_string());
         round.candidates.push(CandidateImage {
@@ -961,7 +1261,7 @@ mod tests {
     #[test]
     fn set_round_reference_stores_path_and_computes_ratios() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         // 先选跑分图（还没有原图，体积比未知），再补选原图 → 比重算出来
         ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")])
@@ -986,7 +1286,7 @@ mod tests {
     #[test]
     fn add_candidates_reads_file_sizes_and_dedupes() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg"), &data("photo-dis.webp")])
             .unwrap();
@@ -1007,7 +1307,7 @@ mod tests {
     #[test]
     fn add_candidates_with_params_stores_encoding_params() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         // 一站式路径：参数与路径一一对应写入；外部导入路径（add_round_candidates）留空
         let params = vec![Some("JPEG q75".to_string()), None];
@@ -1045,7 +1345,7 @@ mod tests {
     fn reselecting_reference_invalidates_old_results() {
         // 换原图后旧指标都是相对旧原图算的，作废；体积比不依赖画质，按新原图重算
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
         ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")]).unwrap();
@@ -1064,7 +1364,7 @@ mod tests {
     #[test]
     fn score_round_candidate_stores_metrics_for_each_row() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
         ws.add_round_candidates(
@@ -1120,7 +1420,7 @@ mod tests {
     fn score_round_candidate_failure_marks_row_and_keeps_going() {
         // 尺寸不一致（128px vs 256px）：命令不报错，失败原因写进行里
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.set_round_reference(&g, &r, &data("gradient-ref.png")).unwrap();
         ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")]).unwrap();
@@ -1135,7 +1435,7 @@ mod tests {
     #[test]
     fn score_round_candidate_reports_missing_prerequisites() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         // 没选原图不能跑分
         assert!(matches!(
@@ -1163,7 +1463,7 @@ mod tests {
     #[test]
     fn file_roundtrip_preserves_workspace() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("人像测试").unwrap().id.clone();
+        let g = ws.create_group("人像测试", GroupKind::Image).unwrap().id.clone();
         ws.create_round(&g, "轮1").unwrap();
 
         let mut path = std::env::temp_dir();
@@ -1228,8 +1528,8 @@ mod tests {
     #[test]
     fn video_candidates_json_roundtrip_preserves_elapsed_and_metrics() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
-        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
+        let _r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.groups[0].rounds[0].video_reference_path = Some("/tmp/ref.mp4".to_string());
         ws.groups[0].rounds[0].video_candidates.push(CandidateVideo {
             path: "/tmp/dis.mp4".to_string(),
@@ -1259,7 +1559,7 @@ mod tests {
     #[test]
     fn set_round_video_reference_stores_path_and_computes_ratios() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         // 先选跑分视频（还没有原视频，体积比未知），再补选原视频 → 比重算出来
         ws.add_round_video_candidates(&g, &r, &[&video_data("video-dis-150k.mp4")])
@@ -1285,7 +1585,7 @@ mod tests {
     #[test]
     fn add_round_video_candidates_dedupes_and_fails_fast() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.add_round_video_candidates(
             &g,
@@ -1312,7 +1612,7 @@ mod tests {
     #[test]
     fn reselecting_video_reference_invalidates_old_results() {
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
             .unwrap();
@@ -1346,7 +1646,7 @@ mod tests {
             return;
         };
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
             .unwrap();
@@ -1388,7 +1688,7 @@ mod tests {
             return;
         };
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
             .unwrap();
@@ -1414,7 +1714,7 @@ mod tests {
     fn score_round_video_candidate_reports_missing_prerequisites() {
         let ffmpeg = std::path::PathBuf::from("ffmpeg"); // 前置检查先于 ffmpeg 启动，路径不会被用到
         let mut ws = Workspace::new();
-        let g = ws.create_group("组").unwrap().id.clone();
+        let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
         let r = ws.create_round(&g, "轮").unwrap().id.clone();
         // 没选原视频不能跑分
         assert!(matches!(
