@@ -12,7 +12,7 @@
 当前进度：
 
 - 标签页（跑分组）与评测轮管理：新建、重命名、关闭标签页，组内新建/改名/删除评测轮、切换轮次。
-- 外部导入模式跑分：在评测轮里经系统文件对话框选一张原图与多张跑分图（PNG / JPEG / WebP），点「开始跑分」逐张计算 PSNR / SSIM；结果表给出文件大小、体积比、各指标与排名，任一列可点击排序，跑分失败会在行内给出中文原因。
+- 外部导入模式跑分：在评测轮里经系统文件对话框选一张原图与多张跑分图（PNG / JPEG / WebP / AVIF / JPEG XL），点「开始跑分」逐张计算 PSNR / SSIM；结果表给出文件大小、体积比、各指标与排名，任一列可点击排序，跑分失败会在行内给出中文原因。
 - 一站式跑分（完整编码阶梯）：评测轮里选好原图后，点「一站式跑分」按勾选项自动生成完整编码阶梯并逐张跑分进结果表——有损 JPEG（MozJPEG）/ WebP（libwebp）/ AVIF（libaom）/ JPEG XL（libjxl）× 质量 60 / 75 / 90，外加无损对照组（PNG / 无损 WebP / 无损 JXL，像素与原图逐位一致）。格式、质量档与无损组都能勾选/取消（默认全开），进度逐项显示在状态栏（如「正在生成 AVIF q75（5/12）」），某项失败不影响其余项。各编码器首次使用需联网下载（sha256 校验后存应用数据目录，之后离线可用）。AVIF/JXL 产物在查看器里经自动生成的 PNG 代片显示。
 - 视频外部导入跑分：同一轮评测里可再选一段原视频与多段跑分视频（MP4 / MKV / WebM 等），点「开始视频跑分」逐对计算 VMAF / PSNR / SSIM 与耗时；首次使用会自动下载一次 ffmpeg（约 40MB，之后直接复用）。
 - 视频逐帧同步对比：视频区块里原视频与跑分视频齐备后出现「逐帧对比」区，两路画面在同一时间点定格并排（分屏 / 滑动 / 2×2 网格），时间轴拖动两路同时定位，±1 帧按帧长精确步进，定位伪影出现的时刻。
@@ -83,15 +83,18 @@ npm run tauri dev
 - 命令行批量跑分（外部导入模式）：选好一张原图和几张已压缩的跑分图后，执行
   `cargo run -p pixel-arena-cli -- score --reference 原图.png --candidates 跑分图1.jpg 跑分图2.webp`，
   就得到一张 CSV 指标表（PSNR、SSIM、MS-SSIM、Butteraugli、SSIMULACRA2、文件大小、体积比），
-  可存成文件或贴进表格；加 `--format json` 则输出 JSON。指标口径：MS-SSIM 越接近 1 越好；
+  可存成文件或贴进表格；加 `--format json` 则输出 JSON；加 `--format html` 则输出自包含的
+  简体中文 HTML 报告（内联样式、含生成时间，浏览器直接打开即可分享）。指标口径：MS-SSIM 越接近 1 越好；
   Butteraugli 是距离分，0 表示完全一致、约 1.0 是刚好可察觉；SSIMULACRA2 是质量分，
   100 表示完全一致。进度与错误提示是简体中文，出错时按提示处理即可
-  （支持的图片格式：PNG/JPEG/WebP）。
+  （支持的图片格式：PNG/JPEG/WebP/AVIF/JPEG XL；AVIF 跑分需先有一站式生成过 AVIF 产物
+  以便自动安装解码工具）。
 - 命令行一站式批量跑分（run 子命令）：只有一张原图时，执行
   `cargo run -p pixel-arena-cli -- run --reference 原图.png`，
   工具按完整默认编码阶梯（有损 JPEG / WebP / AVIF / JPEG XL × 质量 60 / 75 / 90，
   外加无损对照组 PNG / 无损 WebP / 无损 JXL，共 15 份）自动生成跑分图并逐张跑分，
-  输出与 score 同栏位的 CSV 指标表（另加 format、quality 两列；`--format json` 输出 JSON）。
+  输出与 score 同栏位的 CSV 指标表（另加 format、quality 两列；`--format json` 输出 JSON，
+  `--format html` 输出自包含中文报告，质量列在报告里对无损组显示「无损」）。
   可用 `--formats jpeg webp`、`--qualities 60 75`、`--lossless png` 收窄范围
   （这三个参数不带值表示该组不跑）；`--out 目录` 保留产物（默认在系统临时目录新建一个文件夹，
   结束时 stderr 会提示路径）；`--tools-dir 目录` 指定编码器安装目录（默认与桌面应用共用）。

@@ -356,3 +356,59 @@ fn score_缺必填参数时退出码2() {
 
     assert_eq!(output.status.code(), Some(2), "用法错误退出码应为 2（沿用现有约定）");
 }
+
+#[test]
+fn score_html_自包含中文报告_含五指标表头与生成时间() {
+    let reference = sample("photo-ref.png");
+    let candidate = sample("photo-dis.png");
+
+    let output = Command::cargo_bin("pixel-arena-cli")
+        .unwrap()
+        .args([
+            "score",
+            "--reference",
+            reference.to_str().unwrap(),
+            "--candidates",
+            candidate.to_str().unwrap(),
+            "--format",
+            "html",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "正常路径退出码应为 0，stderr：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // 自包含：doctype + 简体中文 + 内联样式，无外部资源引用
+    assert!(stdout.starts_with("<!doctype html>"), "HTML 报告开头：{stdout}");
+    assert!(stdout.contains("<html lang=\"zh-CN\">"));
+    assert!(stdout.contains("charset=\"utf-8\""));
+    assert!(stdout.contains("<style>"), "样式应内联");
+    assert!(!stdout.contains("src="), "报告不应引用外部资源：{stdout}");
+    // 简体中文表头 + 全部五指标 + 生成时间与原图元信息
+    for fragment in [
+        "像素竞技场跑分报告",
+        "生成时间：",
+        "跑分图",
+        "PSNR",
+        "SSIM",
+        "MS-SSIM",
+        "Butteraugli",
+        "SSIMULACRA2",
+        "体积比",
+        "photo-ref.png",
+        "photo-dis.png",
+    ] {
+        assert!(stdout.contains(fragment), "报告应含「{fragment}」：{stdout}");
+    }
+    // 有损样例的 PSNR 应为两位小数显示口径（非 CSV 的 6 位）
+    assert!(!stdout.contains("inf"), "有损样例不应出现 ∞/inf：{stdout}");
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("1/1"), "进度提示不受输出格式影响，stderr：{stderr}");
+}

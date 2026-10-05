@@ -1,5 +1,5 @@
 // CLI 入口：clap 解析参数，score 子命令对外部导入场景批量跑分，run 子命令跑一站式批量。
-// stdout 只输出数据（CSV/JSON），进度与错误提示走 stderr（简体中文），方便管道。
+// stdout 只输出数据（CSV/JSON/HTML），进度与错误提示走 stderr（简体中文），方便管道。
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -31,7 +31,7 @@ enum Command {
         #[arg(long, value_name = "FILE", num_args = 1.., required = true)]
         candidates: Vec<PathBuf>,
 
-        /// 输出格式，默认 csv。
+        /// 输出格式，默认 csv（可选 json / html）。
         #[arg(long, value_enum, default_value_t = OutputFormat::Csv)]
         format: OutputFormat,
     },
@@ -53,7 +53,7 @@ enum Command {
         #[arg(long, value_name = "FORMAT", num_args = 0..)]
         lossless: Option<Vec<String>>,
 
-        /// 输出格式，默认 csv。
+        /// 输出格式，默认 csv（可选 json / html）。
         #[arg(long, value_enum, default_value_t = OutputFormat::Csv)]
         format: OutputFormat,
 
@@ -71,6 +71,8 @@ enum Command {
 enum OutputFormat {
     Csv,
     Json,
+    /// 自包含简体中文 HTML 报告（US30）：内联样式、含生成时间，浏览器直接打开。
+    Html,
 }
 
 /// 指标表的一行：一张跑分图相对原图的结果。
@@ -153,6 +155,7 @@ fn run_score(reference: &Path, candidates: &[PathBuf], format: OutputFormat) -> 
     match format {
         OutputFormat::Csv => write_csv(&rows),
         OutputFormat::Json => write_json(&rows),
+        OutputFormat::Html => write_html(&rows),
     }
     ExitCode::SUCCESS
 }
@@ -245,6 +248,124 @@ fn metric_text(value: f64) -> String {
     }
 }
 
+// ---------- HTML 输出（--format html，规格 US30）：自包含简体中文报告 ----------
+
+/// 报告共用内联样式（核心库 report.rs 同款精简版，无外部资源引用）。
+const HTML_CSS: &str = "body { font-family: system-ui, -apple-system, \"Segoe UI\", sans-serif; margin: 24px auto; max-width: 1100px; color: #1f2328; padding: 0 16px; } h1 { font-size: 20px; margin-bottom: 4px; } .meta { color: #57606a; font-size: 13px; margin: 4px 0; } table { border-collapse: collapse; font-size: 13px; width: 100%; margin-top: 8px; } th, td { border: 1px solid #d0d7de; padding: 4px 8px; text-align: left; } th { background: #f6f8fa; } code { font-size: 12px; color: #57606a; word-break: break-all; }";
+
+/// HTML 转义（& < > "），防路径里的特殊字符破坏文档结构。
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// 路径的文件名（报告里显示名）。
+fn file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// 界面同款文件大小格式（核心库 report.rs 对齐实现）。
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+/// HTML 显示口径的指标：无穷大显示 ∞（两图逐像素一致），≥10 两位小数、小值四位
+/// （与 GUI 结果表和导出报告一致；CSV/JSON 的 inf/nan 哨兵仅供程序读）。
+fn html_metric(value: f64) -> String {
+    if value.is_nan() {
+        "nan".to_string()
+    } else if value.is_infinite() {
+        "∞".to_string()
+    } else if value.abs() >= 10.0 {
+        format!("{value:.2}")
+    } else {
+        format!("{value:.4}")
+    }
+}
+
+/// 当前时间的报告用文本（UTC，YYYY-MM-DD HH:MM:SS）。CLI 不引时间库，
+/// 手写 Unix 秒 → 公历换算（Howard Hinnant civil_from_days 算法）。
+fn utc_now_text() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("系统时钟早于 1970 年")
+        .as_secs();
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// 自包含 HTML 骨架：标题、生成时间等元信息与表格正文拼装。
+fn html_document(meta: &str, table: &str) -> String {
+    format!(
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n\
+         <title>像素竞技场 · 跑分报告</title>\n<style>{HTML_CSS}</style>\n</head>\n<body>\n\
+         <h1>像素竞技场跑分报告</h1>\n<p class=\"meta\">{meta}</p>\n{table}\n\
+         <p class=\"meta\">由像素竞技场 CLI 生成；指标无穷大（两图逐像素一致时 PSNR 等）显示 ∞。</p>\n</body>\n</html>\n"
+    )
+}
+
+/// score 结果的 HTML 输出：自包含中文报告，原图入元信息行，逐行一张跑分图。
+fn write_html(rows: &[ScoreRow]) {
+    let generated_at = utc_now_text();
+    let mut table = String::from(
+        "<table>\n<thead><tr><th>跑分图</th><th>路径</th><th>PSNR</th><th>SSIM</th>\
+         <th>MS-SSIM</th><th>Butteraugli</th><th>SSIMULACRA2</th><th>原图大小</th>\
+         <th>跑分图大小</th><th>体积比</th></tr></thead>\n<tbody>\n",
+    );
+    for row in rows {
+        table.push_str(&format!(
+            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+            html_escape(&file_name(&row.candidate)),
+            html_escape(&row.candidate),
+            html_metric(row.psnr),
+            html_metric(row.ssim),
+            html_metric(row.ms_ssim),
+            html_metric(row.butteraugli),
+            html_metric(row.ssimulacra2),
+            format_size(row.reference_bytes),
+            format_size(row.candidate_bytes),
+            html_metric(row.size_ratio),
+        ));
+    }
+    table.push_str("</tbody>\n</table>\n");
+    println!(
+        "{}",
+        html_document(
+            &format!(
+                "生成时间：{generated_at}　模式：外部导入跑分　原图：<code>{}</code>",
+                html_escape(&rows.first().map(|r| r.reference.as_str()).unwrap_or(""))
+            ),
+            &table
+        )
+    );
+}
+
 // ---------- run 子命令（一站式批量，与 GUI 共用 encode_onestop + score_images） ----------
 
 /// 默认有损格式（决策 0003 编码阶梯，顺序即生成顺序，与前端 onestop.ts 一致）。
@@ -283,18 +404,12 @@ struct RunRow {
     size_ratio: f64,
 }
 
-/// 格式的进度显示名（与前端 onestop.ts 的 label 一致）。
+/// 格式的进度显示名：委托核心库 OnestopFormat::display_name（单一来源，
+/// 与前端 onestop.ts 的映射需人工同步）。
 fn format_label(format: &str) -> &'static str {
-    match format {
-        "jpeg" => "JPEG",
-        "webp" => "WebP",
-        "avif" => "AVIF",
-        "jxl" => "JPEG XL",
-        "png" => "PNG",
-        "webp-lossless" => "无损 WebP",
-        "jxl-lossless" => "无损 JXL",
-        _ => unreachable!("build_ladder 已校验格式"),
-    }
+    pixel_arena_core::encode::OnestopFormat::parse(format)
+        .expect("build_ladder 已校验格式")
+        .display_name()
 }
 
 /// 去重且保持首次出现顺序（用户重复选择同一格式/档位时按一项处理）。
@@ -559,6 +674,7 @@ fn run_run(
     match format {
         OutputFormat::Csv => write_run_csv(&rows),
         OutputFormat::Json => write_run_json(&rows),
+        OutputFormat::Html => write_run_html(&rows),
     }
     if any_failed {
         // 部分失败：成功档位的结果照常输出（下游可拿到部分数据），退出码 1 提示结果不完整
@@ -630,5 +746,48 @@ fn write_run_json(rows: &[RunRow]) {
     println!(
         "{}",
         serde_json::to_string_pretty(&document).expect("RunRow 序列化不应失败")
+    );
+}
+
+/// run 结果的 HTML 输出：score 同款自包含中文报告，另加格式/质量两列
+/// （质量无损组显示「无损」，CSV/JSON 里是 lossless/null）。
+fn write_run_html(rows: &[RunRow]) {
+    let generated_at = utc_now_text();
+    let mut table = String::from(
+        "<table>\n<thead><tr><th>跑分图</th><th>路径</th><th>格式</th><th>质量</th><th>PSNR</th>\
+         <th>SSIM</th><th>MS-SSIM</th><th>Butteraugli</th><th>SSIMULACRA2</th><th>原图大小</th>\
+         <th>跑分图大小</th><th>体积比</th></tr></thead>\n<tbody>\n",
+    );
+    for row in rows {
+        let quality = row
+            .quality
+            .map(|q| q.to_string())
+            .unwrap_or_else(|| "无损".to_string());
+        table.push_str(&format!(
+            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+            html_escape(&file_name(&row.candidate)),
+            html_escape(&row.candidate),
+            html_escape(&row.format),
+            html_escape(&quality),
+            html_metric(row.psnr),
+            html_metric(row.ssim),
+            html_metric(row.ms_ssim),
+            html_metric(row.butteraugli),
+            html_metric(row.ssimulacra2),
+            format_size(row.reference_bytes),
+            format_size(row.candidate_bytes),
+            html_metric(row.size_ratio),
+        ));
+    }
+    table.push_str("</tbody>\n</table>\n");
+    println!(
+        "{}",
+        html_document(
+            &format!(
+                "生成时间：{generated_at}　模式：一站式批量跑分　原图：<code>{}</code>",
+                html_escape(&rows.first().map(|r| r.reference.as_str()).unwrap_or(""))
+            ),
+            &table
+        )
     );
 }

@@ -30,6 +30,9 @@ interface CandidateImage {
   fileSize: number;
   sizeRatio: number | null;
   metrics: Record<string, MetricValue> | null;
+  /** 编码参数文本（如「JPEG q75」「PNG 无损」），一站式模式写入；外部导入为 null
+   *（参数用户自备，工具不知晓），界面显示 —。 */
+  encodingParams?: string | null;
   error: string | null;
 }
 
@@ -120,8 +123,13 @@ function createRound(): void {
 
 // ---------- 选图与跑分（T06） ----------
 
-// 核心库按 image 0.25 开启的 feature 只支持这三种格式
-const IMAGE_FILTER = { name: '图片（PNG / JPEG / WebP）', extensions: ['png', 'jpg', 'jpeg', 'webp'] };
+// 文件对话框可选格式按核心库 decode.rs 实际支持范围开（PNG/JPEG/WebP 走 image crate
+// 进程内解码；JPEG XL 走 jxl-oxide 进程内，AVIF 走 avifdec 子进程——首次一站式生成
+// AVIF 产物时自动安装，外部直接导入 AVIF 时若尚未安装会在跑分时报中文提示）
+const IMAGE_FILTER = {
+  name: '图片（PNG / JPEG / WebP / AVIF / JPEG XL）',
+  extensions: ['png', 'jpg', 'jpeg', 'webp', 'avif', 'jxl'],
+};
 
 function activeRound(): { group: Group; round: Round } | null {
   const group = activeGroup();
@@ -758,25 +766,27 @@ function sortableValue(candidate: CandidateImage, key: string): number | string 
   if (key === 'name') return fileName(candidate.path);
   if (key === 'fileSize') return candidate.fileSize;
   if (key === 'sizeRatio') return candidate.sizeRatio;
+  if (key === 'encodingParams') return candidate.encodingParams ?? null;
   const metric = candidate.metrics?.[key];
   if (metric === undefined) return null;
   return metric === 'inf' ? Number.POSITIVE_INFINITY : metric;
 }
 
 function firstClickDir(key: string): 1 | -1 {
-  // 文件大小越小越好、名称自然升序；指标与体积比默认降序（大的在前）
-  return key === 'fileSize' || key === 'name' ? 1 : -1;
+  // 文件大小越小越好、名称/编码参数自然升序；指标与体积比默认降序（大的在前）
+  return key === 'fileSize' || key === 'name' || key === 'encodingParams' ? 1 : -1;
 }
 
 function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
   const table = document.createElement('table');
   table.className = 'result-table';
 
-  // 列：排名 | 跑分图 | 文件大小 | 体积比 | 指标列… | 状态
+  // 列：排名 | 跑分图 | 文件大小 | 体积比 | 编码参数 | 指标列… | 状态
   const columns: { key: string; label: string; sortable: boolean }[] = [
     { key: 'name', label: '跑分图', sortable: true },
     { key: 'fileSize', label: '文件大小', sortable: true },
     { key: 'sizeRatio', label: '体积比', sortable: true },
+    { key: 'encodingParams', label: '编码参数', sortable: true },
     ...metricKeys(candidates).map((key) => ({ key, label: key, sortable: true })),
     { key: 'status', label: '状态', sortable: false },
   ];
@@ -849,6 +859,10 @@ function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
     ratio.textContent =
       candidate.sizeRatio === null ? '—' : formatRatio(candidate.sizeRatio);
 
+    // 编码参数列（C）：一站式写入的参数文本，外部导入为空显示 —
+    const encodingParams = document.createElement('td');
+    encodingParams.textContent = candidate.encodingParams || '—';
+
     const metricCells: HTMLTableCellElement[] = [];
     for (const key of metricKeys(candidates)) {
       const td = document.createElement('td');
@@ -874,7 +888,7 @@ function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
       status.textContent = '完成';
     }
 
-    tr.append(rank, name, fileSize, ratio, ...metricCells, status);
+    tr.append(rank, name, fileSize, ratio, encodingParams, ...metricCells, status);
     body.append(tr);
   });
   table.append(body);

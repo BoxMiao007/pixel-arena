@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{ipc::Channel, Manager, State};
 
-use pixel_arena_core::workspace::{Workspace, WorkspaceError};
+use pixel_arena_core::workspace::{Group, Round, Workspace, WorkspaceError};
 
 mod ffmpeg_setup;
 mod video_probe;
@@ -34,6 +34,16 @@ struct AppState {
 #[tauri::command]
 fn core_version() -> String {
     pixel_arena_core::version().to_string()
+}
+
+/// 一站式单档产物（onestop_encode 回传）：产物路径 + 编码参数文本。
+/// 参数文本与 CLI 的进度标签同出核心库 OnestopFormat::encoding_params_text 一处，
+/// 前端纳入本轮时原样写入 encoding_params（结果表「编码参数」列的数据源）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OnestopProduct {
+    path: String,
+    encoding_params: String,
 }
 
 /// 启动时从磁盘恢复工作区。文件不存在（首次启动）回落到空工作区；
@@ -61,6 +71,26 @@ where
     change(&mut ws).map_err(|err| err.to_string())?;
     ws.save_to_file(&state.path).map_err(|err| err.to_string())?;
     Ok(ws.clone())
+}
+
+/// 按 id 只读定位跑分组与评测轮（onestop_encode / round_bdrate / export_round_file
+/// 三处命令共用）：组与轮分开报错，错误文案统一一版中文。
+fn find_round<'a>(
+    ws: &'a Workspace,
+    group_id: &str,
+    round_id: &str,
+) -> Result<(&'a Group, &'a Round), String> {
+    let group = ws
+        .groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .ok_or_else(|| "跑分组不存在或已被关闭".to_string())?;
+    let round = group
+        .rounds
+        .iter()
+        .find(|r| r.id == round_id)
+        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+    Ok((group, round))
 }
 
 #[tauri::command]
@@ -136,15 +166,21 @@ fn round_set_reference(
 }
 
 /// IPC 命令：为评测轮添加若干张跑分图（多选）。
+/// `encoding_params`（可选）：与 paths 一一对应的编码参数文本，仅一站式模式传入；
+/// 外部导入不传（None）——参数用户自备、工具不知晓，界面与报告显示 —。
 #[tauri::command]
 fn round_add_candidates(
     group_id: String,
     round_id: String,
     paths: Vec<String>,
+    encoding_params: Option<Vec<String>>,
     state: State<AppState>,
 ) -> Result<Workspace, String> {
     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-    mutate(&state, |ws| ws.add_round_candidates(&group_id, &round_id, &paths))
+    let params = encoding_params.map(|values| values.into_iter().map(Some).collect::<Vec<_>>());
+    mutate(&state, |ws| {
+        ws.add_round_candidates_with_params(&group_id, &round_id, &paths, params.as_deref())
+    })
 }
 
 /// IPC 命令：对一张跑分图跑分（前端逐张调用，每张回来就更新一行）。
@@ -185,21 +221,22 @@ async fn onestop_encode(
     format: String,
     quality: Option<u8>,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<OnestopProduct, String> {
     // 前置校验（持锁只做只读检查）：评测轮必须还在，且传入原图与本轮所选原图一致，
     // 防止往已删除的轮目录里写产物或给 A 轮产物挂到 B 轮原图名下。
     {
         let ws = state.workspace.lock().expect("工作区锁不应中毒");
-        let round = ws
-            .groups
-            .iter()
-            .find(|g| g.id == group_id)
-            .and_then(|g| g.rounds.iter().find(|r| r.id == round_id))
-            .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+        let (_, round) = find_round(&ws, &group_id, &round_id)?;
         if round.reference_path.as_deref() != Some(reference_path.as_str()) {
             return Err("传入的原图与本轮所选原图不一致，请重新触发一站式跑分".to_string());
         }
     }
+
+    // 编码参数文本与产物路径一起回传（与 CLI 同出核心库 OnestopFormat 一处），
+    // 前端纳入本轮时原样写入 encoding_params。格式串先过核心库解析（fail-fast）。
+    let params = pixel_arena_core::encode::OnestopFormat::parse(&format)
+        .map_err(|err| err.to_string())?
+        .encoding_params_text(quality);
 
     let rounds_dir = state.rounds_dir.clone();
     let tools_dir = state.tools_dir.clone();
@@ -211,7 +248,10 @@ async fn onestop_encode(
             rounds_dir.join(&round_id),
             tools_dir.as_path(),
         )
-        .map(|product| product.to_string_lossy().into_owned())
+        .map(|product| OnestopProduct {
+            path: product.to_string_lossy().into_owned(),
+            encoding_params: params,
+        })
         .map_err(|err| err.to_string())
     })
     .await
@@ -327,12 +367,7 @@ fn round_bdrate(
     state: State<AppState>,
 ) -> Result<pixel_arena_core::bdrate::BdrateSummary, String> {
     let ws = state.workspace.lock().expect("工作区锁不应中毒");
-    let round = ws
-        .groups
-        .iter()
-        .find(|g| g.id == group_id)
-        .and_then(|g| g.rounds.iter().find(|r| r.id == round_id))
-        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+    let (_, round) = find_round(&ws, &group_id, &round_id)?;
     Ok(pixel_arena_core::bdrate::summarize_round(round))
 }
 
@@ -363,16 +398,7 @@ pub fn export_round_file(
     path: &str,
     generated_at: &str,
 ) -> Result<String, String> {
-    let group = ws
-        .groups
-        .iter()
-        .find(|g| g.id == group_id)
-        .ok_or_else(|| "跑分组不存在或已被关闭".to_string())?;
-    let round = group
-        .rounds
-        .iter()
-        .find(|r| r.id == round_id)
-        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+    let (group, round) = find_round(ws, group_id, round_id)?;
 
     let content = match kind {
         "csv" => pixel_arena_core::report::export_csv(&group.name, round, generated_at),

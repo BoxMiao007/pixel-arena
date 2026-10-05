@@ -75,6 +75,10 @@ pub struct CandidateImage {
     /// 未跑分或跑分失败时为 None。
     #[serde(default)]
     pub metrics: Option<BTreeMap<String, MetricValue>>,
+    /// 编码参数文本（如 "JPEG q75"、"PNG 无损"），一站式模式写入；外部导入模式
+    /// 为 None（参数用户自备，工具不知晓），界面与报告显示 —。
+    #[serde(default)]
+    pub encoding_params: Option<String>,
     /// 跑分失败原因（中文，可直接展示）。成功或未跑分时为 None。
     #[serde(default)]
     pub error: Option<String>,
@@ -94,6 +98,10 @@ pub struct CandidateVideo {
     /// 跑分结果：指标名 → 值（VMAF / PSNR / SSIM）。未跑分或失败时为 None。
     #[serde(default)]
     pub metrics: Option<BTreeMap<String, MetricValue>>,
+    /// 编码参数文本（语义与 [`CandidateImage::encoding_params`] 一致；视频一站式
+    /// 属第二版路线图，当前流程不会写入，字段先行保证两侧数据模型同构）。
+    #[serde(default)]
+    pub encoding_params: Option<String>,
     /// 跑分失败原因（中文，可直接展示）。成功或未跑分时为 None。
     #[serde(default)]
     pub error: Option<String>,
@@ -236,7 +244,7 @@ impl Workspace {
             .ok_or_else(|| WorkspaceError::RoundNotFound(round_id.to_string()))
     }
 
-    /// 选入原图（外部导入模式：从文件对话框选一张基准图，可重复选换图）。
+    /// 选入原图（外部导入模式：从文件对话框选一张原图，可重复选换图）。
     ///
     /// 换原图时旧跑分结果都是相对旧原图算的，连同体积比、失败原因一起作废；
     /// 已在列表里的跑分图按新原图重算体积比。原图文件必须存在（fail-fast）。
@@ -262,12 +270,27 @@ impl Workspace {
     /// 把若干张跑分图加入评测轮（外部导入模式的多选）。
     ///
     /// 文件大小选入时从磁盘读取；已在列表里的路径跳过（重复选同一张不产生重复行）。
-    /// 任一文件不存在时整批失败、不落半批（fail-fast）。
+    /// 任一文件不存在时整批失败、不落半批（fail-fast）。外部导入的编码参数用户自备、
+    /// 工具不知晓，`encoding_params` 传 None（一站式模式传与 `paths` 等长的参数表，
+    /// 见 [`Workspace::add_round_candidates_with_params`]）。
     pub fn add_round_candidates(
         &mut self,
         group_id: &str,
         round_id: &str,
         paths: &[&str],
+    ) -> Result<(), WorkspaceError> {
+        self.add_round_candidates_with_params(group_id, round_id, paths, None)
+    }
+
+    /// [`Workspace::add_round_candidates`] 的带参数版（一站式模式）：
+    /// `encoding_params` 与 `paths` 一一对应（如 "JPEG q75"），长度不足的尾部按
+    /// None 处理。重复路径跳过时保留行内原有参数（重复触发幂等）。
+    pub fn add_round_candidates_with_params(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        paths: &[&str],
+        encoding_params: Option<&[Option<String>]>,
     ) -> Result<(), WorkspaceError> {
         let round = self.round_mut(group_id, round_id)?;
         let reference_size = match &round.reference_path {
@@ -277,7 +300,7 @@ impl Workspace {
 
         // 先全部读盘校验，确认无误再改内存
         let mut fresh: Vec<CandidateImage> = Vec::new();
-        for path in paths {
+        for (index, path) in paths.iter().enumerate() {
             let path = path.trim();
             let already = round.candidates.iter().any(|c| c.path == path)
                 || fresh.iter().any(|c| c.path == path);
@@ -290,6 +313,10 @@ impl Workspace {
                 file_size,
                 size_ratio: reference_size.map(|r| file_size as f64 / r as f64),
                 metrics: None,
+                encoding_params: encoding_params
+                    .and_then(|params| params.get(index))
+                    .cloned()
+                    .flatten(),
                 error: None,
             });
         }
@@ -331,9 +358,14 @@ impl Workspace {
             .expect("上面刚确认过跑分图在列表里");
         match result {
             Ok(metrics) => {
+                // 全部五指标入库（T04 兑现）：结果表与导出报告的数据列由此驱动，
+                // 键名与 report.rs 的 IMAGE_METRIC_KEYS / 旧工作区文件保持一致
                 candidate.metrics = Some(BTreeMap::from([
                     ("PSNR".to_string(), MetricValue::new(metrics.psnr)),
                     ("SSIM".to_string(), MetricValue::new(metrics.ssim)),
+                    ("MS-SSIM".to_string(), MetricValue::new(metrics.ms_ssim)),
+                    ("Butteraugli".to_string(), MetricValue::new(metrics.butteraugli)),
+                    ("SSIMULACRA2".to_string(), MetricValue::new(metrics.ssimulacra2)),
                 ]));
                 candidate.error = None;
             }
@@ -399,6 +431,7 @@ impl Workspace {
                 file_size,
                 size_ratio: reference_size.map(|r| file_size as f64 / r as f64),
                 metrics: None,
+                encoding_params: None,
                 error: None,
                 elapsed_ms: None,
             });
@@ -887,6 +920,7 @@ mod tests {
                 ("PSNR".to_string(), MetricValue::Number(27.5)),
                 ("SSIM".to_string(), MetricValue::Inf),
             ])),
+            encoding_params: None,
             error: None,
         });
         let restored = Workspace::from_json(&ws.to_json()).unwrap();
@@ -971,6 +1005,43 @@ mod tests {
     }
 
     #[test]
+    fn add_candidates_with_params_stores_encoding_params() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组").unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        // 一站式路径：参数与路径一一对应写入；外部导入路径（add_round_candidates）留空
+        let params = vec![Some("JPEG q75".to_string()), None];
+        ws.add_round_candidates_with_params(
+            &g,
+            &r,
+            &[&data("photo-dis.jpg"), &data("photo-dis.webp")],
+            Some(&params),
+        )
+        .unwrap();
+        let candidates = &ws.groups[0].rounds[0].candidates;
+        assert_eq!(candidates[0].encoding_params.as_deref(), Some("JPEG q75"));
+        assert_eq!(candidates[1].encoding_params, None);
+
+        // 编码参数随 JSON 持久化（camelCase encodingParams），旧文件缺字段回落 None
+        let restored = Workspace::from_json(&ws.to_json()).unwrap();
+        let restored_candidate = &restored.groups[0].rounds[0].candidates[0];
+        assert_eq!(
+            restored_candidate.encoding_params.as_deref(),
+            Some("JPEG q75")
+        );
+        let json = ws.to_json();
+        assert!(json.contains("\"encodingParams\": \"JPEG q75\""), "JSON 键名: {json}");
+
+        // 重复触发（同路径已在列表里）幂等：保留行内原有参数，不产生重复行
+        let again = vec![Some("另外的参数".to_string())];
+        ws.add_round_candidates_with_params(&g, &r, &[&data("photo-dis.jpg")], Some(&again))
+            .unwrap();
+        let candidates = &ws.groups[0].rounds[0].candidates;
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].encoding_params.as_deref(), Some("JPEG q75"));
+    }
+
+    #[test]
     fn reselecting_reference_invalidates_old_results() {
         // 换原图后旧指标都是相对旧原图算的，作废；体积比不依赖画质，按新原图重算
         let mut ws = Workspace::new();
@@ -1008,13 +1079,26 @@ mod tests {
         let candidates = &ws.groups[0].rounds[0].candidates;
         let metrics = candidates[0].metrics.as_ref().expect("跑分后应有指标");
         assert_eq!(candidates[0].error, None);
-        assert_eq!(metrics.keys().collect::<Vec<_>>(), vec!["PSNR", "SSIM"]);
+        // T04 五指标全部入库（BTreeMap 按字典序），结果表与导出报告的数据列由此驱动
+        assert_eq!(
+            metrics.keys().collect::<Vec<_>>(),
+            vec!["Butteraugli", "MS-SSIM", "PSNR", "SSIM", "SSIMULACRA2"]
+        );
         // 独立锚点：T02 交叉验证记录的自然图像中段 SSIM ≈ 0.52（photo-ref vs photo-dis.png）
         let ssim = metrics["SSIM"].value();
         assert!((0.4..=0.65).contains(&ssim), "SSIM 应在中段，实际 {ssim}");
+        assert!(
+            (0.0..=1.0).contains(&metrics["MS-SSIM"].value()),
+            "MS-SSIM 应在 [0, 1]"
+        );
+        assert!(
+            metrics["Butteraugli"].value() > 0.0 && metrics["SSIMULACRA2"].value() > 0.0,
+            "感知指标应为有限正值"
+        );
         assert!(candidates[1].metrics.is_none());
 
-        // 逐像素相同的图 → PSNR 无穷大，走 "inf" 哨兵
+        // 逐像素相同的图 → PSNR 无穷大走 "inf" 哨兵；SSIM/MS-SSIM = 1，
+        // Butteraugli = 0（距离分），SSIMULACRA2 = 100（质量分）
         ws.score_round_candidate(&g, &r, &data("photo-ref.png")).unwrap();
         assert!(ws.groups[0].rounds[0].candidates.contains(&CandidateImage {
             path: data("photo-ref.png"),
@@ -1023,8 +1107,12 @@ mod tests {
             metrics: Some(BTreeMap::from([
                 ("PSNR".to_string(), MetricValue::Inf),
                 ("SSIM".to_string(), MetricValue::Number(1.0)),
+                ("MS-SSIM".to_string(), MetricValue::Number(1.0)),
+                ("Butteraugli".to_string(), MetricValue::Number(0.0)),
+                ("SSIMULACRA2".to_string(), MetricValue::Number(100.0)),
             ])),
             error: None,
+            encoding_params: None,
         }));
     }
 
@@ -1152,6 +1240,7 @@ mod tests {
                 ("PSNR".to_string(), MetricValue::Inf),
                 ("SSIM".to_string(), MetricValue::Number(0.9926)),
             ])),
+            encoding_params: None,
             error: None,
             elapsed_ms: Some(1234),
         });

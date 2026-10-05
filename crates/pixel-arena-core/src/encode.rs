@@ -25,7 +25,6 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 /// 每平台一份的编码器来源条目：编码器名、版本、下载地址、sha256、压缩包内可执行文件名。
 #[derive(Debug, Clone)]
@@ -84,8 +83,9 @@ impl OnestopFormat {
         matches!(self, Self::Png | Self::WebpLossless | Self::JxlLossless)
     }
 
-    /// 用户可读的格式名（中文错误提示用）。
-    fn zh_name(self) -> &'static str {
+    /// 用户可读的显示名（进度文本、CLI 输出与中文错误提示共用此单一来源；
+    /// 前端 src/onestop.ts 的同名映射跨语言无法复用，新增格式需两处同步）。
+    pub fn display_name(self) -> &'static str {
         match self {
             Self::Jpeg => "JPEG",
             Self::Webp => "WebP",
@@ -93,7 +93,20 @@ impl OnestopFormat {
             Self::Jxl => "JPEG XL",
             Self::Png => "PNG",
             Self::WebpLossless => "无损 WebP",
-            Self::JxlLossless => "无损 JPEG XL",
+            Self::JxlLossless => "无损 JXL",
+        }
+    }
+
+    /// 一站式产物的编码参数文本（结果表「编码参数」列）：有损为「JPEG q75」式，
+    /// 无损组为「PNG 无损」式（外部导入的跑分图无此文本——参数用户自备，工具不知晓）。
+    pub fn encoding_params_text(self, quality: Option<u8>) -> String {
+        match (self, quality) {
+            (format, Some(q)) => format!("{} q{q}", format.display_name()),
+            (Self::Png, None) => "PNG 无损".to_string(),
+            (Self::WebpLossless, None) => "WebP 无损".to_string(),
+            (Self::JxlLossless, None) => "JPEG XL 无损".to_string(),
+            // 无损格式不会带质量参数（encode_onestop 已 fail-fast），兜底走显示名
+            (format, None) => format.display_name().to_string(),
         }
     }
 }
@@ -229,7 +242,7 @@ pub fn encode_onestop(
     if format.is_lossless() {
         if quality.is_some() {
             return Err(CoreError::Encode {
-                message: format!("{} 为无损格式，不接受质量参数", format.zh_name()),
+                message: format!("{} 为无损格式，不接受质量参数", format.display_name()),
             });
         }
     } else {
@@ -711,42 +724,22 @@ fn resolve_url(url: &str) -> String {
     }
 }
 
+/// 编码器工件大小上限：超出即视为异常（防劫持/误配把巨物拉进内存）。
+const ENCODER_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 fn download(url: &str) -> Result<Vec<u8>, CoreError> {
-    let mut builder = ureq::AgentBuilder::new().timeout(Duration::from_secs(300));
-    // 优先复用系统代理（HTTPS_PROXY 等），网络受限环境不配置就走直连
-    let proxy_env = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
-        .iter()
-        .find_map(|key| std::env::var(key).ok().filter(|v| !v.trim().is_empty()));
-    if let Some(proxy) = proxy_env {
-        match ureq::Proxy::new(&proxy) {
-            Ok(proxy) => builder = builder.proxy(proxy),
-            Err(_) => return Err(CoreError::Encode {
-                message: format!("代理地址无效（{proxy}），无法下载编码器"),
-            }),
-        }
-    }
-    let response = builder
-        .build()
-        .get(url)
-        .call()
-        .map_err(|err| {
-            // ureq 的 Status 错误文本自带完整 URL，与外层重复；只留状态码与简短原因
-            let reason = match &err {
-                ureq::Error::Status(code, _) => format!("HTTP {code}"),
-                other => other.to_string(),
-            };
-            CoreError::Encode {
-                message: format!("下载编码器失败（{url}）：{reason}"),
-            }
-        })?;
     let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(64 * 1024 * 1024) // 防御：工件上限 64MB，超出即异常
-        .read_to_end(&mut bytes)
-        .map_err(|err| CoreError::Encode {
-            message: format!("下载编码器中断（{url}）：{err}"),
-        })?;
+    {
+        let sink = &mut |chunk: &[u8]| -> std::io::Result<()> {
+            bytes.extend_from_slice(chunk);
+            Ok(())
+        };
+        crate::net::download(url, ENCODER_ARCHIVE_MAX_BYTES, &mut |_, _| {}, sink).map_err(
+            |reason| CoreError::Encode {
+                message: format!("下载编码器失败（{url}）：{reason}"),
+            },
+        )?;
+    }
     Ok(bytes)
 }
 
@@ -862,20 +855,56 @@ fn report_missing(members: &[&str], found: &[bool]) -> Result<(), CoreError> {
     Ok(())
 }
 
+/// 文件哈希下沉到 net 模块（与 ffmpeg 安装同一口径），这里包上编码器场景的中文错误。
 fn sha256_file(path: &Path) -> Result<String, CoreError> {
-    let mut file = std::fs::File::open(path).map_err(|err| CoreError::Encode {
+    crate::net::sha256_file(path).map_err(|err| CoreError::Encode {
         message: format!("无法读取已安装的编码器 {}：{err}", path.display()),
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|err| CoreError::Encode {
-            message: format!("无法读取已安装的编码器 {}：{err}", path.display()),
-        })?;
-        if read == 0 {
-            break;
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 显示名是 CLI 进度文本与结果表「编码参数」列的单一来源，文本改动会直接
+    /// 变更 CLI 输出，这里钉死（与前端 onestop.ts 的映射需人工同步）。
+    #[test]
+    fn display_name_pins_cli_visible_texts() {
+        let cases = [
+            ("jpeg", "JPEG"),
+            ("webp", "WebP"),
+            ("avif", "AVIF"),
+            ("jxl", "JPEG XL"),
+            ("png", "PNG"),
+            ("webp-lossless", "无损 WebP"),
+            ("jxl-lossless", "无损 JXL"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(OnestopFormat::parse(raw).unwrap().display_name(), expected);
         }
-        hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+
+    #[test]
+    fn encoding_params_text_covers_lossy_and_lossless() {
+        assert_eq!(
+            OnestopFormat::parse("jpeg").unwrap().encoding_params_text(Some(75)),
+            "JPEG q75"
+        );
+        assert_eq!(
+            OnestopFormat::parse("jxl").unwrap().encoding_params_text(Some(60)),
+            "JPEG XL q60"
+        );
+        assert_eq!(
+            OnestopFormat::parse("png").unwrap().encoding_params_text(None),
+            "PNG 无损"
+        );
+        assert_eq!(
+            OnestopFormat::parse("webp-lossless").unwrap().encoding_params_text(None),
+            "WebP 无损"
+        );
+        assert_eq!(
+            OnestopFormat::parse("jxl-lossless").unwrap().encoding_params_text(None),
+            "JPEG XL 无损"
+        );
+    }
 }

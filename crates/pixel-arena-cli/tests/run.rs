@@ -653,3 +653,55 @@ fn run_默认阶梯_本机已装编码器时_15行_格式质量序与无损锚�
     assert!(stderr.contains("（15/15）"), "生成进度应走到最后一项：{stderr}");
     assert!(!stderr.contains("正在下载编码器"), "本机已装不应提示下载：{stderr}");
 }
+
+#[test]
+fn run_png对照组_html报告_自包含_格式质量列齐全_退出码0() {
+    let reference = sample("photo-ref.png");
+
+    let output = Command::cargo_bin("pixel-arena-cli")
+        .unwrap()
+        .args([
+            "run",
+            "--reference",
+            reference.to_str().unwrap(),
+            "--formats", // 有损组显式清空：只跑无损 PNG（离线全链路）
+            "--lossless",
+            "png",
+            "--format",
+            "html",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "正常路径退出码应为 0，stderr：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // 自包含中文报告：doctype + 内联样式 + 生成时间，无外部资源引用
+    assert!(stdout.starts_with("<!doctype html>"), "HTML 报告开头：{stdout}");
+    assert!(stdout.contains("<html lang=\"zh-CN\">"));
+    assert!(stdout.contains("<style>"), "样式应内联");
+    assert!(!stdout.contains("src="), "报告不应引用外部资源：{stdout}");
+    // run 特有的格式/质量列：规范格式串 png + 无损组的中文「无损」质量
+    for fragment in [
+        "像素竞技场跑分报告",
+        "生成时间：",
+        "一站式批量跑分",
+        "photo-ref.png",
+        ">png<",
+        "无损",
+        "PSNR",
+        "SSIMULACRA2",
+    ] {
+        assert!(stdout.contains(fragment), "报告应含「{fragment}」：{stdout}");
+    }
+    // 无损产物与原图逐位一致：PSNR 显示 ∞（HTML 口径，非 CSV 的 inf 哨兵）
+    assert!(stdout.contains("∞"), "无损产物 PSNR 应显示 ∞：{stdout}");
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("正在生成 PNG（1/1）"), "生成进度走 stderr：{stderr}");
+}
