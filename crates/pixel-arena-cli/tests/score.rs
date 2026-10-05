@@ -38,8 +38,15 @@ fn score_csv_单张跑分图_输出表头与一行指标_退出码0() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    // 票 18：CSV 输出以 UTF-8 BOM（EF BB BF）开头，Excel 中文环境直开不乱码
+    assert_eq!(
+        &output.stdout[..3],
+        &[0xEF, 0xBB, 0xBF],
+        "CSV 输出前三字节应为 UTF-8 BOM"
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let lines: Vec<&str> = stdout.lines().collect();
+    let body = stdout.strip_prefix('\u{FEFF}').expect("stdout 应以 UTF-8 BOM 开头");
+    let lines: Vec<&str> = body.lines().collect();
     assert_eq!(lines.len(), 2, "单张跑分图应输出表头加一行，实际：{stdout}");
     assert_eq!(
         lines[0],

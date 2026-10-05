@@ -103,6 +103,8 @@ fn bdrate_legend(reference_format: Option<&str>) -> String {
 }
 
 /// 导出 CSV 文本。分三节：图片跑分结果、视频跑分结果（无视频时省略）、BD-rate 汇总。
+/// 开头带 UTF-8 BOM（EF BB BF）：Excel 在中文环境把无 BOM 的 UTF-8 按 ANSI 解析会乱码
+/// （票 18），BOM 是 Excel 识别 UTF-8 的依据；LibreOffice 与程序读取均容忍 BOM。
 pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String {
     let summary = summarize_round(round);
     let mut lines: Vec<String> = Vec::new();
@@ -203,7 +205,10 @@ pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String
         ));
     }
 
-    let mut csv = lines.join("\n");
+    // BOM 作为字符串首字符写出即 EF BB BF（票 18：Excel 中文环境直开不乱码）
+    let mut csv = String::new();
+    csv.push('\u{FEFF}');
+    csv.push_str(&lines.join("\n"));
     csv.push('\n');
     csv
 }
@@ -433,6 +438,8 @@ mod tests {
         ]);
         let csv = export_csv("人像测试", &round, "2026-10-05 12:00:00");
 
+        // 票 18：CSV 以 UTF-8 BOM 开头（Excel 中文环境按 ANSI 解析无 BOM 的 UTF-8 会乱码）
+        assert!(csv.starts_with('\u{FEFF}'), "CSV 应以 UTF-8 BOM 开头");
         assert!(csv.contains("# 跑分组：人像测试"));
         assert!(csv.contains("# 评测轮：照片测试轮"));
         assert!(csv.contains("# 原图：/tmp/原图 photo.png"));

@@ -455,13 +455,26 @@ function sanitizeFileName(name: string): string {
   return cleaned.length > 0 ? cleaned : '评测轮';
 }
 
+/** 导出报告的默认文件名主干（票 18）：优先原图文件名主干（xxx.jpg → xxx），
+ * 无原图或主干清洗后为空时回落轮名。 */
+function exportBaseName(round: Round): string {
+  if (round.referencePath) {
+    const name = fileName(round.referencePath);
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const cleaned = stem.replace(/[\\/:*?"<>|]/g, '_').trim();
+    if (cleaned.length > 0) return cleaned;
+  }
+  return sanitizeFileName(round.name);
+}
+
 /** 导出当前评测轮报告：save 对话框选路径 → round_export 写文件（后端返回中文错误） */
 async function exportRound(kind: 'csv' | 'html'): Promise<void> {
   const session = activeRound();
   if (!session) return;
   const path = await save({
     title: kind === 'csv' ? '导出 CSV' : '导出 HTML 报告',
-    defaultPath: `${sanitizeFileName(session.round.name)}.${kind}`,
+    defaultPath: `${exportBaseName(session.round)}.${kind}`,
     filters: [
       kind === 'csv'
         ? { name: 'CSV（逗号分隔）', extensions: ['csv'] }

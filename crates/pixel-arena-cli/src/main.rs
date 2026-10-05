@@ -167,6 +167,9 @@ fn fail(error: &CoreError) -> ExitCode {
 }
 
 fn write_csv(rows: &[ScoreRow]) {
+    // CSV 输出以 UTF-8 BOM 开头（票 18）：重定向到文件后 Excel 中文环境按 ANSI
+    // 解析无 BOM 的 UTF-8 会乱码；JSON/HTML 不加（非 CSV 约定）
+    print!("\u{FEFF}");
     println!(
         "reference,candidate,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,reference_bytes,candidate_bytes,size_ratio"
     );
@@ -698,6 +701,8 @@ fn run_quality_text(quality: Option<u8>) -> String {
 
 /// run 结果的 CSV 输出：列 = score 现有列序 + format/quality 两列（插在 candidate 之后）。
 fn write_run_csv(rows: &[RunRow]) {
+    // 与 score 的 CSV 同约定：UTF-8 BOM 开头（票 18，见 write_csv 注释）
+    print!("\u{FEFF}");
     println!(
         "reference,candidate,format,quality,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,reference_bytes,candidate_bytes,size_ratio"
     );
