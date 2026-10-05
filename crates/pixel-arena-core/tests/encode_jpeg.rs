@@ -168,6 +168,7 @@ fn tar_gz(member: &str, content: &[u8]) -> Vec<u8> {
 
 fn source_for(url: String, sha256: String, member: &'static str) -> EncoderSource {
     EncoderSource {
+        name: "mozjpeg".to_string(),
         version: "test".to_string(),
         url,
         sha256,

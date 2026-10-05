@@ -80,7 +80,15 @@ pub fn score_images(
 /// 用内容嗅探（魔数）判断格式，扩展名只作提示：扩展名错误或缺失也能解码。
 /// pub(crate)：encode 模块（一站式编码）复用同一套解码口径——喂给编码器的像素
 /// 必须与跑分时解码的像素一致，避免两处解码行为漂移。
+///
+/// T11：AVIF/JPEG XL 是 image crate 不支持的产物格式，按魔数分派到 decode 模块
+/// 的专用解码路径（决策 0012）；PNG/JPEG/WebP 仍走下方原路径（黄金基准守护数值不变）。
 pub(crate) fn decode_srgb(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, CoreError> {
+    match crate::decode::sniff_special(path)? {
+        Some(crate::decode::SpecialFormat::Jxl) => return crate::decode::decode_jxl(path),
+        Some(crate::decode::SpecialFormat::Avif) => return crate::decode::decode_avif(path),
+        None => {}
+    }
     let file = std::fs::File::open(path).map_err(|source| CoreError::Io {
         path: path.to_path_buf(),
         source,

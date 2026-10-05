@@ -26,6 +26,8 @@ tar = "0.4"
 flate2 = "1"
 # 编码时写 PPM 中间临时文件
 tempfile = "3.27.0"
+# JPEG XL 产物的进程内解码（T11，方案见 docs/decisions.md 0012）：纯 Rust，三端无外部依赖
+jxl-oxide = "0.12"
 
 [dev-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
@@ -34,3 +36,5 @@ toml = { version = "1.1.6", features = ["serde"] }
 sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
+# 桩编码器测试要验证喂给 avifenc 的是真 PNG
+image = { version = "0.25.10", default-features = false, features = ["png"] }

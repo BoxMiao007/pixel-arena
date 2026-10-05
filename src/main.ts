@@ -7,8 +7,17 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
 import { fileName } from './util';
-// T10 接线点：一站式跑分（JPEG 编码阶梯）实现在 src/onestop.ts，本文件只做触发与进度显示
-import { runOnestopJpeg, JPEG_QUALITIES } from './onestop';
+// T11 接线点：一站式跑分升级为完整编码阶梯（格式/质量档/无损组可勾选），
+// 清单与生成循环在 src/onestop.ts，本文件只做勾选 UI、触发与进度显示
+import {
+  runOnestop as runOnestopLadder,
+  buildLadder,
+  defaultSelection,
+  LOSSY_FORMATS,
+  QUALITIES,
+  LOSSLESS_FORMATS,
+  type OnestopSelection,
+} from './onestop';
 import './style.css';
 
 // 与核心库 workspace.rs 的 serde 输出（camelCase）一一对应
@@ -60,6 +69,9 @@ let scoringPath: string | null = null;
 let sortState: { key: string; dir: 1 | -1 } | null = null;
 // 排序状态跟随评测轮：切到另一轮就归零
 let sortRoundId: string | null = null;
+
+// T11 接线点：一站式编码阶梯的勾选状态（界面会话态，重启归零，默认全开 = 决策 0003）
+let onestopSelection: OnestopSelection = defaultSelection();
 
 const $tabs = document.querySelector<HTMLDivElement>('#tabs')!;
 const $rounds = document.querySelector<HTMLDivElement>('#rounds')!;
@@ -201,26 +213,32 @@ async function scoreAllCandidates(): Promise<void> {
   setStatus(`跑分完成，共 ${queue.length} 张`);
 }
 
-// ---------- 一站式跑分（T10，编码阶梯实现在 src/onestop.ts） ----------
+// ---------- 一站式跑分（T11 完整编码阶梯，清单实现在 src/onestop.ts） ----------
 
 /**
- * 触发一站式跑分（JPEG）：逐档生成 JPEG q60/75/90 → 产物自动纳入本轮 →
+ * 触发一站式跑分：按勾选的格式 × 质量档 + 无损组逐项生成 → 产物自动纳入本轮 →
  * 复用上面的逐张跑分循环出分。期间沿用 scoring 忙标志置灰全部操作按钮。
- * 某档失败不回滚已成功的档位，失败档位的中文原因在跑分结束后补充提示。
+ * 某项失败不回滚已成功的项，失败项的中文原因在跑分结束后补充提示。
  */
 async function runOnestop(): Promise<void> {
   const session = activeRound();
   if (!session || scoring || !session.round.referencePath) return;
+  const ladder = buildLadder(onestopSelection);
+  if (ladder.length === 0) {
+    setStatus('请先勾选至少一个编码格式、质量档或无损组', true);
+    return;
+  }
 
   scoring = true;
   scoringPath = null;
   render();
 
   try {
-    const result = await runOnestopJpeg({
+    const result = await runOnestopLadder({
       groupId: session.group.id,
       roundId: session.round.id,
       referencePath: session.round.referencePath,
+      ladder,
       onProgress: setStatus,
       onWorkspace: (updated) => {
         ws = updated;
@@ -231,7 +249,7 @@ async function runOnestop(): Promise<void> {
     if (result.generated > 0) {
       await scoreAllCandidates();
       if (result.failures.length > 0) {
-        setStatus(`跑分完成；生成失败的档位：${result.failures.join('；')}`, true);
+        setStatus(`跑分完成；生成失败的项：${result.failures.join('；')}`, true);
       }
     } else {
       setStatus(`一站式生成全部失败：${result.failures.join('；')}`, true);
@@ -243,6 +261,82 @@ async function runOnestop(): Promise<void> {
     scoringPath = null;
     render();
   }
+}
+
+/**
+ * T11 接线点：一站式勾选区（格式 × 质量档 × 无损组，默认全开）。
+ * 勾选状态放在模块级 onestopSelection，重渲染后按它恢复勾选框。
+ */
+function buildOnestopOptions(): HTMLDivElement {
+  const box = document.createElement('div');
+  box.className = 'onestop-options';
+
+  const group = (labelText: string): { wrap: HTMLLabelElement; input: HTMLInputElement } => {
+    const wrap = document.createElement('label');
+    wrap.className = 'onestop-check';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.disabled = scoring;
+    const span = document.createElement('span');
+    span.textContent = labelText;
+    wrap.append(input, span);
+    return { wrap, input };
+  };
+
+  const formats = document.createElement('span');
+  formats.className = 'onestop-group-label';
+  formats.textContent = '格式';
+  box.append(formats);
+  for (const { format, label } of LOSSY_FORMATS) {
+    const { wrap, input } = group(label);
+    input.checked = onestopSelection.lossyFormats.includes(format);
+    input.addEventListener('change', () => {
+      onestopSelection.lossyFormats = input.checked
+        ? [...onestopSelection.lossyFormats, format]
+        : onestopSelection.lossyFormats.filter((f) => f !== format);
+    });
+    box.append(wrap);
+  }
+
+  const qualities = document.createElement('span');
+  qualities.className = 'onestop-group-label';
+  qualities.textContent = '质量档';
+  box.append(qualities);
+  for (const quality of QUALITIES) {
+    const { wrap, input } = group(`q${quality}`);
+    input.checked = onestopSelection.qualities.includes(quality);
+    input.addEventListener('change', () => {
+      onestopSelection.qualities = input.checked
+        ? [...onestopSelection.qualities, quality]
+        : onestopSelection.qualities.filter((q) => q !== quality);
+    });
+    box.append(wrap);
+  }
+
+  const lossless = document.createElement('span');
+  lossless.className = 'onestop-group-label';
+  lossless.textContent = '无损组';
+  box.append(lossless);
+  for (const { format, label } of LOSSLESS_FORMATS) {
+    const { wrap, input } = group(label);
+    input.checked = onestopSelection.losslessFormats.includes(format);
+    input.addEventListener('change', () => {
+      onestopSelection.losslessFormats = input.checked
+        ? [...onestopSelection.losslessFormats, format]
+        : onestopSelection.losslessFormats.filter((f) => f !== format);
+    });
+    box.append(wrap);
+  }
+  return box;
+}
+
+/**
+ * T11 接线点：AVIF/JXL 产物 WebView 原生解不了，查看器改看核心库生成产物时
+ * 旁路写出的 PNG 代片（<产物>.png，像素与产物解码一致，见决策 0012）。
+ * 只影响查看显示；跑分与结果表仍用产物本身。
+ */
+function viewerPath(path: string): string {
+  return path.endsWith('.avif') || path.endsWith('.jxl') ? `${path}.png` : path;
 }
 
 /**
@@ -422,18 +516,26 @@ function renderContent(): void {
   scoreBtn.disabled = scoring || !round.referencePath || round.candidates.length === 0;
   scoreBtn.addEventListener('click', () => void startScoring());
 
-  // T10 接线点：一站式跑分（JPEG）——只靠原图自动生成编码阶梯并跑分，进度亮在状态栏
+  // T11 接线点：一站式跑分（完整编码阶梯）——勾选项逐个生成并跑分，进度亮在状态栏
+  const ladderCount = buildLadder(onestopSelection).length;
   const onestopBtn = document.createElement('button');
   onestopBtn.className = 'add-btn onestop-btn';
-  onestopBtn.textContent = scoring ? '一站式跑分中…' : '一站式跑分（JPEG）';
-  onestopBtn.title = round.referencePath
-    ? `自动用 MozJPEG 生成 JPEG q${JPEG_QUALITIES.join('/q')} 并逐张跑分（首次使用需联网下载编码器）`
-    : '需要先选择原图';
-  onestopBtn.disabled = scoring || !round.referencePath;
+  onestopBtn.textContent = scoring ? '一站式跑分中…' : '一站式跑分';
+  onestopBtn.title =
+    !round.referencePath
+      ? '需要先选择原图'
+      : ladderCount === 0
+        ? '请先在下方勾选至少一个格式、质量档或无损组'
+        : `按下方勾选自动生成 ${ladderCount} 份跑分图并逐张跑分（编码器首次使用需联网下载；AVIF/JXL 编码较慢）`;
+  onestopBtn.disabled = scoring || !round.referencePath || ladderCount === 0;
   onestopBtn.addEventListener('click', () => void runOnestop());
 
   toolbar.append(pickReferenceBtn, referenceLabel, addCandidatesBtn, scoreBtn, onestopBtn);
   $content.append(toolbar);
+  // T11 接线点：格式/质量档/无损组勾选区（有原图才可触发，故仅在已选原图时展示）
+  if (round.referencePath) {
+    $content.append(buildOnestopOptions());
+  }
 
   if (round.candidates.length === 0) {
     const hint = document.createElement('p');
@@ -450,7 +552,8 @@ function renderContent(): void {
       mountViewer(viewerBox, {
         roundId: round.id,
         referencePath: round.referencePath,
-        candidates: round.candidates.map((c) => ({ path: c.path })),
+        // T11 接线点：AVIF/JXL 跑分图换成查看器代片路径显示（真实路径仍用于跑分与结果表）
+        candidates: round.candidates.map((c) => ({ path: viewerPath(c.path) })),
       });
     }
 

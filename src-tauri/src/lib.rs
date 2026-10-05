@@ -170,17 +170,20 @@ async fn round_score_candidate(
     .map_err(|err| format!("跑分任务执行失败: {err}"))?
 }
 
-/// IPC 命令：一站式模式第一切片（T10）——用 MozJPEG 把原图编码为指定质量的 JPEG。
+/// IPC 命令：一站式模式按（格式, 质量）逐次生成一份跑分产物（T11 完整编码阶梯）。
 ///
-/// 产物写到应用数据目录 rounds/<轮 id>/<原图名>-q<质量>.jpg；是否纳入本轮由前端
-/// 在生成成功后调 round_add_candidates 决定（某档失败不影响其他档）。
-/// 下载/安装编码器与编码都可能耗时（首次使用要联网下载），放阻塞线程池执行。
+/// 格式标识：jpeg / webp / avif / jxl（有损，quality 必填）与 png / webp-lossless /
+/// jxl-lossless（无损对照组，quality 必须为 null）。产物写到应用数据目录
+/// rounds/<轮 id>/；是否纳入本轮由前端在生成成功后调 round_add_candidates 决定
+///（某项失败不影响其他项）。下载/安装编码器与编码都可能耗时（首次使用要联网下载），
+/// 放阻塞线程池执行。
 #[tauri::command]
-async fn onestop_encode_jpeg(
+async fn onestop_encode(
     group_id: String,
     round_id: String,
     reference_path: String,
-    quality: u8,
+    format: String,
+    quality: Option<u8>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // 前置校验（持锁只做只读检查）：评测轮必须还在，且传入原图与本轮所选原图一致，
@@ -201,8 +204,9 @@ async fn onestop_encode_jpeg(
     let rounds_dir = state.rounds_dir.clone();
     let tools_dir = state.tools_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        pixel_arena_core::encode::encode_jpeg(
+        pixel_arena_core::encode::encode_onestop(
             &reference_path,
+            &format,
             quality,
             rounds_dir.join(&round_id),
             tools_dir.as_path(),
@@ -325,6 +329,15 @@ pub fn run() {
             std::fs::create_dir_all(&dir).expect("无法创建应用数据目录");
             let tools_dir = dir.join("tools");
             std::fs::create_dir_all(&tools_dir).expect("无法创建工具目录");
+            // T11：AVIF 产物的解码工具 avifdec 与 avifenc 同工件安装。启动时把确定性
+            // 安装路径注入环境变量（已设置时尊重调用方覆盖），核心库解码入口按它分派
+            //（首次生成 AVIF 时自动安装，之后重启即可直接跑分/显示；进程启动早期一次性
+            // 设置，无并发写环境变量）。
+            if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_none() {
+                if let Some(avifdec) = pixel_arena_core::decode::avif_decoder_path(&tools_dir) {
+                    std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
+                }
+            }
             let video_stream = video_server::VideoStreamServer::spawn()
                 .expect("视频流服务启动失败");
             app.manage(AppState {
@@ -351,7 +364,7 @@ pub fn run() {
             round_set_reference,
             round_add_candidates,
             round_score_candidate,
-            onestop_encode_jpeg,
+            onestop_encode,
             // T14 视频评测轮
             round_set_video_reference,
             round_add_video_candidates,
