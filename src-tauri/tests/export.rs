@@ -106,6 +106,9 @@ fn export_csv_and_html_write_files_through_command_layer() {
     let csv_path = dir.path().join("验收轮.csv");
     let written = pixel_arena_lib::export_round_file(&ws, &group, &round, "csv", csv_path.to_str().unwrap(), "2026-10-05 14:00:00").unwrap();
     assert_eq!(written, csv_path.to_str().unwrap());
+    // 票 18：写出的 CSV 文件以 UTF-8 BOM（EF BB BF）开头，Excel 中文环境直开不乱码
+    let csv_bytes = std::fs::read(&csv_path).unwrap();
+    assert_eq!(&csv_bytes[..3], &[0xEF, 0xBB, 0xBF], "导出 CSV 前三字节应为 UTF-8 BOM");
     let csv = std::fs::read_to_string(&csv_path).unwrap();
     assert!(csv.contains("# 跑分组：验收组"));
     assert!(csv.contains("# 【图片跑分结果】"));
