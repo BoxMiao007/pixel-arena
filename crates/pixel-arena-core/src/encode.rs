@@ -5,7 +5,7 @@
 //
 // 编码器分发方案（docs/decisions.md 0009）：权威参考编码器不随应用捆绑，首次使用时
 // 按「编码器来源清单」（EncoderSource：编码器名 + 版本锁定的 URL + sha256）下载
-// .tar.gz 工件 → sha256 校验（不符报中文错误且不落盘）→ 解包出可执行文件到
+// 压缩包工件（tar.gz；T16 起官方 Windows zip 亦同）→ sha256 校验（不符报中文错误且不落盘）→ 解包出可执行文件到
 // <tools_dir>/<编码器名>/<版本>/<member> → 旁边写 <member>.sha256（解包后文件哈希）。
 // 之后每次使用先验本地哈希，损坏/被改自动重下覆盖；哈希一致直接复用、不联网。
 // libavif 工件一次下载解出 avifenc + avifdec 两个成员（avifdec 供产物解码用）。
@@ -34,7 +34,7 @@ pub struct EncoderSource {
     pub name: String,
     /// 编码器版本（安装目录名的一部分）。
     pub version: String,
-    /// tar.gz 工件下载地址。
+    /// 压缩包（tar.gz 或 zip）工件下载地址。
     pub url: String,
     /// 工件 sha256（小写十六进制）。升级版本 = 换 URL + 换哈希，一起改。
     pub sha256: String,
@@ -122,6 +122,17 @@ pub fn mozjpeg_source() -> Result<EncoderSource, CoreError> {
             sha256: "6c2795a90da52d2fe0361fc6580cf4be309bb873797acb967725fe8f98325dee".to_string(),
             member: "cjpeg".to_string(),
         }),
+        ("windows", "x86_64") => Ok(EncoderSource {
+            name: "mozjpeg".to_string(),
+            version: "4.1.5".to_string(),
+            // Windows 版与 Linux 版同源码（4.1.5）同配置（无 SIMD、全静态），在 Linux 上
+            // 用 mingw-w64 交叉编译（仅依赖 KERNEL32/msvcrt 系统库），工件入库
+            // assets/encoders/ 由 CI 原样上传 Release；哈希锚定打包时的工件（T16，决策 0014）。
+            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/mozjpeg-v4.1.5-windows-x86_64.tar.gz"
+                .to_string(),
+            sha256: "ded15725f25ff321de1cf56b5faa6a0bd6389111ed3a56faf72016aaa5b6713b".to_string(),
+            member: "cjpeg.exe".to_string(),
+        }),
         (_os, _arch) => Err(unsupported_platform("MozJPEG")),
     }
 }
@@ -138,6 +149,16 @@ pub fn webp_source() -> Result<EncoderSource, CoreError> {
                 .to_string(),
             sha256: "1c5ffab71efecefa0e3c23516c3a3a1dccb45cc310ae1095c6f14ae268e38067".to_string(),
             member: "cwebp".to_string(),
+        }),
+        ("windows", "x86_64") => Ok(EncoderSource {
+            name: "libwebp".to_string(),
+            version: "1.6.0".to_string(),
+            // Windows 官方工件只有 zip（T16 起解包机制支持）；cwebp.exe 仅依赖系统 DLL
+            //（导入表核对过），包内唯一 DLL（freeglut）只有 vwebp 预览用、与我们无关
+            url: "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0-windows-x64.zip"
+                .to_string(),
+            sha256: "48886f506b21f62e4661f0f4cbfca19800897c385128e8902542d29a950c93f1".to_string(),
+            member: "cwebp.exe".to_string(),
         }),
         (_os, _arch) => Err(unsupported_platform("libwebp")),
     }
@@ -172,6 +193,16 @@ pub fn jxl_source() -> Result<EncoderSource, CoreError> {
                 .to_string(),
             sha256: "7ba87d09f220568a7e84c2a62e9fa8be608443930dec10b2799271d4cf032293".to_string(),
             member: "cjxl".to_string(),
+        }),
+        ("windows", "x86_64") => Ok(EncoderSource {
+            name: "libjxl".to_string(),
+            version: "0.11.1".to_string(),
+            // Windows 官方静态构建只有 zip（vcpkg /MT 产物，静态 CRT 无 VC redist 依赖；
+            // 导入表核对过）。50MB 在下载上限内；macOS 官方无工件（暂无分发）。
+            url: "https://github.com/libjxl/libjxl/releases/download/v0.11.1/jxl-x64-windows-static.zip"
+                .to_string(),
+            sha256: "8f53ebce91820c30c9fc9294f06380213c1e2e66b361718880580246b2be008e".to_string(),
+            member: "cjxl.exe".to_string(),
         }),
         (_os, _arch) => Err(unsupported_platform("libjxl")),
     }
@@ -592,7 +623,7 @@ fn validate_quality(quality: u8) -> Result<(), CoreError> {
 /// - 本地没有、或文件与安装时哈希不符（损坏/被改）→ 重新下载、校验、解包覆盖；
 /// - 下载内容与登记 sha256 不符 → 报错且不落盘（杜绝损坏或被篡改的编码器进入执行）。
 ///
-/// 两处哈希职责不同：来源清单的 sha256 锚定「下载的 tar.gz 工件」；
+/// 两处哈希职责不同：来源清单的 sha256 锚定「下载的压缩包工件」；
 /// 安装目录里的 `<member>.sha256` 锚定「解包后的可执行文件」，供下次启动免下载校验。
 pub fn install_encoder(
     encode_source: &EncoderSource,
@@ -651,7 +682,7 @@ pub fn install_encoder_members(
     let staging = tempfile::tempdir().map_err(|err| CoreError::Encode {
         message: format!("无法创建编码器暂存目录：{err}"),
     })?;
-    extract_members(&archive, members, staging.path())?;
+    extract_archive_members(&archive, members, staging.path())?;
     for member in members {
         let staged = staging.path().join(member);
         let dest = dest_dir.join(member);
@@ -719,8 +750,24 @@ fn download(url: &str) -> Result<Vec<u8>, CoreError> {
     Ok(bytes)
 }
 
-/// 从 tar.gz 里按文件名解出全部成员到 dest（暂存目录），缺任一成员即报错。
-fn extract_members(archive: &[u8], members: &[&str], dest: &Path) -> Result<(), CoreError> {
+/// 从压缩包里按文件名解出全部成员到 dest（暂存目录），缺任一成员即报错。
+/// 按 magic number 分流：`PK\x03\x04` 走 zip（T16：Windows 的 libwebp/libjxl 官方
+/// 工件只有 zip 格式），其余走 tar.gz（决策 0009 原始格式）。公共导出供应用壳的
+/// ffmpeg 安装（ffmpeg_setup.rs）复用同一套「解包 + 权限」逻辑。
+pub fn extract_archive_members(
+    archive: &[u8],
+    members: &[&str],
+    dest: &Path,
+) -> Result<(), CoreError> {
+    if archive.starts_with(b"PK\x03\x04") {
+        extract_members_zip(archive, members, dest)
+    } else {
+        extract_members_tar_gz(archive, members, dest)
+    }
+}
+
+/// tar.gz 版解包（原 extract_members，行为不变）。
+fn extract_members_tar_gz(archive: &[u8], members: &[&str], dest: &Path) -> Result<(), CoreError> {
     let decoder = flate2::read::GzDecoder::new(archive);
     let mut tar = tar::Archive::new(decoder);
     let mut found = vec![false; members.len()];
@@ -744,22 +791,70 @@ fn extract_members(archive: &[u8], members: &[&str], dest: &Path) -> Result<(), 
         entry.unpack(&entry_dest).map_err(|err| CoreError::Encode {
             message: format!("无法解出编码器 {}：{err}", entry_dest.display()),
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                &entry_dest,
-                std::fs::Permissions::from_mode(0o755),
-            )
-            .map_err(|err| {
-                CoreError::Encode {
-                    message: format!("无法设置编码器执行权限：{err}"),
-                }
-            })?;
-        }
+        mark_executable(&entry_dest);
         found[index] = true;
     }
-    if let Some(missing) = members.iter().zip(&found).find_map(|(member, ok)| (!ok).then_some(*member)) {
+    report_missing(members, &found)
+}
+
+/// zip 版解包。官方 Windows zip 用 `\` 作路径分隔（如 jxl 工件），文件名匹配同时
+/// 容忍两种分隔符；目录条目跳过。
+fn extract_members_zip(archive: &[u8], members: &[&str], dest: &Path) -> Result<(), CoreError> {
+    let reader = std::io::Cursor::new(archive);
+    let mut zip = zip::ZipArchive::new(reader).map_err(|err| CoreError::Encode {
+        message: format!("编码器压缩包无法读取：{err}"),
+    })?;
+    let mut found = vec![false; members.len()];
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index).map_err(|err| CoreError::Encode {
+            message: format!("编码器压缩包无法读取：{err}"),
+        })?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_string();
+        let file_name = name.rsplit(['/', '\\']).next().unwrap_or("").to_string();
+        let Some(member_index) = members
+            .iter()
+            .position(|member| *member == file_name)
+        else {
+            continue;
+        };
+        let entry_dest = dest.join(members[member_index]);
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content).map_err(|err| CoreError::Encode {
+            message: format!("无法解出编码器 {}：{err}", entry_dest.display()),
+        })?;
+        std::fs::write(&entry_dest, &content).map_err(|err| CoreError::Encode {
+            message: format!("无法解出编码器 {}：{err}", entry_dest.display()),
+        })?;
+        mark_executable(&entry_dest);
+        found[member_index] = true;
+    }
+    report_missing(members, &found)
+}
+
+/// Unix 上补执行权限（tar 一般已保留；zip 官方 Windows 工件没有 Unix 权限位）。
+fn mark_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(mut perms) = std::fs::metadata(path).map(|m| m.permissions()) {
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// 任一成员没解出来 → 中文报错点名缺的成员。
+fn report_missing(members: &[&str], found: &[bool]) -> Result<(), CoreError> {
+    if let Some(missing) = members
+        .iter()
+        .zip(found)
+        .find_map(|(member, ok)| (!ok).then_some(*member))
+    {
         return Err(CoreError::Encode {
             message: format!("编码器压缩包里找不到 {missing}，工件与来源清单不符"),
         });
