@@ -83,15 +83,18 @@ npm run tauri dev
 - 命令行批量跑分（外部导入模式）：选好一张原图和几张已压缩的跑分图后，执行
   `cargo run -p pixel-arena-cli -- score --reference 原图.png --candidates 跑分图1.jpg 跑分图2.webp`，
   就得到一张 CSV 指标表（PSNR、SSIM、MS-SSIM、Butteraugli、SSIMULACRA2、文件大小、体积比），
-  可存成文件或贴进表格；加 `--format json` 则输出 JSON。指标口径：MS-SSIM 越接近 1 越好；
+  可存成文件或贴进表格；加 `--format json` 则输出 JSON；加 `--format html` 则输出自包含的
+  简体中文 HTML 报告（内联样式、含生成时间，浏览器直接打开即可分享）。指标口径：MS-SSIM 越接近 1 越好；
   Butteraugli 是距离分，0 表示完全一致、约 1.0 是刚好可察觉；SSIMULACRA2 是质量分，
   100 表示完全一致。进度与错误提示是简体中文，出错时按提示处理即可
-  （支持的图片格式：PNG/JPEG/WebP）。
+  （支持的图片格式：PNG/JPEG/WebP/AVIF/JPEG XL；AVIF 跑分需先有一站式生成过 AVIF 产物
+  以便自动安装解码工具）。
 - 命令行一站式批量跑分（run 子命令）：只有一张原图时，执行
   `cargo run -p pixel-arena-cli -- run --reference 原图.png`，
   工具按完整默认编码阶梯（有损 JPEG / WebP / AVIF / JPEG XL × 质量 60 / 75 / 90，
   外加无损对照组 PNG / 无损 WebP / 无损 JXL，共 15 份）自动生成跑分图并逐张跑分，
-  输出与 score 同栏位的 CSV 指标表（另加 format、quality 两列；`--format json` 输出 JSON）。
+  输出与 score 同栏位的 CSV 指标表（另加 format、quality 两列；`--format json` 输出 JSON，
+  `--format html` 输出自包含中文报告，质量列在报告里对无损组显示「无损」）。
   可用 `--formats jpeg webp`、`--qualities 60 75`、`--lossless png` 收窄范围
   （这三个参数不带值表示该组不跑）；`--out 目录` 保留产物（默认在系统临时目录新建一个文件夹，
   结束时 stderr 会提示路径）；`--tools-dir 目录` 指定编码器安装目录（默认与桌面应用共用）。
