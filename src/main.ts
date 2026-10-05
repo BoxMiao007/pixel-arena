@@ -3,7 +3,7 @@
 // 命令返回最新工作区整份状态，前端照着重渲染即可，不自己算状态。
 
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
 import { fileName } from './util';
@@ -355,6 +355,127 @@ async function scoreVideoOne(candidatePath: string): Promise<void> {
   markSaved();
 }
 
+// ---------- T13 接线点：BD-rate 汇总与报告导出 ----------
+// 汇总与导出都走核心库（bdrate / report 模块）的同一份数据源，保证界面与导出一致。
+
+// 与核心库 bdrate.rs 的 serde 输出（camelCase）一一对应
+interface BdrateEntry {
+  format: string;
+  bdRatePercent: number | null;
+  pointCount: number;
+  note: string | null;
+}
+
+interface BdrateSummary {
+  referenceFormat: string | null;
+  note: string | null;
+  entries: BdrateEntry[];
+}
+
+/** BD-rate 数值与导出报告同格式：带符号两位小数百分数 */
+function formatBdRate(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+}
+
+function buildBdrateTable(summary: BdrateSummary): HTMLTableElement {
+  const table = document.createElement('table');
+  table.className = 'result-table bdrate-table';
+
+  const head = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const label of ['格式', 'BD-rate', '样本点', '说明']) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    headRow.append(th);
+  }
+  head.append(headRow);
+  table.append(head);
+
+  const body = document.createElement('tbody');
+  for (const entry of summary.entries) {
+    const tr = document.createElement('tr');
+    const format = document.createElement('td');
+    format.textContent = entry.format;
+    const bd = document.createElement('td');
+    bd.textContent =
+      entry.bdRatePercent === null ? '—' : formatBdRate(entry.bdRatePercent);
+    const count = document.createElement('td');
+    count.textContent = String(entry.pointCount);
+    const note = document.createElement('td');
+    note.textContent = entry.note ?? '';
+    if (entry.note === '参照格式') format.classList.add('bdrate-reference');
+    tr.append(format, bd, count, note);
+    body.append(tr);
+  }
+  table.append(body);
+  return table;
+}
+
+/**
+ * 异步填充 BD-rate 汇总区：invoke → 只更新容器内部，不触发整页重渲染（避免循环）。
+ * 渲染期间切了评测轮时容器已被整页重渲染丢弃，写进脱离的 DOM 无副作用。
+ */
+async function fillBdrateSummary(
+  box: HTMLDivElement,
+  groupId: string,
+  roundId: string,
+): Promise<void> {
+  try {
+    const summary = await invoke<BdrateSummary>('round_bdrate', { groupId, roundId });
+    box.replaceChildren();
+    const title = document.createElement('h3');
+    title.className = 'bdrate-title';
+    title.textContent = summary.referenceFormat
+      ? `BD-rate 汇总（参照格式：${summary.referenceFormat}）`
+      : 'BD-rate 汇总';
+    box.append(title);
+    if (summary.note) {
+      const note = document.createElement('p');
+      note.className = 'muted bdrate-note';
+      note.textContent = summary.note;
+      box.append(note);
+    }
+    box.append(buildBdrateTable(summary));
+  } catch (err) {
+    box.textContent = `BD-rate 汇总计算失败：${String(err)}`;
+  }
+}
+
+/** 保存对话框默认文件名：轮名里的文件系统非法字符换成下划线 */
+function sanitizeFileName(name: string): string {
+  const cleaned = name.replace(/[\\/:*?"<>|]/g, '_').trim();
+  return cleaned.length > 0 ? cleaned : '评测轮';
+}
+
+/** 导出当前评测轮报告：save 对话框选路径 → round_export 写文件（后端返回中文错误） */
+async function exportRound(kind: 'csv' | 'html'): Promise<void> {
+  const session = activeRound();
+  if (!session) return;
+  const path = await save({
+    title: kind === 'csv' ? '导出 CSV' : '导出 HTML 报告',
+    defaultPath: `${sanitizeFileName(session.round.name)}.${kind}`,
+    filters: [
+      kind === 'csv'
+        ? { name: 'CSV（逗号分隔）', extensions: ['csv'] }
+        : { name: 'HTML 报告', extensions: ['html'] },
+    ],
+  });
+  if (!path) return; // 用户取消
+  try {
+    const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
+    const written = await invoke<string>('round_export', {
+      groupId: session.group.id,
+      roundId: session.round.id,
+      kind,
+      path,
+      generatedAt,
+    });
+    setStatus(`已导出：${written}`);
+  } catch (err) {
+    setStatus(`导出失败：${String(err)}`, true);
+  }
+}
+
 async function boot(): Promise<void> {
   const versionEl = document.querySelector<HTMLSpanElement>('#core-version');
   try {
@@ -530,7 +651,32 @@ function renderContent(): void {
   onestopBtn.disabled = scoring || !round.referencePath || ladderCount === 0;
   onestopBtn.addEventListener('click', () => void runOnestop());
 
-  toolbar.append(pickReferenceBtn, referenceLabel, addCandidatesBtn, scoreBtn, onestopBtn);
+  // T13 接线点：导出评测轮报告（CSV / 自包含 HTML），无任何跑分内容时置灰
+  const exportable =
+    round.candidates.length > 0 || (round.videoCandidates?.length ?? 0) > 0;
+  const exportCsvBtn = document.createElement('button');
+  exportCsvBtn.className = 'add-btn export-btn';
+  exportCsvBtn.textContent = '导出 CSV';
+  exportCsvBtn.title = '把本轮指标表（含视频与 BD-rate 汇总）导出为 CSV 文件';
+  exportCsvBtn.disabled = scoring || !exportable;
+  exportCsvBtn.addEventListener('click', () => void exportRound('csv'));
+
+  const exportHtmlBtn = document.createElement('button');
+  exportHtmlBtn.className = 'add-btn export-btn';
+  exportHtmlBtn.textContent = '导出 HTML';
+  exportHtmlBtn.title = '把本轮结果生成为可直接分享的自包含 HTML 报告';
+  exportHtmlBtn.disabled = scoring || !exportable;
+  exportHtmlBtn.addEventListener('click', () => void exportRound('html'));
+
+  toolbar.append(
+    pickReferenceBtn,
+    referenceLabel,
+    addCandidatesBtn,
+    scoreBtn,
+    onestopBtn,
+    exportCsvBtn,
+    exportHtmlBtn,
+  );
   $content.append(toolbar);
   // T11 接线点：格式/质量档/无损组勾选区（有原图才可触发，故仅在已选原图时展示）
   if (round.referencePath) {
@@ -558,6 +704,13 @@ function renderContent(): void {
     }
 
     $content.append(buildResultTable(round.candidates));
+
+    // T13 接线点：BD-rate 汇总区（与导出报告同一数据源；异步填充，不触发整页重渲染）
+    const bdrateBox = document.createElement('div');
+    bdrateBox.className = 'bdrate-summary';
+    bdrateBox.textContent = 'BD-rate 汇总计算中…';
+    $content.append(bdrateBox);
+    void fillBdrateSummary(bdrateBox, session.group.id, round.id);
   }
 
   // T14 接线点：视频评测区块（选原视频/跑分视频/VMAF-PSNR-SSIM），与图片流程互不干扰

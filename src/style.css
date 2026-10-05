@@ -675,3 +675,28 @@ body {
   overflow: hidden;
   pointer-events: none;
 }
+
+/* T13：BD-rate 汇总区（与结果表同款表格样式，标题小一号） */
+.bdrate-summary {
+  margin-top: 0.25rem;
+}
+
+.bdrate-summary .bdrate-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin: 0.25rem 0;
+}
+
+.bdrate-summary .bdrate-note {
+  font-size: 0.8rem;
+  margin: 0.15rem 0 0.4rem;
+}
+
+.bdrate-summary .result-table {
+  width: auto;
+  min-width: 26rem;
+}
+
+.bdrate-summary .bdrate-reference {
+  color: #8ab4f8;
+}

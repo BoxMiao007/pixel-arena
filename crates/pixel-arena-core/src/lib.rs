@@ -11,8 +11,10 @@ pub use metrics::{score_images, ImageMetrics};
 pub use video::{score_videos, VideoError, VideoMetrics};
 
 /// AVIF/JPEG XL 产物解码（T11）：GUI 在启动时用它定位 avifdec 并注入环境变量。
+pub mod bdrate;
 pub mod decode;
 pub mod encode;
+pub mod report;
 pub mod workspace;
 
 /// 核心库版本号，与 Cargo.toml 的 package.version 保持一致。
