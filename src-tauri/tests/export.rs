@@ -17,6 +17,7 @@ fn candidate(path: &str, bytes: u64, psnr: Option<f64>) -> CandidateImage {
                 ("SSIM".to_string(), MetricValue::new(0.99)),
             ])
         }),
+        encoding_params: None,
         error: None,
     }
 }
@@ -31,6 +32,7 @@ fn video_candidate(path: &str, bytes: u64) -> CandidateVideo {
             ("PSNR".to_string(), MetricValue::new(38.2)),
             ("SSIM".to_string(), MetricValue::new(0.9926)),
         ])),
+        encoding_params: None,
         error: None,
         elapsed_ms: Some(1200),
     }
@@ -108,7 +110,7 @@ fn export_csv_and_html_write_files_through_command_layer() {
     assert!(csv.contains("# 跑分组：验收组"));
     assert!(csv.contains("# 【图片跑分结果】"));
     let q60 = csv.lines().find(|l| l.contains("photo-q60.jpg")).unwrap();
-    assert_eq!(q60, format!("{},35586,0.500000,33.120000,0.696700,,,,完成", q60_path));
+    assert_eq!(q60, format!("{},,35586,0.500000,33.120000,0.696700,,,,完成", q60_path));
     assert!(csv.contains("# 【视频跑分结果】"));
     let video_row = csv.lines().find(|l| l.contains("dis-150k.mp4")).unwrap();
     assert_eq!(video_row, format!("{},27050,0.400000,94.870000,38.200000,0.992600,完成", video_path));

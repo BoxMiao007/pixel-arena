@@ -97,6 +97,19 @@ impl OnestopFormat {
             Self::JxlLossless => "无损 JXL",
         }
     }
+
+    /// 一站式产物的编码参数文本（结果表「编码参数」列）：有损为「JPEG q75」式，
+    /// 无损组为「PNG 无损」式（外部导入的跑分图无此文本——参数用户自备，工具不知晓）。
+    pub fn encoding_params_text(self, quality: Option<u8>) -> String {
+        match (self, quality) {
+            (format, Some(q)) => format!("{} q{q}", format.display_name()),
+            (Self::Png, None) => "PNG 无损".to_string(),
+            (Self::WebpLossless, None) => "WebP 无损".to_string(),
+            (Self::JxlLossless, None) => "JPEG XL 无损".to_string(),
+            // 无损格式不会带质量参数（encode_onestop 已 fail-fast），兜底走显示名
+            (format, None) => format.display_name().to_string(),
+        }
+    }
 }
 
 fn unsupported_platform(encoder: &str) -> CoreError {
@@ -901,5 +914,29 @@ mod tests {
         for (raw, expected) in cases {
             assert_eq!(OnestopFormat::parse(raw).unwrap().display_name(), expected);
         }
+    }
+
+    #[test]
+    fn encoding_params_text_covers_lossy_and_lossless() {
+        assert_eq!(
+            OnestopFormat::parse("jpeg").unwrap().encoding_params_text(Some(75)),
+            "JPEG q75"
+        );
+        assert_eq!(
+            OnestopFormat::parse("jxl").unwrap().encoding_params_text(Some(60)),
+            "JPEG XL q60"
+        );
+        assert_eq!(
+            OnestopFormat::parse("png").unwrap().encoding_params_text(None),
+            "PNG 无损"
+        );
+        assert_eq!(
+            OnestopFormat::parse("webp-lossless").unwrap().encoding_params_text(None),
+            "WebP 无损"
+        );
+        assert_eq!(
+            OnestopFormat::parse("jxl-lossless").unwrap().encoding_params_text(None),
+            "JPEG XL 无损"
+        );
     }
 }

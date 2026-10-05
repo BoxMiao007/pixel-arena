@@ -493,6 +493,7 @@ mod tests {
                     ("SSIM".to_string(), MetricValue::new(0.99)),
                 ])
             }),
+            encoding_params: None,
             error: None,
         }
     }

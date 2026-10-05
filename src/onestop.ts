@@ -12,7 +12,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Workspace } from './main';
 
-/** 有损格式与界面显示名（顺序即生成顺序） */
+/** 有损格式与界面显示名（顺序即生成顺序）。显示名源头为核心库
+ * OnestopFormat::display_name（跨语言无法直接复用），新增格式需两处同步。 */
 export const LOSSY_FORMATS = [
   { format: 'jpeg', label: 'JPEG' },
   { format: 'webp', label: 'WebP' },
@@ -23,7 +24,7 @@ export const LOSSY_FORMATS = [
 /** 有损质量档 */
 export const QUALITIES = [60, 75, 90] as const;
 
-/** 无损对照组与界面显示名（核心库保证像素逐位一致） */
+/** 无损对照组与界面显示名（核心库保证像素逐位一致）。显示名源头同上。 */
 export const LOSSLESS_FORMATS = [
   { format: 'png', label: 'PNG' },
   { format: 'webp-lossless', label: '无损 WebP' },
@@ -91,16 +92,23 @@ export interface OnestopResult {
   failures: string[];
 }
 
+/** 一站式单档产物：onestop_encode 回传的产物路径 + 编码参数文本
+ *（参数文本后端与 CLI 同出核心库 OnestopFormat::encoding_params_text 一处，前端不自己拼）。 */
+export interface OnestopProduct {
+  path: string;
+  encodingParams: string;
+}
+
 /** 跑完编码阶梯：逐项生成 → 产物纳入本轮。不含跑分（主模块接现有循环）。 */
 export async function runOnestop(deps: OnestopDeps): Promise<OnestopResult> {
-  const products: string[] = [];
+  const products: OnestopProduct[] = [];
   const failures: string[] = [];
 
   for (let i = 0; i < deps.ladder.length; i++) {
     const item = deps.ladder[i];
     deps.onProgress(`正在生成 ${item.label}（${i + 1}/${deps.ladder.length}）`);
     try {
-      const product = await invoke<string>('onestop_encode', {
+      const product = await invoke<OnestopProduct>('onestop_encode', {
         groupId: deps.groupId,
         roundId: deps.roundId,
         referencePath: deps.referencePath,
@@ -115,10 +123,12 @@ export async function runOnestop(deps: OnestopDeps): Promise<OnestopResult> {
   }
 
   if (products.length > 0) {
+    // 编码参数与路径一一对应写入（外部导入模式不传该参数，见 round_add_candidates）
     const updated = await invoke<Workspace>('round_add_candidates', {
       groupId: deps.groupId,
       roundId: deps.roundId,
-      paths: products,
+      paths: products.map((p) => p.path),
+      encodingParams: products.map((p) => p.encodingParams),
     });
     deps.onWorkspace(updated);
   }

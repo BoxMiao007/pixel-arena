@@ -5,7 +5,8 @@
 //
 // CSV 分三节（节标题为 # 注释行）：图片跑分结果 / 视频跑分结果（无视频时省略）/
 // BD-rate 汇总。指标列固定为图片五指标（psnr/ssim/ms_ssim/butteraugli/ssimulacra2），
-// 旧轮次只跑过 PSNR/SSIM 时缺的列留空。
+// 旧轮次只跑过 PSNR/SSIM 时缺的列留空。图片节含编码参数列（一站式写入，外部导入
+// 为空——参数用户自备，工具不知晓）。
 
 use crate::bdrate::summarize_round;
 use crate::workspace::{MetricValue, Round};
@@ -118,7 +119,7 @@ pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String
     lines.push(String::new());
     lines.push("# 【图片跑分结果】".to_string());
     lines.push(
-        "candidate,candidate_bytes,size_ratio,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,status"
+        "candidate,encoding_params,candidate_bytes,size_ratio,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,status"
             .to_string(),
     );
     for candidate in &round.candidates {
@@ -134,8 +135,9 @@ pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String
             .map(|r| format!("{r:.6}"))
             .unwrap_or_default();
         lines.push(format!(
-            "{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{}",
             csv_field(&candidate.path),
+            candidate.encoding_params.as_deref().map(csv_field).unwrap_or_default(),
             candidate.file_size,
             ratio,
             cell("PSNR"),
@@ -246,7 +248,7 @@ pub fn export_html(group_name: &str, round: &Round, generated_at: &str) -> Strin
     });
 
     // 图片跑分结果表
-    html.push_str("<h2>图片跑分结果</h2>\n<table>\n<thead><tr><th>跑分图</th><th>路径</th><th>文件大小</th><th>体积比</th>");
+    html.push_str("<h2>图片跑分结果</h2>\n<table>\n<thead><tr><th>跑分图</th><th>路径</th><th>文件大小</th><th>体积比</th><th>编码参数</th>");
     for key in IMAGE_METRIC_KEYS {
         html.push_str(&format!("<th>{key}</th>"));
     }
@@ -254,14 +256,15 @@ pub fn export_html(group_name: &str, round: &Round, generated_at: &str) -> Strin
     for candidate in &round.candidates {
         let metrics = candidate.metrics.as_ref();
         html.push_str(&format!(
-            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td>",
+            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td>",
             esc(&file_name(&candidate.path)),
             esc(&candidate.path),
             format_size(candidate.file_size),
             candidate
                 .size_ratio
                 .map(format_ratio)
-                .unwrap_or_else(|| "—".to_string())
+                .unwrap_or_else(|| "—".to_string()),
+            esc(candidate.encoding_params.as_deref().unwrap_or("—"))
         ));
         for key in IMAGE_METRIC_KEYS {
             let cell = metrics
@@ -366,6 +369,7 @@ mod tests {
             file_size: bytes,
             size_ratio: Some(0.136_424),
             metrics: metrics.map(|m| m.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
+            encoding_params: None,
             error: None,
         }
     }
@@ -376,6 +380,7 @@ mod tests {
             file_size: bytes,
             size_ratio: Some(0.453_083),
             metrics: metrics.map(|m| m.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
+            encoding_params: None,
             error: None,
             elapsed_ms: None,
         }
@@ -434,13 +439,13 @@ mod tests {
         assert!(csv.contains("# 生成时间：2026-10-05 12:00:00"));
         assert!(csv.contains("# 【图片跑分结果】"));
         assert!(csv.contains(
-            "candidate,candidate_bytes,size_ratio,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,status"
+            "candidate,encoding_params,candidate_bytes,size_ratio,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,status"
         ));
-        // 定点 6 位小数 + 指标缺失留空 + 状态
+        // 定点 6 位小数 + 指标缺失留空 + 状态（外部导入无编码参数，该列留空）
         let row = csv.lines().find(|l| l.contains("photo-q60.jpg")).unwrap();
         assert_eq!(
             row,
-            "/r/photo-q60.jpg,17341,0.136424,41.862135,0.993912,,,,完成"
+            "/r/photo-q60.jpg,,17341,0.136424,41.862135,0.993912,,,,完成"
         );
         // PSNR 无穷大走 "inf" 哨兵（与 T03 / workspace.json 同一约定）
         let inf_row = csv.lines().find(|l| l.contains("photo-png.png")).unwrap();
@@ -472,6 +477,29 @@ mod tests {
             failed_line.ends_with("失败：原图与跑分图尺寸不一致"),
             "失败行: {failed_line}"
         );
+    }
+
+    /// 编码参数列：一站式写入的参数进 CSV 与 HTML；外部导入（None）CSV 留空、HTML 显 —。
+    #[test]
+    fn csv_and_html_carry_encoding_params_when_present() {
+        let mut onestop =
+            image("/r/产物-q75.jpg", 17_341, Some(vec![("PSNR", MetricValue::new(41.86))]));
+        onestop.encoding_params = Some("JPEG q75".to_string());
+        let round = round(vec![onestop, image("/r/外部导入.jpg", 9_999, None)]);
+
+        let csv = export_csv("组", &round, "t");
+        let row = csv.lines().find(|l| l.contains("产物-q75.jpg")).unwrap();
+        assert!(row.contains(",JPEG q75,"), "编码参数列应写入：{row}");
+        let external = csv.lines().find(|l| l.contains("外部导入.jpg")).unwrap();
+        assert!(
+            external.starts_with("/r/外部导入.jpg,,"),
+            "外部导入编码参数留空：{external}"
+        );
+
+        let html = export_html("组", &round, "t");
+        assert!(html.contains("<th>编码参数</th>"), "HTML 表头应有编码参数列");
+        assert!(html.contains("JPEG q75"));
+        assert!(html.contains("<td>—</td>"), "外部导入行编码参数显示 —");
     }
 
     #[test]
