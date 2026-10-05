@@ -66,6 +66,16 @@ npm run tauri dev
   Butteraugli 是距离分，0 表示完全一致、约 1.0 是刚好可察觉；SSIMULACRA2 是质量分，
   100 表示完全一致。进度与错误提示是简体中文，出错时按提示处理即可
   （支持的图片格式：PNG/JPEG/WebP）。
+- 命令行一站式批量跑分（run 子命令）：只有一张原图时，执行
+  `cargo run -p pixel-arena-cli -- run --reference 原图.png`，
+  工具按完整默认编码阶梯（有损 JPEG / WebP / AVIF / JPEG XL × 质量 60 / 75 / 90，
+  外加无损对照组 PNG / 无损 WebP / 无损 JXL，共 15 份）自动生成跑分图并逐张跑分，
+  输出与 score 同栏位的 CSV 指标表（另加 format、quality 两列；`--format json` 输出 JSON）。
+  可用 `--formats jpeg webp`、`--qualities 60 75`、`--lossless png` 收窄范围
+  （这三个参数不带值表示该组不跑）；`--out 目录` 保留产物（默认在系统临时目录新建一个文件夹，
+  结束时 stderr 会提示路径）；`--tools-dir 目录` 指定编码器安装目录（默认与桌面应用共用）。
+  编码器首次使用自动下载（stderr 显示「正在下载编码器 …」），装过一次后离线可用；
+  某一档生成失败不影响其余档位，失败原因逐项中文提示，有失败时退出码为 1。
 
 ## 工作区文件在哪
 
