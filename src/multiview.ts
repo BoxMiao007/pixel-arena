@@ -14,12 +14,16 @@ import {
 } from './viewport';
 import { fileName } from './util';
 
+/** 网格档位：2=2×2，3=3×3（T20 合并两档为单网格后此维度可退化，见 shared/notes/T19.md） */
+export type GridTier = 2 | 3;
+
 /** 多视图用到的查看器界面状态切片（viewer.ts 的 state 结构兼容即可，按引用共享可写） */
 export interface MultiviewState {
   /** 全格共享的视口；null = 待适配（图片就绪后按格子尺寸 fit） */
   viewport: ViewportState | null;
-  /** 每格显式选图：''=显式留空，null=未改过（走默认布局）；数组比格子短的部分也走默认 */
-  cellPaths: (string | null)[] | null;
+  /** 每格显式选图，按网格档位隔离（T19 修复：2×2 与 3×3 的手动选图互不串档）：
+   *  tier → 每格数组；''=显式留空，数组缺省位=走默认布局 */
+  cellPaths: Partial<Record<GridTier, (string | null)[]>>;
 }
 
 export interface MultiviewRound {
@@ -53,13 +57,15 @@ export function defaultCellImage(index: number, round: MultiviewRound): string |
   return round.candidates[index - 1]?.path ?? null;
 }
 
-/** 每格最终显示的图：显式选择仍有效则用之（''=显式留空），否则回落到默认布局 */
+/** 每格最终显示的图：显式选择仍有效则用之（''=显式留空），否则回落到默认布局。
+ *  只读 tier 对应档位的选择（T19 修复：2×2 的手动选图不再串进 3×3，反之亦然） */
 export function resolveCellImage(
   shared: MultiviewState,
+  tier: GridTier,
   index: number,
   round: MultiviewRound,
 ): string | null {
-  const chosen = shared.cellPaths?.[index];
+  const chosen = shared.cellPaths?.[tier]?.[index];
   if (chosen !== null && chosen !== undefined) {
     if (chosen === '') return null; // 显式留空
     const valid = chosen === round.referencePath
@@ -75,7 +81,7 @@ export function resolveCellImage(
 /**
  * 把多视图网格挂到 area 上（area 原有内容被替换）。
  * shared 即 viewer.ts 的界面状态对象：viewport 全格共享（同步缩放平移的关键），
- * cellPaths 记录每格显式选择，同一轮内跨模式/跑分刷新保留。
+ * cellPaths 按网格档位（gridN）记录每格显式选择，同档内跨跑分刷新保留（T19 起跨档隔离）。
  */
 export function mountMultiview(
   area: HTMLElement,
@@ -121,16 +127,17 @@ export function mountMultiview(
       option.title = candidate.path;
       select.append(option);
     }
-    select.value = resolveCellImage(shared, i, round) ?? '';
+    select.value = resolveCellImage(shared, gridN, i, round) ?? '';
     select.addEventListener('change', () => {
-      // 首次手动改选才落状态；扩长数组以兼容 2×2 的选择带进 3×3
-      if (!shared.cellPaths || shared.cellPaths.length < count) {
-        shared.cellPaths = Array.from(
-          { length: count },
-          (_, k) => shared.cellPaths?.[k] ?? null,
-        );
-      }
-      shared.cellPaths[i] = select.value; // '' = 显式留空
+      // 首次手动改选才落状态；按网格档位写回（T19 修复：2×2 的选择不再带进 3×3）
+      const tierPaths: (string | null)[] = Array.from(
+        { length: count },
+        (_, k) => shared.cellPaths[gridN]?.[k] ?? null,
+      );
+      tierPaths[i] = select.value; // '' = 显式留空
+      const next: MultiviewState['cellPaths'] = { ...shared.cellPaths };
+      next[gridN] = tierPaths;
+      shared.cellPaths = next;
       refreshImages();
       scheduleDraw();
     });
@@ -147,7 +154,7 @@ export function mountMultiview(
   let cellImages: CellImage[] = [];
   function refreshImages(): void {
     cellImages = cells.map((_, i) => {
-      const path = resolveCellImage(shared, i, round);
+      const path = resolveCellImage(shared, gridN, i, round);
       return { path, entry: path ? loadImage(path, scheduleDraw) : null };
     });
   }
