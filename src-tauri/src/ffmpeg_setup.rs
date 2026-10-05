@@ -11,9 +11,7 @@
 // - macOS：暂无查证过含 libvmaf 的稳定版本化来源，维持中文提示（分发随后续票落实）。
 // 代码内锁定 sha256，不匹配即删除重下。
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// 锁定的 ffmpeg 构建压缩包下载地址（按平台）。
 #[cfg(target_os = "linux")]
@@ -95,7 +93,7 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
 
     // 2. 全量 sha256 校验（供应链底线：不匹配即删除，绝不解压）
     progress("正在校验 ffmpeg 完整性…".to_string());
-    let actual = sha256_hex(&tarball).map_err(|err| {
+    let actual = pixel_arena_core::net::sha256_file(&tarball).map_err(|err| {
         std::fs::remove_file(&tarball).ok();
         format!("读取下载文件失败: {err}")
     })?;
@@ -186,7 +184,7 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
 
     // 2. 全量 sha256 校验（供应链底线：不匹配即删除，绝不解压）
     progress("正在校验 ffmpeg 完整性…".to_string());
-    let actual = sha256_hex(&zip_path).map_err(|err| {
+    let actual = pixel_arena_core::net::sha256_file(&zip_path).map_err(|err| {
         std::fs::remove_file(&zip_path).ok();
         format!("读取下载文件失败: {err}")
     })?;
@@ -258,85 +256,39 @@ fn install(_tools_dir: &Path, _progress: &mut dyn FnMut(String)) -> Result<PathB
     )
 }
 
-/// 下载压缩包，边下边把「已下载 MB / 总 MB」报给 progress。
+/// 下载压缩包到 tarball 路径，边下边把「已下载 MB / 总 MB」报给 progress（每约 2MB 一次）。
+/// 网络与代理处理下沉核心库（net::download，与编码器安装同一套口径）：显式复用系统
+/// 代理环境变量、512MB 防御性大小上限（Linux 静态构建约 40MB、Windows 约 150MB）。
 #[cfg(not(target_os = "macos"))]
 fn download_tarball(tarball: &Path, progress: &mut dyn FnMut(String)) -> Result<(), String> {
-    let agent = http_agent().map_err(|err| format!("初始化网络失败: {err}"))?;
-    let response = agent
-        .get(FFMPEG_URL)
-        .timeout(Duration::from_secs(600))
-        .call()
-        .map_err(|err| format!("下载 ffmpeg 失败: {err}"))?;
-
-    let total = response
-        .header("Content-Length")
-        .and_then(|len| len.parse::<u64>().ok());
-    let mut reader = response.into_reader();
     let mut file = std::fs::File::create(tarball)
         .map_err(|err| format!("无法创建下载临时文件: {err}"))?;
-
-    let mut buffer = [0u8; 64 * 1024];
-    let mut downloaded: u64 = 0;
     let mut last_reported: u64 = 0;
-    loop {
-        let n = reader
-            .read(&mut buffer)
-            .map_err(|err| format!("下载中断: {err}"))?;
-        if n == 0 {
-            break;
-        }
-        std::io::Write::write_all(&mut file, &buffer[..n])
-            .map_err(|err| format!("写入下载文件失败: {err}"))?;
-        downloaded += n as u64;
-        // 每下载约 2MB 报一次进度，避免事件刷屏
-        if downloaded - last_reported >= 2 * 1024 * 1024 {
-            last_reported = downloaded;
-            match total {
-                Some(total) => progress(format!(
-                    "正在下载 ffmpeg（一次性，约 {} MB）… {:.1} / {:.1} MB",
-                    total / (1024 * 1024),
-                    downloaded as f64 / (1024.0 * 1024.0),
-                    total as f64 / (1024.0 * 1024.0)
-                )),
-                None => progress(format!(
-                    "正在下载 ffmpeg（一次性）… {:.1} MB",
-                    downloaded as f64 / (1024.0 * 1024.0)
-                )),
+    pixel_arena_core::net::download(
+        FFMPEG_URL,
+        512 * 1024 * 1024,
+        &mut |downloaded, total| {
+            // 每下载约 2MB 报一次进度，避免事件刷屏
+            if downloaded - last_reported >= 2 * 1024 * 1024 {
+                last_reported = downloaded;
+                match total {
+                    Some(total) => progress(format!(
+                        "正在下载 ffmpeg（一次性，约 {} MB）… {:.1} / {:.1} MB",
+                        total / (1024 * 1024),
+                        downloaded as f64 / (1024.0 * 1024.0),
+                        total as f64 / (1024.0 * 1024.0)
+                    )),
+                    None => progress(format!(
+                        "正在下载 ffmpeg（一次性）… {:.1} MB",
+                        downloaded as f64 / (1024.0 * 1024.0)
+                    )),
+                }
             }
-        }
-    }
-    Ok(())
-}
-
-/// 显式复用系统代理环境变量（HTTP_PROXY / HTTPS_PROXY / ALL_PROXY），没设则直连。
-#[cfg(not(target_os = "macos"))]
-fn http_agent() -> Result<ureq::Agent, String> {
-    let mut builder = ureq::AgentBuilder::new();
-    let proxy_env = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
-        .iter()
-        .find_map(|key| std::env::var(key).ok())
-        .filter(|value| !value.trim().is_empty());
-    if let Some(proxy) = proxy_env {
-        let proxy = ureq::Proxy::new(proxy.trim()).map_err(|err| format!("代理配置无效: {err}"))?;
-        builder = builder.proxy(proxy);
-    }
-    Ok(builder.build())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn sha256_hex(path: &Path) -> Result<String, std::io::Error> {
-    use sha2::Digest;
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = sha2::Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
+        },
+        &mut |chunk| std::io::Write::write_all(&mut file, chunk),
+    )
+    .map(|_| ())
+    .map_err(|reason| format!("下载 ffmpeg 失败（{FFMPEG_URL}）: {reason}"))
 }
 
 /// 本地时间戳（仅用于来源记录，格式宽松即可）。

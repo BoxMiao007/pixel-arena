@@ -25,7 +25,6 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 /// 每平台一份的编码器来源条目：编码器名、版本、下载地址、sha256、压缩包内可执行文件名。
 #[derive(Debug, Clone)]
@@ -725,42 +724,22 @@ fn resolve_url(url: &str) -> String {
     }
 }
 
+/// 编码器工件大小上限：超出即视为异常（防劫持/误配把巨物拉进内存）。
+const ENCODER_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 fn download(url: &str) -> Result<Vec<u8>, CoreError> {
-    let mut builder = ureq::AgentBuilder::new().timeout(Duration::from_secs(300));
-    // 优先复用系统代理（HTTPS_PROXY 等），网络受限环境不配置就走直连
-    let proxy_env = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
-        .iter()
-        .find_map(|key| std::env::var(key).ok().filter(|v| !v.trim().is_empty()));
-    if let Some(proxy) = proxy_env {
-        match ureq::Proxy::new(&proxy) {
-            Ok(proxy) => builder = builder.proxy(proxy),
-            Err(_) => return Err(CoreError::Encode {
-                message: format!("代理地址无效（{proxy}），无法下载编码器"),
-            }),
-        }
-    }
-    let response = builder
-        .build()
-        .get(url)
-        .call()
-        .map_err(|err| {
-            // ureq 的 Status 错误文本自带完整 URL，与外层重复；只留状态码与简短原因
-            let reason = match &err {
-                ureq::Error::Status(code, _) => format!("HTTP {code}"),
-                other => other.to_string(),
-            };
-            CoreError::Encode {
-                message: format!("下载编码器失败（{url}）：{reason}"),
-            }
-        })?;
     let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(64 * 1024 * 1024) // 防御：工件上限 64MB，超出即异常
-        .read_to_end(&mut bytes)
-        .map_err(|err| CoreError::Encode {
-            message: format!("下载编码器中断（{url}）：{err}"),
-        })?;
+    {
+        let sink = &mut |chunk: &[u8]| -> std::io::Result<()> {
+            bytes.extend_from_slice(chunk);
+            Ok(())
+        };
+        crate::net::download(url, ENCODER_ARCHIVE_MAX_BYTES, &mut |_, _| {}, sink).map_err(
+            |reason| CoreError::Encode {
+                message: format!("下载编码器失败（{url}）：{reason}"),
+            },
+        )?;
+    }
     Ok(bytes)
 }
 
@@ -876,22 +855,11 @@ fn report_missing(members: &[&str], found: &[bool]) -> Result<(), CoreError> {
     Ok(())
 }
 
+/// 文件哈希下沉到 net 模块（与 ffmpeg 安装同一口径），这里包上编码器场景的中文错误。
 fn sha256_file(path: &Path) -> Result<String, CoreError> {
-    let mut file = std::fs::File::open(path).map_err(|err| CoreError::Encode {
+    crate::net::sha256_file(path).map_err(|err| CoreError::Encode {
         message: format!("无法读取已安装的编码器 {}：{err}", path.display()),
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|err| CoreError::Encode {
-            message: format!("无法读取已安装的编码器 {}：{err}", path.display()),
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
+    })
 }
 
 #[cfg(test)]

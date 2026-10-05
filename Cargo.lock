@@ -2955,12 +2955,10 @@ version = "0.1.0"
 dependencies = [
  "pixel-arena-core",
  "serde",
- "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
- "ureq",
 ]
 
 [[package]]

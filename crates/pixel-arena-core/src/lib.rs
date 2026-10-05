@@ -14,6 +14,8 @@ pub use video::{score_videos, VideoError, VideoMetrics};
 pub mod bdrate;
 pub mod decode;
 pub mod encode;
+/// 共享的 HTTP 下载与文件哈希（决策 0009/0010）：编码器安装与 ffmpeg 安装同一套网络口径。
+pub mod net;
 pub mod report;
 pub mod workspace;
 
