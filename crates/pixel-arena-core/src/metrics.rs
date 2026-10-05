@@ -78,7 +78,9 @@ pub fn score_images(
 /// 解码图片并统一转为 8-bit sRGB（灰度复制到三通道，alpha 丢弃）。
 ///
 /// 用内容嗅探（魔数）判断格式，扩展名只作提示：扩展名错误或缺失也能解码。
-fn decode_srgb(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, CoreError> {
+/// pub(crate)：encode 模块（一站式编码）复用同一套解码口径——喂给编码器的像素
+/// 必须与跑分时解码的像素一致，避免两处解码行为漂移。
+pub(crate) fn decode_srgb(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, CoreError> {
     let file = std::fs::File::open(path).map_err(|source| CoreError::Io {
         path: path.to_path_buf(),
         source,

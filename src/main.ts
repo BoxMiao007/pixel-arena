@@ -6,6 +6,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { fileName } from './util';
+// T10 接线点：一站式跑分（JPEG 编码阶梯）实现在 src/onestop.ts，本文件只做触发与进度显示
+import { runOnestopJpeg, JPEG_QUALITIES } from './onestop';
 import './style.css';
 
 // 与核心库 workspace.rs 的 serde 输出（camelCase）一一对应
@@ -35,7 +37,8 @@ interface Group {
   activeRoundId: string | null;
 }
 
-interface Workspace {
+// 导出给 onestop.ts 复用（one-stop 回传最新工作区用），字段与 workspace.rs 的 serde 输出一致
+export interface Workspace {
   formatVersion: number;
   groups: Group[];
   activeGroupId: string | null;
@@ -143,35 +146,92 @@ async function pickCandidates(): Promise<void> {
 }
 
 /**
- * 触发跑分：前端逐张调用跑分命令，每张回来整份工作区刷新一次——
- * 进度（状态栏「跑分中 i/N」+ 行内「跑分中…」）与单张失败（行内标「失败」）天然可见。
- * 跑分中按钮置灰防重复触发；命令本身出错（如评测轮被删）时中止整个循环。
+ * 触发跑分：忙标志置好后交给逐张跑分循环（T06）。
  */
 async function startScoring(): Promise<void> {
   const session = activeRound();
   if (!session || scoring || !session.round.referencePath) return;
   if (session.round.candidates.length === 0) return;
 
-  // 队列快照：跑分期间工作区每张都在被替换，按选入顺序逐张跑
-  const queue = session.round.candidates.map((c) => c.path);
   scoring = true;
   scoringPath = null;
   render();
 
   try {
-    for (let i = 0; i < queue.length; i++) {
-      scoringPath = queue[i];
-      setStatus(`跑分中 ${i + 1}/${queue.length}：${fileName(queue[i])}`);
-      render();
-      ws = await invoke('round_score_candidate', {
-        groupId: session.group.id,
-        roundId: session.round.id,
-        candidatePath: queue[i],
-      });
-      render();
+    await scoreAllCandidates();
+  } catch (err) {
+    setStatus(`出错: ${String(err)}`, true);
+  } finally {
+    scoring = false;
+    scoringPath = null;
+    render();
+  }
+}
+
+/**
+ * 逐张跑分循环（T06）：前端逐张调用跑分命令，每张回来整份工作区刷新一次——
+ * 进度（状态栏「跑分中 i/N」+ 行内「跑分中…」）与单张失败（行内标「失败」）天然可见。
+ * 命令本身出错（如评测轮被删）时中止整个循环。
+ * 忙标志（scoring）由调用方管理：手动「开始跑分」与一站式跑分（runOnestop）共用本循环。
+ */
+async function scoreAllCandidates(): Promise<void> {
+  const session = activeRound();
+  if (!session || !session.round.referencePath) return;
+  if (session.round.candidates.length === 0) return;
+
+  // 队列快照：跑分期间工作区每张都在被替换，按选入顺序逐张跑
+  const queue = session.round.candidates.map((c) => c.path);
+
+  for (let i = 0; i < queue.length; i++) {
+    scoringPath = queue[i];
+    setStatus(`跑分中 ${i + 1}/${queue.length}：${fileName(queue[i])}`);
+    render();
+    ws = await invoke('round_score_candidate', {
+      groupId: session.group.id,
+      roundId: session.round.id,
+      candidatePath: queue[i],
+    });
+    render();
+  }
+  markSaved();
+  setStatus(`跑分完成，共 ${queue.length} 张`);
+}
+
+// ---------- 一站式跑分（T10，编码阶梯实现在 src/onestop.ts） ----------
+
+/**
+ * 触发一站式跑分（JPEG）：逐档生成 JPEG q60/75/90 → 产物自动纳入本轮 →
+ * 复用上面的逐张跑分循环出分。期间沿用 scoring 忙标志置灰全部操作按钮。
+ * 某档失败不回滚已成功的档位，失败档位的中文原因在跑分结束后补充提示。
+ */
+async function runOnestop(): Promise<void> {
+  const session = activeRound();
+  if (!session || scoring || !session.round.referencePath) return;
+
+  scoring = true;
+  scoringPath = null;
+  render();
+
+  try {
+    const result = await runOnestopJpeg({
+      groupId: session.group.id,
+      roundId: session.round.id,
+      referencePath: session.round.referencePath,
+      onProgress: setStatus,
+      onWorkspace: (updated) => {
+        ws = updated;
+        render();
+        markSaved();
+      },
+    });
+    if (result.generated > 0) {
+      await scoreAllCandidates();
+      if (result.failures.length > 0) {
+        setStatus(`跑分完成；生成失败的档位：${result.failures.join('；')}`, true);
+      }
+    } else {
+      setStatus(`一站式生成全部失败：${result.failures.join('；')}`, true);
     }
-    markSaved();
-    setStatus(`跑分完成，共 ${queue.length} 张`);
   } catch (err) {
     setStatus(`出错: ${String(err)}`, true);
   } finally {
@@ -342,7 +402,17 @@ function renderContent(): void {
   scoreBtn.disabled = scoring || !round.referencePath || round.candidates.length === 0;
   scoreBtn.addEventListener('click', () => void startScoring());
 
-  toolbar.append(pickReferenceBtn, referenceLabel, addCandidatesBtn, scoreBtn);
+  // T10 接线点：一站式跑分（JPEG）——只靠原图自动生成编码阶梯并跑分，进度亮在状态栏
+  const onestopBtn = document.createElement('button');
+  onestopBtn.className = 'add-btn onestop-btn';
+  onestopBtn.textContent = scoring ? '一站式跑分中…' : '一站式跑分（JPEG）';
+  onestopBtn.title = round.referencePath
+    ? `自动用 MozJPEG 生成 JPEG q${JPEG_QUALITIES.join('/q')} 并逐张跑分（首次使用需联网下载编码器）`
+    : '需要先选择原图';
+  onestopBtn.disabled = scoring || !round.referencePath;
+  onestopBtn.addEventListener('click', () => void runOnestop());
+
+  toolbar.append(pickReferenceBtn, referenceLabel, addCandidatesBtn, scoreBtn, onestopBtn);
   $content.append(toolbar);
 
   if (round.candidates.length === 0) {

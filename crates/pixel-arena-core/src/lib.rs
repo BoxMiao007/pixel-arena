@@ -1,6 +1,6 @@
 // 像素竞技场核心库。
-// 解码、指标、编码编排等能力按票逐个加入（T01 版本号通路 -> T02 图片指标链路 -> T05 工作区数据模型），
-// 不预写后续票才用得上的抽象。
+// 解码、指标、编码编排等能力按票逐个加入（T01 版本号通路 -> T02 图片指标链路 -> T05 工作区数据模型
+// -> T10 一站式编码编排），不预写后续票才用得上的抽象。
 
 mod error;
 mod metrics;
@@ -8,6 +8,7 @@ mod metrics;
 pub use error::CoreError;
 pub use metrics::{score_images, ImageMetrics};
 
+pub mod encode;
 pub mod workspace;
 
 /// 核心库版本号，与 Cargo.toml 的 package.version 保持一致。

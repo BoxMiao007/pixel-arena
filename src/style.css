@@ -201,6 +201,19 @@ body {
   color: #9aa0a6;
 }
 
+/* ---------- 一站式跑分（T10） ---------- */
+
+/* 绿色描边区别于手动「开始跑分」：一站式自动生成 + 自动跑分 */
+.onestop-btn {
+  border-color: #81c995;
+  color: #81c995;
+}
+
+.onestop-btn:disabled {
+  border-color: #2a2d33;
+  color: #9aa0a6;
+}
+
 /* ---------- 跑分结果表 ---------- */
 
 .result-table {

@@ -18,8 +18,19 @@ ssimulacra2 = "0.5.1"
 # butteraugli 的输入类型（Img<RGB8>）
 imgref = "1"
 rgb = "0.8"
+# 编码器分发（T10，方案见 docs/decisions.md 0009）：首次使用下载 + sha256 校验 + tar.gz 解包
+# ureq 默认 feature 走 rustls（自带根证书，无系统依赖），适合三端打包
+ureq = "2"
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
+# 编码时写 PPM 中间临时文件
+tempfile = "3.27.0"
 
 [dev-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
-tempfile = "3.27.0"
 toml = { version = "1.1.6", features = ["serde"] }
+# 编码器安装测试要在测试内构造 tar.gz 与算哈希
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
