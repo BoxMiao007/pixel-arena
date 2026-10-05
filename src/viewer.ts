@@ -30,6 +30,19 @@ export interface ViewerRound {
   candidates: { path: string }[];
 }
 
+// ---------- 槽位解析（纯函数，viewer.test.ts 守护） ----------
+
+/** 单槽模式（分屏/滑动/叠加/差异/闪烁共用一个跑分图槽）的槽位解析：
+ *  显式选择仍在本轮候选里则用之，否则回落第一张（候选删光时为 null）。
+ *  换图路径必须每次经此解析（T19 回归：槽位状态曾与画布条目脱钩，画布持续画旧图）。 */
+export function resolveCandidatePath(
+  chosen: string | null,
+  round: Pick<ViewerRound, 'candidates'>,
+): string | null {
+  if (chosen && round.candidates.some((c) => c.path === chosen)) return chosen;
+  return round.candidates[0]?.path ?? null;
+}
+
 // T09 接线：模式并集——'overlay' 叠加 / 'diff' 差异图 / 'blink' 闪烁切换；T08 多视图 multiview2/3 并入
 type ViewerMode = 'split' | 'slider' | 'multiview2' | 'multiview3' | 'overlay' | 'diff' | 'blink';
 
@@ -45,8 +58,10 @@ let state: {
   divider: number;
   /** 当前在右栏/右侧显示的跑分图 */
   candidatePath: string | null;
-  /** 多视图每格显式选图（T08）：''=显式留空，null=默认布局；换轮重置 */
-  cellPaths: (string | null)[] | null;
+  /** 多视图每格显式选图（T08；T19 起按网格档位隔离）：2=2×2、3=3×3 各自一份，
+   *  ''=显式留空，数组缺省位=走默认布局；换轮重置。
+   *  T20 合并两档为单网格后此记录可退化为单份（过渡说明见 shared/notes/T19.md） */
+  cellPaths: Partial<Record<2 | 3, (string | null)[]>>;
   /** 共享视口；null = 待适配（图片就绪后按窗格尺寸 fit） */
   viewport: ViewportState | null;
 } | null = null;
@@ -114,13 +129,13 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       mode: 'split',
       divider: 0.5,
       candidatePath: round.candidates[0]?.path ?? null,
-      cellPaths: null,
+      cellPaths: {},
       viewport: null,
     };
   }
-  // 跑分图可能被删光或换掉：失效时回落到第一张
+  // 跑分图可能被删光或换掉：失效时回落到第一张（槽位解析纯函数）
   if (!state.candidatePath || !round.candidates.some((c) => c.path === state!.candidatePath)) {
-    state.candidatePath = round.candidates[0]?.path ?? null;
+    state.candidatePath = resolveCandidatePath(state.candidatePath, round);
     state.viewport = null;
   }
 
@@ -185,7 +200,9 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   }
   candSelect.value = state.candidatePath ?? '';
   candSelect.addEventListener('change', () => {
-    state!.candidatePath = candSelect.value;
+    // T19 修复：换图只更新槽位状态即可——draw() 每次绘制按最新 candidatePath 重新解析
+    // 图像条目，不再依赖挂载时闭包捕获的 candEntry（曾导致画布持续画旧图直到重挂）
+    state!.candidatePath = resolveCandidatePath(candSelect.value, round);
     scheduleDraw();
   });
   candLabel.append(candSelect);
@@ -374,9 +391,9 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   const observer = new ResizeObserver(() => scheduleDraw());
   observer.observe(area);
 
-  // 开始加载图片（缓存命中则立即就绪）
+  // 开始加载原图（缓存命中则立即就绪）。跑分图条目不在此处绑定：
+  // draw() 每帧按最新 candidatePath 重新解析（T19 修复，见 draw 内注释）。
   const refEntry = ensureImage(round.referencePath, scheduleDraw);
-  const candEntry = state.candidatePath ? ensureImage(state.candidatePath, scheduleDraw) : null;
 
   /** 把画布背后 store 调到窗格实际尺寸 × 设备像素比，返回 CSS 尺寸的绘图上下文。 */
   function prepare(canvas: HTMLCanvasElement): { ctx: CanvasRenderingContext2D; size: Size } | null {
@@ -459,6 +476,10 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   function draw(): void {
     const st = state;
     if (!st || !area.isConnected) return;
+    // T19 修复：每次绘制按最新 candidatePath 重新解析跑分图条目——换图立即生效，
+    // 分屏/滑动/叠加/差异/闪烁五种单槽模式共用此条目，不再留挂载时的旧绑定。
+    // 差异图缓存 key 本就含 candidatePath（viewer.ts diff 分支），随之自动失效重算。
+    const candEntry = st.candidatePath ? ensureImage(st.candidatePath, scheduleDraw) : null;
     if (st.mode === 'split') {
       if (!refCanvas || !candCanvas) return; // 多视图模式下没有这两块画布
       const ctxA = prepare(refCanvas);

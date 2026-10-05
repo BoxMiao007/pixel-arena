@@ -89,7 +89,8 @@ export function formatTimestamp(t: number): string {
 }
 
 /** 多视图第 index 格的选路：显式选择仍有效则用之（''=显式留空），否则回落默认布局。
- *  复用 multiview 的 resolveCellImage：把左路当「参考」，其余源当「候选」。 */
+ *  复用 multiview 的 resolveCellImage：把左路当「参考」，其余源当「候选」。
+ *  视频侧只有 2×2 一种网格，本侧 cellPaths 保持扁平数组，经 tier 2 桶适配新签名（T19）。 */
 export function resolveCellVideo(
   index: number,
   cellPaths: (string | null)[] | null,
@@ -97,7 +98,8 @@ export function resolveCellVideo(
   sources: string[],
 ): string | null {
   return resolveCellImage(
-    { viewport: null, cellPaths },
+    { viewport: null, cellPaths: cellPaths ? { 2: cellPaths } : {} },
+    2,
     index,
     {
       referencePath: leftPath,
