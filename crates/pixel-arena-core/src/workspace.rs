@@ -1209,7 +1209,7 @@ mod tests {
     fn round_content_json_roundtrip() {
         let mut ws = Workspace::new();
         let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
-        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        let _r = ws.create_round(&g, "轮").unwrap().id.clone();
         let round = &mut ws.groups[0].rounds[0];
         round.reference_path = Some("/tmp/photo-ref.png".to_string());
         round.candidates.push(CandidateImage {
@@ -1529,7 +1529,7 @@ mod tests {
     fn video_candidates_json_roundtrip_preserves_elapsed_and_metrics() {
         let mut ws = Workspace::new();
         let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
-        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        let _r = ws.create_round(&g, "轮").unwrap().id.clone();
         ws.groups[0].rounds[0].video_reference_path = Some("/tmp/ref.mp4".to_string());
         ws.groups[0].rounds[0].video_candidates.push(CandidateVideo {
             path: "/tmp/dis.mp4".to_string(),
