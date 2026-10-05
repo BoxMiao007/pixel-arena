@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use pixel_arena_core::encode::{encode_onestop, EncoderSource};
+use pixel_arena_core::encode::{encode_onestop, probe_onestop_size, EncoderSource, OnestopFormat};
+use pixel_arena_core::ladder::{quality_ladder, size_search, LadderItem, LOSSLESS_FORMATS, LOSSY_FORMATS};
 use pixel_arena_core::{score_images, CoreError};
 
 #[derive(Parser)]
@@ -52,6 +53,16 @@ enum Command {
         /// 无损对照组收窄（png/webp-lossless/jxl-lossless），默认全部；不带值表示不生成无损组。
         #[arg(long, value_name = "FORMAT", num_args = 0..)]
         lossless: Option<Vec<String>>,
+
+        /// 基准质量（0–100，质量优先模式）：在基准附近自动取点，每个有损格式至少
+        /// 3 个质量点 + 无损对照组；不传时基准取 75（输出与默认阶梯完全一致）。
+        #[arg(long, value_name = "Q", conflicts_with_all = ["qualities", "target_size"])]
+        baseline_quality: Option<u8>,
+
+        /// 目标大小（KB，大小优先模式）：每个有损格式自动搜索逼近该大小，
+        /// 不可达时取最接近点并在 note 列标注；无损对照组照常生成。
+        #[arg(long, value_name = "KB", conflicts_with_all = ["qualities"])]
+        target_size: Option<u64>,
 
         /// 输出格式，默认 csv（可选 json / html）。
         #[arg(long, value_enum, default_value_t = OutputFormat::Csv)]
@@ -102,10 +113,22 @@ fn main() -> ExitCode {
             formats,
             qualities,
             lossless,
+            baseline_quality,
+            target_size,
             format,
             out,
             tools_dir,
-        } => run_run(&reference, formats, qualities, lossless, format, out, tools_dir),
+        } => run_run(
+            &reference,
+            formats,
+            qualities,
+            lossless,
+            baseline_quality,
+            target_size,
+            format,
+            out,
+            tools_dir,
+        ),
     }
 }
 
@@ -369,25 +392,175 @@ fn write_html(rows: &[ScoreRow]) {
     );
 }
 
-// ---------- run 子命令（一站式批量，与 GUI 共用 encode_onestop + score_images） ----------
+// ---------- run 子命令（一站式批量，与 GUI 共用核心库取点 + encode_onestop + score_images） ----------
 
-/// 默认有损格式（决策 0003 编码阶梯，顺序即生成顺序，与前端 onestop.ts 一致）。
-const LOSSY_FORMATS: [&str; 4] = ["jpeg", "webp", "avif", "jxl"];
+/// 阶梯模式（T21 单源化）：取点逻辑全部来自核心库 ladder 模块，CLI 只做参数收窄与编排。
+/// 互斥组合已由 clap 拒绝（退出码 2），这里只做剩余取值校验。
+enum LadderMode {
+    /// 质量优先：统一基准 0–100 自动取点（默认 75，输出与现行默认阶梯完全一致）。
+    Baseline(u8),
+    /// 显式质量枚举（--qualities，既有行为：只生成列出的档位，不做自动取点）。
+    Explicit(Vec<u8>),
+    /// 大小优先：目标字节数（--target-size，KB × 1024）。
+    TargetSize(u64),
+}
 
-/// 默认质量档（仅作用于有损格式）。
-const DEFAULT_QUALITIES: [u8; 3] = [60, 75, 90];
+fn resolve_ladder_mode(
+    qualities: Option<Vec<String>>,
+    baseline_quality: Option<u8>,
+    target_size: Option<u64>,
+) -> Result<LadderMode, String> {
+    if let Some(kb) = target_size {
+        // KB → 字节；超大输入饱和处理而非溢出 panic
+        return Ok(LadderMode::TargetSize(kb.saturating_mul(1024)));
+    }
+    if let Some(baseline) = baseline_quality {
+        if baseline > 100 {
+            return Err(format!("基准质量 {baseline} 无效，有效范围 0–100"));
+        }
+        return Ok(LadderMode::Baseline(baseline));
+    }
+    match qualities {
+        Some(list) => Ok(LadderMode::Explicit(parse_quality_list(&list)?)),
+        // 默认 = 质量优先基准 75（核心库取点与决策 0003 的 60/75/90 完全一致）
+        None => Ok(LadderMode::Baseline(75)),
+    }
+}
 
-/// 默认无损对照组（核心库保证像素逐位一致）。
-const LOSSLESS_FORMATS: [&str; 3] = ["png", "webp-lossless", "jxl-lossless"];
+/// 质量档列表解析（--qualities 显式枚举）：1–100，非法值中文报错（沿用既有文案）。
+fn parse_quality_list(raw: &[String]) -> Result<Vec<u8>, String> {
+    let mut values = Vec::with_capacity(raw.len());
+    for value in dedup(raw.to_vec()) {
+        let parsed: u8 = value
+            .parse()
+            .map_err(|_| format!("质量 {value} 无效，有效范围 1–100"))?;
+        if parsed == 0 || parsed > 100 {
+            return Err(format!("质量 {parsed} 无效，有效范围 1–100"));
+        }
+        values.push(parsed);
+    }
+    Ok(values)
+}
 
-/// 编码阶梯的一项：一个待生成并跑分的档位。
-struct LadderItem {
-    /// 传给核心库的规范格式字符串。
-    format: String,
-    /// 无损组为 None。
-    quality: Option<u8>,
-    /// 进度文本用显示名，如「JPEG q60」「无损 WebP」。
-    label: String,
+/// 收窄参数解析（--formats / --lossless）：None = 该组默认全选；出现但不带值 = 该组不跑；
+/// 值逐个过核心库解析（未知格式的中文文案以核心库为准），选错组提示改用对应参数。
+fn parse_format_selection(
+    raw: Option<Vec<String>>,
+    canonical: &[OnestopFormat],
+) -> Result<Vec<OnestopFormat>, String> {
+    let Some(values) = raw else {
+        return Ok(canonical.to_vec());
+    };
+    if values.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut selected: Vec<OnestopFormat> = Vec::new();
+    for value in dedup(values) {
+        let format = OnestopFormat::parse(&value).map_err(|error| error.to_string())?;
+        if !canonical.contains(&format) {
+            return Err(if LOSSLESS_FORMATS.contains(&format) {
+                format!("{value} 是无损格式，请改用 --lossless 选择")
+            } else {
+                format!("{value} 是有损格式，请改用 --formats 选择")
+            });
+        }
+        selected.push(format);
+    }
+    Ok(selected)
+}
+
+/// 编码器首次使用预告（大小优先搜索与正式生成前都会调用；每个编码器只提示一次）。
+fn announce_encoder_download(item_format: &str, tools_dir: &Path, announced: &mut Vec<String>) {
+    if let Some((source, members)) = encoder_source_for(item_format) {
+        if !announced.contains(&source.name) {
+            announced.push(source.name.clone());
+            let installed = members.iter().all(|member| {
+                tools_dir
+                    .join(&source.name)
+                    .join(&source.version)
+                    .join(member)
+                    .is_file()
+            });
+            if !installed {
+                eprintln!("正在下载编码器 {}…", source.name);
+            }
+        }
+    }
+}
+
+/// 展开编码阶梯：取点数据源 = 核心库 ladder 模块（单一实现，GUI 目录同源）。
+/// 返回 (档位清单, 大小优先不可达标注[格式 → 文本], 是否有失败)。
+fn build_run_ladder(
+    mode: &LadderMode,
+    lossy_sel: &[OnestopFormat],
+    lossless_sel: &[OnestopFormat],
+    reference: &Path,
+    tools_dir: &Path,
+    announced: &mut Vec<String>,
+) -> Result<(Vec<LadderItem>, std::collections::HashMap<String, String>, bool), String> {
+    let mut ladder: Vec<LadderItem> = Vec::new();
+    let mut notes = std::collections::HashMap::new();
+    let mut any_failed = false;
+
+    match mode {
+        LadderMode::Baseline(baseline) => {
+            // 单一来源：核心库质量优先取点（基准 75 = 决策 0003 默认阶梯），按收窄参数过滤。
+            // 只保有损项——无损对照组由下方公共循环统一追加，避免重复。
+            for item in quality_ladder(*baseline).map_err(|error| error.to_string())? {
+                let keep = match item.quality {
+                    Some(_) => lossy_sel.iter().any(|f| f.as_str() == item.format),
+                    None => false,
+                };
+                if keep {
+                    ladder.push(item);
+                }
+            }
+        }
+        LadderMode::Explicit(quality_values) => {
+            // 既有行为：用户点名的质量档直接枚举（格式 × 质量），不走自动取点
+            for format in lossy_sel {
+                for quality in quality_values {
+                    ladder.push(LadderItem::new(*format, Some(*quality)));
+                }
+            }
+        }
+        LadderMode::TargetSize(target_bytes) => {
+            // 大小优先（US21-23）：每格式自动搜索逼近目标；探测产物落暂存目录即弃
+            eprintln!("大小优先模式：目标 {} 字节", target_bytes);
+            let scratch = tempfile::tempdir()
+                .map_err(|error| format!("无法创建探测暂存目录：{error}"))?;
+            for format in lossy_sel {
+                announce_encoder_download(format.as_str(), tools_dir, announced);
+                eprintln!("正在搜索 {} 逼近目标大小…", format.display_name());
+                let result = size_search(*format, *target_bytes, &mut |quality| {
+                    probe_onestop_size(reference, *format, quality, scratch.path(), tools_dir)
+                });
+                match result {
+                    Ok(result) => {
+                        if let Some(note) = result.annotation_note() {
+                            eprintln!("标注：{}：{note}", format.display_name());
+                            notes.insert(format.as_str().to_string(), note);
+                        }
+                        // 命中点 + 邻近补点全部入阶梯（率失真样本 ≥3，US23）
+                        for point in &result.points {
+                            ladder.push(LadderItem::new(*format, Some(point.quality)));
+                        }
+                    }
+                    Err(error) => {
+                        // 搜索失败 = 该格式整体失败，继续其余格式（沿用逐档失败语义）
+                        eprintln!("生成失败：{}：{error}", format.display_name());
+                        any_failed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 无损对照组：三种模式一致（大小优先下无损产物大小固定，不参与搜索）
+    for format in lossless_sel {
+        ladder.push(LadderItem::new(*format, None));
+    }
+    Ok((ladder, notes, any_failed))
 }
 
 /// 一站式结果表的一行：一个档位的产物相对原图的跑分结果。
@@ -405,14 +578,8 @@ struct RunRow {
     reference_bytes: u64,
     candidate_bytes: u64,
     size_ratio: f64,
-}
-
-/// 格式的进度显示名：委托核心库 OnestopFormat::display_name（单一来源，
-/// 与前端 onestop.ts 的映射需人工同步）。
-fn format_label(format: &str) -> &'static str {
-    pixel_arena_core::encode::OnestopFormat::parse(format)
-        .expect("build_ladder 已校验格式")
-        .display_name()
+    /// 大小优先模式的不可达标注（US22：不可达时结果不骗人）；其余模式为 None。
+    note: Option<String>,
 }
 
 /// 去重且保持首次出现顺序（用户重复选择同一格式/档位时按一项处理）。
@@ -424,74 +591,6 @@ fn dedup(values: Vec<String>) -> Vec<String> {
         }
     }
     seen
-}
-
-/// 展开编码阶梯：先有损（格式 × 质量档），后无损组；与前端 buildLadder 同序。
-/// 收窄参数 None = 该组取默认全选，Some(空) = 该组不跑；非法值 fail-fast 中文报错。
-fn build_ladder(
-    formats: Option<Vec<String>>,
-    qualities: Option<Vec<String>>,
-    lossless: Option<Vec<String>>,
-) -> Result<Vec<LadderItem>, String> {
-    let formats = dedup(
-        formats.unwrap_or_else(|| LOSSY_FORMATS.iter().map(|s| s.to_string()).collect()),
-    );
-    let qualities = dedup(
-        qualities.unwrap_or_else(|| DEFAULT_QUALITIES.iter().map(|q| q.to_string()).collect()),
-    );
-    let lossless = dedup(
-        lossless.unwrap_or_else(|| LOSSLESS_FORMATS.iter().map(|s| s.to_string()).collect()),
-    );
-
-    // 质量档先解析校验（启动任何编码器之前 fail-fast）
-    let mut quality_values = Vec::with_capacity(qualities.len());
-    for raw in &qualities {
-        let parsed: u8 = raw
-            .parse()
-            .map_err(|_| format!("质量 {raw} 无效，有效范围 1–100"))?;
-        if parsed == 0 || parsed > 100 {
-            return Err(format!("质量 {parsed} 无效，有效范围 1–100"));
-        }
-        quality_values.push(parsed);
-    }
-
-    // 格式名先过核心库解析（未知格式的中文文案以核心库为准），再核对组别归属
-    for raw in formats.iter().chain(lossless.iter()) {
-        pixel_arena_core::encode::OnestopFormat::parse(raw).map_err(|error| error.to_string())?;
-    }
-    for raw in &formats {
-        if !LOSSY_FORMATS.contains(&raw.as_str()) {
-            return Err(format!("{raw} 是无损格式，请改用 --lossless 选择"));
-        }
-    }
-    for raw in &lossless {
-        if !LOSSLESS_FORMATS.contains(&raw.as_str()) {
-            return Err(format!("{raw} 是有损格式，请改用 --formats 选择"));
-        }
-    }
-
-    let mut ladder = Vec::new();
-    for format in &formats {
-        for quality in &quality_values {
-            ladder.push(LadderItem {
-                format: format.clone(),
-                quality: Some(*quality),
-                label: format!("{} q{quality}", format_label(format)),
-            });
-        }
-    }
-    for format in &lossless {
-        ladder.push(LadderItem {
-            format: format.clone(),
-            quality: None,
-            label: format_label(format).to_string(),
-        });
-    }
-    if ladder.is_empty() {
-        return Err("没有可生成的档位：请至少选择一个有损格式（--formats）或无损格式（--lossless）"
-            .to_string());
-    }
-    Ok(ladder)
 }
 
 /// 格式 → 编码器来源与所需成员（PNG 走进程内编码，无外部编码器）。
@@ -531,6 +630,8 @@ fn run_run(
     formats: Option<Vec<String>>,
     qualities: Option<Vec<String>>,
     lossless: Option<Vec<String>>,
+    baseline_quality: Option<u8>,
+    target_size: Option<u64>,
     format: OutputFormat,
     out: Option<PathBuf>,
     tools_dir: Option<PathBuf>,
@@ -546,8 +647,17 @@ fn run_run(
         }
     };
 
-    let ladder = match build_ladder(formats, qualities, lossless) {
-        Ok(ladder) => ladder,
+    // 模式与收窄解析：全部是纯校验，fail-fast 在任何编码动作之前
+    let mode = match resolve_ladder_mode(qualities, baseline_quality, target_size) {
+        Ok(mode) => mode,
+        Err(message) => return fail_message(&message),
+    };
+    let lossy_sel = match parse_format_selection(formats, &LOSSY_FORMATS) {
+        Ok(selected) => selected,
+        Err(message) => return fail_message(&message),
+    };
+    let lossless_sel = match parse_format_selection(lossless, &LOSSLESS_FORMATS) {
+        Ok(selected) => selected,
         Err(message) => return fail_message(&message),
     };
 
@@ -571,6 +681,22 @@ fn run_run(
         }
     }
 
+    // 阶梯构建：大小优先模式在此完成逼近搜索（探测 = 真实编码，标注/失败在此结算）
+    let mut announced: Vec<String> = Vec::new();
+    let (ladder, notes, mut any_failed) =
+        match build_run_ladder(&mode, &lossy_sel, &lossless_sel, reference, &tools_dir, &mut announced)
+        {
+            Ok(built) => built,
+            Err(message) => return fail_message(&message),
+        };
+    let mut first_error: Option<String> = None;
+    let size_mode = matches!(mode, LadderMode::TargetSize(_));
+    if ladder.is_empty() && !any_failed {
+        return fail_message(
+            "没有可生成的档位：请至少选择一个有损格式（--formats）或无损格式（--lossless）",
+        );
+    }
+
     let output_dir = match out {
         Some(dir) => dir,
         None => std::env::temp_dir().join(format!(
@@ -589,33 +715,17 @@ fn run_run(
     }
 
     // 生成阶段：沿用桌面端一站式语义，单项失败继续其余档位，结束统一结算
-    let mut products: Vec<(String, String, Option<u8>, PathBuf)> = Vec::new();
-    let mut any_failed = false;
-    let mut first_error: Option<String> = None;
-    let mut announced: Vec<String> = Vec::new();
+    let mut products: Vec<(String, String, Option<u8>, Option<String>, PathBuf)> = Vec::new();
     for (index, item) in ladder.iter().enumerate() {
         // 编码器首次使用预告：成员文件缺失即会触发下载（每个编码器只提示一次）
-        if let Some((source, members)) = encoder_source_for(&item.format) {
-            if !announced.contains(&source.name) {
-                announced.push(source.name.clone());
-                let installed = members.iter().all(|member| {
-                    tools_dir
-                        .join(&source.name)
-                        .join(&source.version)
-                        .join(member)
-                        .is_file()
-                });
-                if !installed {
-                    eprintln!("正在下载编码器 {}…", source.name);
-                }
-            }
-        }
+        announce_encoder_download(&item.format, &tools_dir, &mut announced);
         eprintln!("正在生成 {}（{}/{}）", item.label, index + 1, ladder.len());
         match encode_onestop(reference, &item.format, item.quality, &output_dir, &tools_dir) {
             Ok(product) => products.push((
                 item.label.clone(),
                 item.format.clone(),
                 item.quality,
+                notes.get(&item.format).cloned(),
                 product,
             )),
             Err(error) => {
@@ -629,7 +739,7 @@ fn run_run(
     // 跑分阶段：始终用产物本身（AVIF/JXL 的 PNG 代片只供查看器显示）
     let mut rows: Vec<RunRow> = Vec::with_capacity(products.len());
     let total = products.len();
-    for (index, (_, item_format, quality, product)) in products.iter().enumerate() {
+    for (index, (_, item_format, quality, note, product)) in products.iter().enumerate() {
         eprintln!("正在跑分 {}/{}：{}", index + 1, total, product.display());
         let candidate_bytes = match std::fs::metadata(product) {
             Ok(metadata) => metadata.len(),
@@ -655,6 +765,7 @@ fn run_run(
                 reference_bytes,
                 candidate_bytes,
                 size_ratio: candidate_bytes as f64 / reference_bytes as f64,
+                note: note.clone(),
             }),
             Err(error) => {
                 eprintln!("跑分失败：{}：{error}", product.display());
@@ -675,9 +786,9 @@ fn run_run(
         return ExitCode::from(1);
     }
     match format {
-        OutputFormat::Csv => write_run_csv(&rows),
-        OutputFormat::Json => write_run_json(&rows),
-        OutputFormat::Html => write_run_html(&rows),
+        OutputFormat::Csv => write_run_csv(&rows, size_mode),
+        OutputFormat::Json => write_run_json(&rows, size_mode),
+        OutputFormat::Html => write_run_html(&rows, size_mode),
     }
     if any_failed {
         // 部分失败：成功档位的结果照常输出（下游可拿到部分数据），退出码 1 提示结果不完整
@@ -700,14 +811,18 @@ fn run_quality_text(quality: Option<u8>) -> String {
 }
 
 /// run 结果的 CSV 输出：列 = score 现有列序 + format/quality 两列（插在 candidate 之后）。
-fn write_run_csv(rows: &[RunRow]) {
+/// 大小优先模式（size_mode）追加尾随 note 列（不可达标注，可达行为空）；
+/// 其余模式保持既有列序不变。
+fn write_run_csv(rows: &[RunRow], size_mode: bool) {
     // 与 score 的 CSV 同约定：UTF-8 BOM 开头（票 18，见 write_csv 注释）
     print!("\u{FEFF}");
-    println!(
-        "reference,candidate,format,quality,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,reference_bytes,candidate_bytes,size_ratio"
-    );
+    let mut header = "reference,candidate,format,quality,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,reference_bytes,candidate_bytes,size_ratio".to_string();
+    if size_mode {
+        header.push_str(",note");
+    }
+    println!("{header}");
     for row in rows {
-        println!(
+        let mut line = format!(
             "{},{},{},{},{},{},{},{},{},{},{},{}",
             csv_field(&row.reference),
             csv_field(&row.candidate),
@@ -722,16 +837,22 @@ fn write_run_csv(rows: &[RunRow]) {
             row.candidate_bytes,
             metric_text(row.size_ratio),
         );
+        if size_mode {
+            line.push(',');
+            line.push_str(&csv_field(row.note.as_deref().unwrap_or("")));
+        }
+        println!("{line}");
     }
 }
 
 /// run 结果的 JSON 输出：字段名与 CSV 表头一致；quality 无损组为 null；
 /// 指标无穷大写作字符串 "inf"、NaN 写作 "nan"（哨兵与 score 子命令一致）。
-fn write_run_json(rows: &[RunRow]) {
+/// 大小优先模式追加 note 字段（不可达标注，可达为 null）；其余模式无该字段。
+fn write_run_json(rows: &[RunRow], size_mode: bool) {
     let items: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "reference": row.reference,
                 "candidate": row.candidate,
                 "format": row.format,
@@ -744,7 +865,15 @@ fn write_run_json(rows: &[RunRow]) {
                 "reference_bytes": row.reference_bytes,
                 "candidate_bytes": row.candidate_bytes,
                 "size_ratio": metric_value(row.size_ratio),
-            })
+                "note": row.note,
+            });
+            if !size_mode {
+                value
+                    .as_object_mut()
+                    .expect("run 行应为 JSON 对象")
+                    .remove("note");
+            }
+            value
         })
         .collect();
     let document = serde_json::Value::Array(items);
@@ -756,20 +885,30 @@ fn write_run_json(rows: &[RunRow]) {
 
 /// run 结果的 HTML 输出：score 同款自包含中文报告，另加格式/质量两列
 /// （质量无损组显示「无损」，CSV/JSON 里是 lossless/null）。
-fn write_run_html(rows: &[RunRow]) {
+/// 大小优先模式追加「备注」列（不可达标注）；其余模式保持既有列不变。
+fn write_run_html(rows: &[RunRow], size_mode: bool) {
     let generated_at = utc_now_text();
-    let mut table = String::from(
+    let note_header = if size_mode { "<th>备注</th>" } else { "" };
+    let mut table = format!(
         "<table>\n<thead><tr><th>跑分图</th><th>路径</th><th>格式</th><th>质量</th><th>PSNR</th>\
          <th>SSIM</th><th>MS-SSIM</th><th>Butteraugli</th><th>SSIMULACRA2</th><th>原图大小</th>\
-         <th>跑分图大小</th><th>体积比</th></tr></thead>\n<tbody>\n",
+         <th>跑分图大小</th><th>体积比</th>{note_header}</tr></thead>\n<tbody>\n",
     );
     for row in rows {
         let quality = row
             .quality
             .map(|q| q.to_string())
             .unwrap_or_else(|| "无损".to_string());
+        let note_cell = if size_mode {
+            format!(
+                "<td>{}</td>",
+                html_escape(row.note.as_deref().unwrap_or(""))
+            )
+        } else {
+            String::new()
+        };
         table.push_str(&format!(
-            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>{}</tr>\n",
             html_escape(&file_name(&row.candidate)),
             html_escape(&row.candidate),
             html_escape(&row.format),
@@ -782,6 +921,7 @@ fn write_run_html(rows: &[RunRow]) {
             format_size(row.reference_bytes),
             format_size(row.candidate_bytes),
             html_metric(row.size_ratio),
+            note_cell,
         ));
     }
     table.push_str("</tbody>\n</table>\n");

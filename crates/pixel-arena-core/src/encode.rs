@@ -79,6 +79,20 @@ impl OnestopFormat {
         }
     }
 
+    /// 规范格式字符串（parse 的逆映射）：CLI 结果表的 format 列与核心库取点
+    /// 返回的 LadderItem.format 都用它，是 IPC/CLI 传入值的单一来源。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpeg",
+            Self::Webp => "webp",
+            Self::Avif => "avif",
+            Self::Jxl => "jxl",
+            Self::Png => "png",
+            Self::WebpLossless => "webp-lossless",
+            Self::JxlLossless => "jxl-lossless",
+        }
+    }
+
     fn is_lossless(self) -> bool {
         matches!(self, Self::Png | Self::WebpLossless | Self::JxlLossless)
     }
@@ -309,6 +323,51 @@ pub fn write_view_proxy(product: impl AsRef<Path>) -> Result<PathBuf, CoreError>
         }
     })?;
     Ok(proxy)
+}
+
+/// 大小优先搜索的探测缝（T21）：把原图按格式 + 质量编码到 scratch_dir，返回产物字节数。
+///
+/// 探测只关心大小，不走 encode_onestop 的代片旁路（探测产物即弃；正式产物仍走
+/// encode_onestop 保留「产物可解码」自检）。搜索逻辑见 ladder::size_search（纯函数，
+/// 本函数是其「质量 → 实际大小」回调的现成实现）。
+pub fn probe_onestop_size(
+    source: impl AsRef<Path>,
+    format: OnestopFormat,
+    quality: u8,
+    scratch_dir: impl AsRef<Path>,
+    tools_dir: impl AsRef<Path>,
+) -> Result<u64, CoreError> {
+    let source = source.as_ref();
+    let scratch_dir = scratch_dir.as_ref();
+    let product = match format {
+        OnestopFormat::Jpeg => {
+            let encoder = install_encoder(&mozjpeg_source()?, tools_dir)?;
+            encode_jpeg_using(encoder, source, quality, scratch_dir)?
+        }
+        OnestopFormat::Webp => {
+            let encoder = install_encoder(&webp_source()?, tools_dir)?;
+            encode_webp_using(encoder, source, Some(quality), scratch_dir)?
+        }
+        OnestopFormat::Avif => {
+            // 探测不需要 avifdec 解码自检，装 avifenc 一个成员即可
+            let encoder = install_encoder(&avif_source()?, tools_dir)?;
+            encode_avif_using(encoder, source, Some(quality), scratch_dir)?
+        }
+        OnestopFormat::Jxl => {
+            let encoder = install_encoder(&jxl_source()?, tools_dir)?;
+            encode_jxl_using(encoder, source, Some(quality), scratch_dir)?
+        }
+        OnestopFormat::Png | OnestopFormat::WebpLossless | OnestopFormat::JxlLossless => {
+            return Err(CoreError::Encode {
+                message: format!("{} 为无损格式，不参与目标大小搜索", format.display_name()),
+            });
+        }
+    };
+    std::fs::metadata(&product)
+        .map(|metadata| metadata.len())
+        .map_err(|err| CoreError::Encode {
+            message: format!("无法读取探测产物 {}：{err}", product.display()),
+        })
 }
 
 // ---------- 各格式编码（*_using 为可注入缝，测试用） ----------
