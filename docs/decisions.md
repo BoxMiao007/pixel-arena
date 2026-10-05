@@ -72,3 +72,10 @@
 - 决策：视频指标（VMAF/PSNR/SSIM）统一经外部 ffmpeg 子进程一次算完（`split` 出 libvmaf/psnr/ssim 三个滤镜分支，结果从 stderr 汇总行解析，不落 JSON 日志文件）；ffmpeg 不依赖系统安装，首次使用视频跑分时把锁定版本的静态构建下载到应用数据目录 `tools/` 下，先做全量 sha256 校验再解压（不匹配即删除重下）。Linux 锁定 johnvansickle.com 的 ffmpeg 7.0.2 amd64 static（版本化 URL 固定不变，官方公告 md5 交叉一致，包内含 libvmaf）；Windows 侧同一机制但构建源不同（gyan.dev release-full 或 BtbN win64-gpl，均含 libvmaf），随打包票 T16 定稿并捆绑，本版 Windows 上仅识别手动放入 `tools/` 的 ffmpeg.exe，缺了报中文提示。口径：VMAF 用 libvmaf 默认内嵌模型 vmaf_v0.6.1；视频 SSIM 为 ffmpeg `ssim` 滤镜口径（8x8 均匀窗变体），与图片 SSIM（Wang 2004 标准实现）不可直接比较，已在 GLOSSARY.md 注明；音轨不参与评分。下载的压缩包（约 40MB）不入库，落在应用数据目录。
 - 为什么：系统发行版 ffmpeg 普遍不带 libvmaf（本机 Ubuntu 的 ffmpeg 8.0.1 只有 vmafmotion），动态链接系统 ffmpeg 会让 VMAF 完全不可用；静态构建免依赖、解压即用、跨机器结果可复现；锁定版本 + 双哈希校验（官方 md5 交叉、代码内 sha256）守住供应链；应用数据目录是用户可感知的标准位置，便于排查与手动升级。
 - 放弃了：从源码编译 libvmaf/ffmpeg（构建慢、难复现、三端脚本成本高）；Rust 原生 VMAF 实现（无成熟维护的 crate）；运行时用系统 PATH 上的 ffmpeg（libvmaf 可用性不可控）；把 ffmpeg 直接提交进仓库（体积与许可都不合适，GPL 构建以来源记录文件标明）。
+
+## 0011 · 视频逐帧对比：回环流服务供帧 + ffprobe 取帧率（已确认）
+
+- 日期：2026-10-05
+- 决策：视频逐帧对比（T15）的 `<video>` 元素不使用 asset protocol，改从应用内置的本地回环 HTTP 流服务拉流（`src-tauri/src/video_server.rs`：仅监听 127.0.0.1、端口随机、只暴露经 IPC `video_stream_url` 显式注册过的文件路径，路径哈希做 URL id，支持 Range 分段，纯 std 实现）。帧率/时长经 ffprobe 读取（`video_probe_meta` 命令 + `video_probe.rs` 纯函数解析 key=value 输出），ffprobe 与 ffmpeg 同包同版本：ffmpeg 工具安装的解压清单由只解 ffmpeg 扩为 ffmpeg+ffprobe（决策 0010 的增量），T14 时代只有 ffmpeg 的老安装会在首次探测时幂等补装。逐帧步进口径：±1 帧按当前显示第一路视频的帧长（1/fps）移动共享时间点，两路各自落到共享时间点的最近帧；时间轴总量取当前显示各路时长的最小值。
+- 为什么：实测 WebKitGTK 2.52.6 的媒体引擎不走 Tauri 的 asset 自定义协议（`<video>` 直接报 SRC_NOT_SUPPORTED，`<img>` 不受影响），本地回环 HTTP 是三端一致的可靠通路；只回环、随机端口、显式注册把暴露面压到与 dev server 同级。帧率必须用容器元数据而不是估算，否则「逐帧」步进不诚实；ffprobe 与 ffmpeg 同一锁定包，无新增下载来源。放弃的方案：MediaSource + IPC 分片传字节（复杂度高一个量级）；再注册一个自定义协议（与 asset 同样被媒体引擎绕过）；只支持 Windows/macOS 的 asset 路径（Linux 主开发端直接不可用）。
+- 遗留：Linux 端 H.264 等格式依赖系统 GStreamer 插件（本机缺 gst-libav），画面区已给中文提示「需安装 gst-libav」，是否捆绑/引导安装由打包票 T16 决策。

@@ -19,12 +19,17 @@ const ARCHIVE_TOP: &str = "ffmpeg-7.0.2-amd64-static";
 /// 锁定构建压缩包的 sha256（下载后全量校验）。
 const FFMPEG_TARBALL_SHA256: &str =
     "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67";
-/// 记录来源信息，便于排查与升级。
-const FFMPEG_SOURCE_NOTE: &str = "ffmpeg 7.0.2 amd64 static (johnvansickle.com, GPL, 含 libvmaf)";
+/// 记录来源信息，便于排查与升级。（ffprobe 供 T15 逐帧对比取帧率/时长，与 ffmpeg 同包同版本）
+const FFMPEG_SOURCE_NOTE: &str = "ffmpeg 7.0.2 amd64 static (johnvansickle.com, GPL, 含 libvmaf) + ffprobe";
 
 /// ffmpeg 可执行文件的落地路径（tools_dir/ffmpeg，Windows 为 ffmpeg.exe）。
 pub fn ffmpeg_path(tools_dir: &Path) -> PathBuf {
     tools_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })
+}
+
+/// ffprobe 可执行文件的落地路径（tools_dir/ffprobe，Windows 为 ffprobe.exe）。
+pub fn ffprobe_path(tools_dir: &Path) -> PathBuf {
+    tools_dir.join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" })
 }
 
 /// 确保 tools/ 里有可用的 ffmpeg，返回其路径。`progress` 收到面向用户的中文进度文本。
@@ -36,7 +41,27 @@ pub fn ensure_ffmpeg(
     if existing.is_file() {
         return Ok(existing);
     }
-    install(tools_dir, progress)
+    install(tools_dir, progress)?;
+    Ok(ffmpeg_path(tools_dir))
+}
+
+/// 确保 tools/ 里有 ffprobe（T15 逐帧对比读帧率/时长用）。T14 时代的老安装只有 ffmpeg：
+/// 此时重走一次安装流程补齐——解压清单已同时含 ffmpeg 与 ffprobe，同版本幂等覆盖。
+pub fn ensure_ffprobe(
+    tools_dir: &Path,
+    progress: &mut dyn FnMut(String),
+) -> Result<PathBuf, String> {
+    let existing = ffprobe_path(tools_dir);
+    if existing.is_file() {
+        return Ok(existing);
+    }
+    install(tools_dir, progress)?;
+    let installed = ffprobe_path(tools_dir);
+    if installed.is_file() {
+        Ok(installed)
+    } else {
+        Err("ffprobe 安装流程结束后仍不可见，请反馈此问题".to_string())
+    }
 }
 
 #[cfg(unix)]
@@ -64,7 +89,7 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
         ));
     }
 
-    // 3. 用系统 tar 解出 ffmpeg 到临时子目录，再挪到最终位置（半途失败不污染 tools/）
+    // 3. 用系统 tar 解出 ffmpeg 与 ffprobe（T15 起）到临时子目录，再挪到最终位置（半途失败不污染 tools/）
     progress("正在解压 ffmpeg…".to_string());
     let staging = tools_dir.join(format!(".ffmpeg-install-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
@@ -77,6 +102,7 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
             &staging.display().to_string(),
             "--strip-components=1",
             &format!("{ARCHIVE_TOP}/ffmpeg"),
+            &format!("{ARCHIVE_TOP}/ffprobe"),
         ])
         .output();
     let extract = match extract {
@@ -99,15 +125,23 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
         std::fs::remove_file(&tarball).ok();
         format!("无法安置 ffmpeg: {err}")
     })?;
+    let probe_target = ffprobe_path(tools_dir);
+    std::fs::rename(staging.join("ffprobe"), &probe_target).map_err(|err| {
+        std::fs::remove_dir_all(&staging).ok();
+        std::fs::remove_file(&tarball).ok();
+        format!("无法安置 ffprobe: {err}")
+    })?;
     std::fs::remove_dir_all(&staging).ok();
     std::fs::remove_file(&tarball).ok();
 
     // 4. 明确可执行权限（tar 通常已保留，补一道防呆）
     #[allow(unused_mut)]
-    if let Ok(mut perms) = std::fs::metadata(&target).map(|m| m.permissions()) {
-        use std::os::unix::fs::PermissionsExt;
-        perms.set_mode(0o755);
-        let _ = std::fs::set_permissions(&target, perms);
+    for binary in [&target, &probe_target] {
+        if let Ok(mut perms) = std::fs::metadata(binary).map(|m| m.permissions()) {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(binary, perms);
+        }
     }
 
     // 5. 记录来源，便于排查与将来升级版本
@@ -246,8 +280,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn existing_ffprobe_is_reused_without_network() {
+        // tools/ 里已有 ffprobe（哪怕是个占位文件）时直接复用，不触发下载
+        let dir = tempfile::tempdir().unwrap();
+        let marker = ffprobe_path(dir.path());
+        std::fs::write(&marker, b"placeholder").unwrap();
+        let mut messages: Vec<String> = Vec::new();
+        let resolved = ensure_ffprobe(dir.path(), &mut |msg| messages.push(msg)).unwrap();
+        assert_eq!(resolved, marker);
+        assert!(messages.is_empty(), "已就绪时不应有进度消息: {messages:?}");
+    }
+
     /// 手动跑一次真实下载安装（网络 + 约 40MB）：`cargo test -p pixel-arena -- --ignored`。
-    /// 跑之前把临时 tools 目录清掉，结束后目录里应有 ffmpeg 与来源记录。
+    /// 跑之前把临时 tools 目录清掉，结束后目录里应有 ffmpeg、ffprobe 与来源记录。
     #[test]
     #[ignore = "需要网络与约 40MB 下载，仅手动验证"]
     fn downloads_and_installs_ffmpeg_when_missing() {
@@ -259,6 +305,11 @@ mod tests {
         assert!(dir.path().join("ffmpeg-source.txt").is_file());
         // 校验跑分通路：-version 能执行
         let out = std::process::Command::new(&resolved).arg("-version").output().unwrap();
+        assert!(out.status.success());
+        // T15：ffprobe 与 ffmpeg 同包解压安置
+        let probe = ffprobe_path(dir.path());
+        assert!(probe.is_file());
+        let out = std::process::Command::new(&probe).arg("-version").output().unwrap();
         assert!(out.status.success());
     }
 }

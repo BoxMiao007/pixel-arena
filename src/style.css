@@ -556,3 +556,86 @@ body {
   color: #9aa0a6;
   margin-bottom: 0.6rem;
 }
+
+/* ---------- 视频逐帧同步对比（T15，实现见 src/video-compare.ts） ---------- */
+
+/* 挂在视频评测区块内部的次级区块：虚线分隔、标题比主区块小一号；
+   窗格/分割线/网格样式直接复用查看器的 .viewer-* 类 */
+.video-compare {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed #2a2d33;
+}
+
+.video-compare-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #9aa0a6;
+  margin-bottom: 0.6rem;
+}
+
+/* 视频区块位于页面下部，画布高度比图片查看器矮一档，避免正常窗口下过长 */
+.video-compare .viewer-area {
+  height: clamp(200px, calc(100vh - 420px), 380px);
+}
+
+.video-compare .viewer-area.grid {
+  height: clamp(220px, calc(100vh - 400px), 420px);
+}
+
+/* 时间轴行：±1 帧按钮 + 同步拖动滑杆 + 时间显示 */
+.video-timeline {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #9aa0a6;
+}
+
+.video-timeline button {
+  border: 1px solid #2a2d33;
+  background: #1d2127;
+  color: #9aa0a6;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.video-timeline button:hover:not(:disabled) {
+  border-color: #8ab4f8;
+  color: #e8eaed;
+}
+
+.video-timeline button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.video-timeline input[type='range'] {
+  flex: 1;
+  accent-color: #8ab4f8;
+}
+
+.video-timeline .video-time {
+  min-width: 10.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #e8eaed;
+  white-space: nowrap;
+}
+
+/* 视频元素隐藏池：元素常驻文档（WebKitGTK 对不在文档里的媒体元素解码不可靠），
+   移出屏幕且不占布局；视频静音、暂停态，画面只随 seek 变化 */
+.video-compare-pool {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 2px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
