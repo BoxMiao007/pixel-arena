@@ -332,7 +332,7 @@ function buildOnestopOptions(): HTMLDivElement {
 
 /**
  * T11 接线点：AVIF/JXL 产物 WebView 原生解不了，查看器改看核心库生成产物时
- * 旁路写出的 PNG 代片（<产物>.png，像素与产物解码一致，见决策 0011）。
+ * 旁路写出的 PNG 代片（<产物>.png，像素与产物解码一致，见决策 0012）。
  * 只影响查看显示；跑分与结果表仍用产物本身。
  */
 function viewerPath(path: string): string {

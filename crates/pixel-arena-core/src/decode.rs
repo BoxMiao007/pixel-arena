@@ -1,4 +1,4 @@
-// AVIF 与 JPEG XL 产物的解码（T11，方案见 docs/decisions.md 0011）。
+// AVIF 与 JPEG XL 产物的解码（T11，方案见 docs/decisions.md 0012）。
 //
 // image crate 0.25 只解 PNG/JPEG/WebP；一站式产物另外两种格式在此按魔数分派：
 // - JPEG XL：jxl-oxide 进程内解码（纯 Rust，三端无外部依赖，无需下载任何工具）；

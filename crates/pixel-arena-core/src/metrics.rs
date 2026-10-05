@@ -82,7 +82,7 @@ pub fn score_images(
 /// 必须与跑分时解码的像素一致，避免两处解码行为漂移。
 ///
 /// T11：AVIF/JPEG XL 是 image crate 不支持的产物格式，按魔数分派到 decode 模块
-/// 的专用解码路径（决策 0011）；PNG/JPEG/WebP 仍走下方原路径（黄金基准守护数值不变）。
+/// 的专用解码路径（决策 0012）；PNG/JPEG/WebP 仍走下方原路径（黄金基准守护数值不变）。
 pub(crate) fn decode_srgb(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, CoreError> {
     match crate::decode::sniff_special(path)? {
         Some(crate::decode::SpecialFormat::Jxl) => return crate::decode::decode_jxl(path),

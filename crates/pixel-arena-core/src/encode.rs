@@ -13,7 +13,7 @@
 // 编码链路：image crate 解码原图（与跑分同一套 decode_srgb 口径）→ 按编码器口味写
 // 中间临时文件（cjpeg/cwebp/cjxl 吃 P6 PPM，avifenc 吃 PNG）→ 子进程编码 →
 // 产物写到评测轮工作目录。AVIF/JXL 产物写完自检解码并旁路一份 PNG 代片供查看器显示
-//（WebView 原生解不了这两种格式，见决策 0011）。
+//（WebView 原生解不了这两种格式，见决策 0012）。
 //
 // CLI（T12）复用 encode_onestop / install_encoder_members，无需新逻辑。
 
@@ -232,7 +232,7 @@ pub fn encode_onestop(
         OnestopFormat::Png => encode_png_product(source, output_dir),
     }?;
 
-    // AVIF/JXL 产物 WebView 原生解不了：自检解码 + 旁路 PNG 代片（决策 0011）。
+    // AVIF/JXL 产物 WebView 原生解不了：自检解码 + 旁路 PNG 代片（决策 0012）。
     // 自检失败视同产物失败：不留不可跑分的产物。
     if matches!(format, OnestopFormat::Avif | OnestopFormat::Jxl | OnestopFormat::JxlLossless) {
         if let Err(err) = write_view_proxy(&product) {

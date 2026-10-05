@@ -26,7 +26,7 @@ tar = "0.4"
 flate2 = "1"
 # 编码时写 PPM 中间临时文件
 tempfile = "3.27.0"
-# JPEG XL 产物的进程内解码（T11，方案见 docs/decisions.md 0011）：纯 Rust，三端无外部依赖
+# JPEG XL 产物的进程内解码（T11，方案见 docs/decisions.md 0012）：纯 Rust，三端无外部依赖
 jxl-oxide = "0.12"
 
 [dev-dependencies]
