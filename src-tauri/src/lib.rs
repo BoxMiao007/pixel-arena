@@ -13,6 +13,8 @@ use tauri::{ipc::Channel, Manager, State};
 use pixel_arena_core::workspace::{Workspace, WorkspaceError};
 
 mod ffmpeg_setup;
+mod video_probe;
+mod video_server;
 
 /// 全局应用状态：内存中的工作区 + 工作区 JSON 文件路径 + ffmpeg 等外部工具目录。
 /// Arc 让跑分这类耗时命令能把引用带进阻塞线程池（不持锁跨 await）。
@@ -23,6 +25,9 @@ struct AppState {
     tools_dir: Arc<PathBuf>,
     /// 评测轮工作目录的父目录（应用数据目录 rounds/，一站式产物按 <rounds>/<轮 id>/ 存放）。
     rounds_dir: Arc<PathBuf>,
+    /// 视频流服务（T15）：Linux 端 WebKitGTK 媒体引擎不走 asset 协议，视频元素从
+    /// 127.0.0.1 回环地址拉流（见 video_server.rs）。
+    video_stream: Arc<video_server::VideoStreamServer>,
 }
 
 /// IPC 命令：把核心库版本号交给前端显示。
@@ -285,6 +290,33 @@ async fn video_ensure_ffmpeg(
     .map_err(|err| format!("ffmpeg 准备任务执行失败: {err}"))?
 }
 
+/// IPC 命令（T15）：用 ffprobe 读取视频元信息（宽高/帧率/时长），逐帧对比的时间轴与
+/// ±1 帧步进用。ffprobe 缺失时先走一次工具安装（与 ffmpeg 同一锁定来源，已就绪零开销），
+/// 下载进度经 Channel 推给前端状态栏；探测失败返回中文错误，前端降级不禁查看。
+#[tauri::command]
+async fn video_probe_meta(
+    path: String,
+    on_progress: Channel<String>,
+    state: State<'_, AppState>,
+) -> Result<video_probe::VideoMeta, String> {
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let ffprobe = ffmpeg_setup::ensure_ffprobe(&tools_dir, &mut |message| {
+            let _ = on_progress.send(message);
+        })?;
+        video_probe::probe(&ffprobe, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|err| format!("视频信息读取任务执行失败: {err}"))?
+}
+
+/// IPC 命令（T15）：注册视频文件到回环流服务，返回 <video> 可用的本地 HTTP 地址。
+/// 这里只做登记：文件不存在/不可读由流服务响应 404，视频元素以中文提示兜底（不崩应用）。
+#[tauri::command]
+fn video_stream_url(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.video_stream.register(std::path::Path::new(&path)))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -306,11 +338,14 @@ pub fn run() {
                     std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
                 }
             }
+            let video_stream = video_server::VideoStreamServer::spawn()
+                .expect("视频流服务启动失败");
             app.manage(AppState {
                 workspace: Arc::new(Mutex::new(Workspace::new())),
                 path: Arc::new(dir.join("workspace.json")),
                 tools_dir: Arc::new(tools_dir),
                 rounds_dir: Arc::new(dir.join("rounds")),
+                video_stream: Arc::new(video_stream),
             });
             Ok(())
         })
@@ -335,6 +370,9 @@ pub fn run() {
             round_add_video_candidates,
             round_score_video_candidate,
             video_ensure_ffmpeg,
+            // T15 视频逐帧对比（ffprobe 元信息 + 回环流服务）
+            video_probe_meta,
+            video_stream_url,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

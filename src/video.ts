@@ -5,6 +5,7 @@
 import { invoke, Channel } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { fileName } from './util';
+import { mountVideoCompare } from './video-compare'; // T15 接线点：视频逐帧同步对比
 
 // 与核心库 workspace.rs 的 CandidateVideo（camelCase）一一对应
 export type MetricValue = number | 'inf';
@@ -163,6 +164,17 @@ export function mountVideoBlock(host: HTMLElement, ctx: VideoBlockCtx): void {
       : '视频评测（可选）：与图片评测互不干扰。先「选择原视频」作为基准，再添加跑分视频。';
     box.append(hint);
   }
+
+  // T15 接线点：逐帧同步对比入口——默认取原视频 + 第一段跑分视频，两路可在对比区内改选；
+  // 源不足两段时区块内只显示一行说明，不影响跑分流程
+  const compareBox = document.createElement('div');
+  box.append(compareBox);
+  mountVideoCompare(compareBox, {
+    roundId: round.id,
+    referencePath: round.videoReferencePath,
+    candidatePaths: round.videoCandidates.map((c) => c.path),
+    setStatus: ctx.setStatus,
+  });
 
   host.append(box);
 }
