@@ -317,6 +317,72 @@ fn video_stream_url(path: String, state: State<'_, AppState>) -> Result<String, 
     Ok(state.video_stream.register(std::path::Path::new(&path)))
 }
 
+/// IPC 命令（T13）：计算评测轮的 BD-rate 汇总，供结果区汇总表展示。
+/// 与导出报告（round_export）调用核心库同一函数，保证界面与导出一致。
+/// 纯内存计算（分组、拟合、积分），同步返回即可。
+#[tauri::command]
+fn round_bdrate(
+    group_id: String,
+    round_id: String,
+    state: State<AppState>,
+) -> Result<pixel_arena_core::bdrate::BdrateSummary, String> {
+    let ws = state.workspace.lock().expect("工作区锁不应中毒");
+    let round = ws
+        .groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .and_then(|g| g.rounds.iter().find(|r| r.id == round_id))
+        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+    Ok(pixel_arena_core::bdrate::summarize_round(round))
+}
+
+/// IPC 命令（T13）：把评测轮结果导出为报告文件。kind = "csv" | "html"；
+/// path 来自前端 tauri-plugin-dialog 的保存对话框；generated_at 由前端生成传入，
+/// 报告里只作展示。文件写入失败（路径不可写等）返回中文错误。
+#[tauri::command]
+fn round_export(
+    group_id: String,
+    round_id: String,
+    kind: String,
+    path: String,
+    generated_at: String,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let ws = state.workspace.lock().expect("工作区锁不应中毒");
+    export_round_file(&ws, &group_id, &round_id, &kind, &path, &generated_at)
+}
+
+/// 评测轮报告导出的实现体（T13）：定位组与轮 → 核心库序列化 → 写文件。
+/// 抽成独立函数是为了不经 Tauri 运行时即可端到端测试（tests/export.rs）；
+/// 与 round_bdrate 命令共用核心库同一份数据源，保证导出与界面一致。
+pub fn export_round_file(
+    ws: &Workspace,
+    group_id: &str,
+    round_id: &str,
+    kind: &str,
+    path: &str,
+    generated_at: &str,
+) -> Result<String, String> {
+    let group = ws
+        .groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .ok_or_else(|| "跑分组不存在或已被关闭".to_string())?;
+    let round = group
+        .rounds
+        .iter()
+        .find(|r| r.id == round_id)
+        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+
+    let content = match kind {
+        "csv" => pixel_arena_core::report::export_csv(&group.name, round, generated_at),
+        "html" => pixel_arena_core::report::export_html(&group.name, round, generated_at),
+        other => return Err(format!("不支持的导出格式: {other}（支持 csv / html）")),
+    };
+    std::fs::write(path, content).map_err(|err| format!("写入导出文件失败: {err}"))?;
+    Ok(path.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -373,6 +439,9 @@ pub fn run() {
             // T15 视频逐帧对比（ffprobe 元信息 + 回环流服务）
             video_probe_meta,
             video_stream_url,
+            // T13 BD-rate 汇总与报告导出
+            round_bdrate,
+            round_export,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
