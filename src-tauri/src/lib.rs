@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{ipc::Channel, Manager, State};
 
-use pixel_arena_core::workspace::{Workspace, WorkspaceError};
+use pixel_arena_core::workspace::{Group, Round, Workspace, WorkspaceError};
 
 mod ffmpeg_setup;
 mod video_probe;
@@ -71,6 +71,26 @@ where
     change(&mut ws).map_err(|err| err.to_string())?;
     ws.save_to_file(&state.path).map_err(|err| err.to_string())?;
     Ok(ws.clone())
+}
+
+/// 按 id 只读定位跑分组与评测轮（onestop_encode / round_bdrate / export_round_file
+/// 三处命令共用）：组与轮分开报错，错误文案统一一版中文。
+fn find_round<'a>(
+    ws: &'a Workspace,
+    group_id: &str,
+    round_id: &str,
+) -> Result<(&'a Group, &'a Round), String> {
+    let group = ws
+        .groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .ok_or_else(|| "跑分组不存在或已被关闭".to_string())?;
+    let round = group
+        .rounds
+        .iter()
+        .find(|r| r.id == round_id)
+        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+    Ok((group, round))
 }
 
 #[tauri::command]
@@ -206,12 +226,7 @@ async fn onestop_encode(
     // 防止往已删除的轮目录里写产物或给 A 轮产物挂到 B 轮原图名下。
     {
         let ws = state.workspace.lock().expect("工作区锁不应中毒");
-        let round = ws
-            .groups
-            .iter()
-            .find(|g| g.id == group_id)
-            .and_then(|g| g.rounds.iter().find(|r| r.id == round_id))
-            .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+        let (_, round) = find_round(&ws, &group_id, &round_id)?;
         if round.reference_path.as_deref() != Some(reference_path.as_str()) {
             return Err("传入的原图与本轮所选原图不一致，请重新触发一站式跑分".to_string());
         }
@@ -352,12 +367,7 @@ fn round_bdrate(
     state: State<AppState>,
 ) -> Result<pixel_arena_core::bdrate::BdrateSummary, String> {
     let ws = state.workspace.lock().expect("工作区锁不应中毒");
-    let round = ws
-        .groups
-        .iter()
-        .find(|g| g.id == group_id)
-        .and_then(|g| g.rounds.iter().find(|r| r.id == round_id))
-        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+    let (_, round) = find_round(&ws, &group_id, &round_id)?;
     Ok(pixel_arena_core::bdrate::summarize_round(round))
 }
 
@@ -388,16 +398,7 @@ pub fn export_round_file(
     path: &str,
     generated_at: &str,
 ) -> Result<String, String> {
-    let group = ws
-        .groups
-        .iter()
-        .find(|g| g.id == group_id)
-        .ok_or_else(|| "跑分组不存在或已被关闭".to_string())?;
-    let round = group
-        .rounds
-        .iter()
-        .find(|r| r.id == round_id)
-        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+    let (group, round) = find_round(ws, group_id, round_id)?;
 
     let content = match kind {
         "csv" => pixel_arena_core::report::export_csv(&group.name, round, generated_at),
