@@ -574,12 +574,15 @@ fn restore_window_size(app: &tauri::AppHandle) {
     }
 }
 
-/// T23：退出时把当前窗口大小写回设置文件（仅记录状态开启、且窗口未最大化时——
-/// 最大化尺寸不该被记成普通尺寸）。读-改-写 settings.json，只动 window 字段。
-fn save_window_size_on_exit(app: &tauri::AppHandle) {
+/// T23：把当前主窗口大小记进设置文件（逻辑像素，与 DPI 无关；仅记录状态开启、
+/// 窗口未最大化时）。读-改-写 settings.json，只动 window 字段，值没变不重写。
+/// 记录时机挂窗口 Resized 事件持续记录而非退出时一次性记录：实测（WSLg/X11）关窗
+/// 会触发致命 X 错误（BadDrawable），GDK 直接终止进程，事件循环收不到任何关闭
+/// 事件（CloseRequested/ExitRequested 均不达）；Resized 事件则始终可达，且顺带
+/// 兜住崩溃退出。Windows/macOS 上关窗事件正常，CloseRequested 兜底写一次终值。
+fn record_window_size(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    let record_state = state.settings.lock().expect("设置锁不应中毒").record_state;
-    if !record_state {
+    if !state.settings.lock().expect("设置锁不应中毒").record_state {
         return;
     }
     let Some(window) = app.get_webview_window("main") else {
@@ -595,14 +598,19 @@ fn save_window_size_on_exit(app: &tauri::AppHandle) {
         return;
     };
     let logical = physical.to_logical::<f64>(scale);
-    if logical.width <= 0.0 || logical.height <= 0.0 {
+    // 最小尺寸下限兜底：防止最小化/异常尺寸（配置里 minWidth 800）被记成普通尺寸
+    if logical.width < 100.0 || logical.height < 100.0 {
         return;
     }
-    let mut settings = state.settings.lock().expect("设置锁不应中毒").clone();
-    settings.window = Some(settings::WindowSize {
+    let new_size = Some(settings::WindowSize {
         width: logical.width,
         height: logical.height,
     });
+    let mut settings = state.settings.lock().expect("设置锁不应中毒").clone();
+    if settings.window == new_size {
+        return;
+    }
+    settings.window = new_size;
     if settings.save_to_file(&state.settings_path).is_ok() {
         *state.settings.lock().expect("设置锁不应中毒") = settings;
     }
@@ -686,11 +694,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败")
         .run(|app, event| {
-            // T23：退出时把窗口大小记回设置（记录状态开启时），下次启动恢复。
-            // 用 ExitRequested 而非 Exit：前者触发时窗口还活着，inner_size 可读；
-            // Exit 时窗口可能已销毁。不拦截退出，只顺路记录。
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                save_window_size_on_exit(app);
+            // T23：窗口大小随变化持续记回设置（记录状态开启时），下次启动恢复。
+            // 挂 Resized 而非关闭类事件的实测依据见 record_window_size 的注释；
+            // CloseRequested 兜底在关窗事件正常 platforms（Windows/macOS）写终值。
+            if let tauri::RunEvent::WindowEvent { event, .. } = event {
+                match event {
+                    tauri::WindowEvent::Resized(_) => record_window_size(app),
+                    tauri::WindowEvent::CloseRequested { .. } => record_window_size(app),
+                    _ => {}
+                }
             }
         });
 }
