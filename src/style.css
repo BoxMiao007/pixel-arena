@@ -314,6 +314,17 @@ body {
   cursor: default;
 }
 
+/* T22：格式/无损组胶囊的选中态（多选高亮，配 onClick 切换） */
+.pill.pill-on {
+  border-color: #81c995;
+  background: rgba(129, 201, 149, 0.12);
+  color: #b8e6c5;
+}
+
+.pill.pill-on .pill-remove:hover:not(:disabled) {
+  color: #f28b82;
+}
+
 /* ---------- 一站式跑分（T10） ---------- */
 
 /* 绿色描边区别于手动「开始跑分」：一站式自动生成 + 自动跑分 */
@@ -327,40 +338,97 @@ body {
   color: var(--muted);
 }
 
-/* T11 接线点：编码阶梯勾选区（格式 / 质量档 / 无损组），单行排布、随工具栏换行 */
-.onestop-options {
+/* T22 接线点：一站式操作区（模式二选一 + 参数行 + 格式/无损组胶囊），纵向排布 */
+.onestop-controls {
   display: flex;
-  align-items: center;
-  gap: 0.35rem 0.9rem;
-  flex-wrap: wrap;
-  margin-top: 0.4rem;
+  flex-direction: column;
+  gap: 0.45rem;
   font-size: 0.85rem;
   color: var(--muted);
 }
 
-.onestop-options .onestop-group-label {
-  margin-left: 0.35rem;
-}
-
-.onestop-options .onestop-group-label:first-child {
-  margin-left: 0;
-}
-
-.onestop-options .onestop-check {
+/* 模式二选一：分段按钮（与查看器模式条同外观），active 高亮 */
+.onestop-modes {
   display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  cursor: pointer;
-  user-select: none;
+  align-self: flex-start;
+  border: 1px solid #2a2d33;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
-.onestop-options .onestop-check input {
+/* T22 一站式操作区配色走主题变量（T23 浅色主题下同样成立） */
+.onestop-modes button {
+  border: none;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+}
+
+.onestop-modes button + button {
+  border-left: 1px solid var(--border);
+}
+
+.onestop-modes button.active {
+  background: var(--active-bg);
+  color: var(--active-text);
+}
+
+.onestop-modes button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* 参数行：基准质量拉杆 / 目标大小输入 + 单位 */
+.onestop-param-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.onestop-param-label {
+  white-space: nowrap;
+}
+
+.onestop-slider {
+  flex: 0 1 18rem;
   accent-color: var(--green);
   cursor: pointer;
 }
 
-.onestop-options .onestop-check input:disabled {
-  cursor: not-allowed;
+.onestop-slider:disabled {
+  cursor: default;
+}
+
+.onestop-param-value {
+  min-width: 2rem;
+  color: var(--text);
+}
+
+.onestop-size-input {
+  font: inherit;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.4rem;
+  width: 7rem;
+}
+
+.onestop-size-unit {
+  font: inherit;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.3rem;
+}
+
+/* 取点/逼近行为预览（灰字说明行） */
+.onestop-preview {
+  font-size: 0.8rem;
 }
 
 /* ---------- 跑分结果表 ---------- */

@@ -329,6 +329,145 @@ fn onestop_default_ladder() -> OnestopCatalog {
     onestop_default_catalog()
 }
 
+/// 一站式阶梯项（onestop_quality_ladder 回传）：格式 + 质量（无损组为 null）+ 进度显示名。
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LadderItemDto {
+    pub format: String,
+    pub quality: Option<u8>,
+    pub label: String,
+}
+
+/// 构建质量优先编码阶梯（T22）：统一基准 0–100 → 核心库 quality_ladder 取点
+///（每格式 ≥3 点 + 无损对照组，核心库单一实现）。pub 供不经 Tauri 运行时端到端
+/// 测试（沿 onestop_default_catalog 先例）。
+pub fn onestop_quality_ladder_impl(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
+    pixel_arena_core::ladder::quality_ladder(baseline)
+        .map(|items| {
+            items
+                .into_iter()
+                .map(|item| LadderItemDto {
+                    format: item.format,
+                    quality: item.quality,
+                    label: item.label,
+                })
+                .collect()
+        })
+        .map_err(|err| err.to_string())
+}
+
+/// IPC 命令：质量优先取点（T22）。前端拉杆 change 时调用，重渲染阶梯预览并在
+/// 触发一站式跑分时展开生成清单。纯计算，同步返回。
+#[tauri::command]
+fn onestop_quality_ladder(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
+    onestop_quality_ladder_impl(baseline)
+}
+
+/// 大小优先搜索的一个质量点：质量 + 探测到的实际产物大小（字节）。
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SizePointDto {
+    pub quality: u8,
+    pub bytes: u64,
+}
+
+/// 大小优先单格式搜索结果（onestop_size_search 回传，字段与前端 onestop.ts 消费一致）。
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SizeSearchDto {
+    pub format: String,
+    pub target_bytes: u64,
+    /// 逼近目标选中的质量点（不可达时为最小/最高质量点）。
+    pub hit: SizePointDto,
+    /// 不可达标注（核心库 annotation_note 中文单一来源，与 CLI note 列同源）；可达为 null。
+    pub note: Option<String>,
+    /// 命中点 + 邻近补点（升序 ≥3 点，US23 保 BD-rate 率失真曲线），每点带实测大小。
+    pub points: Vec<SizePointDto>,
+}
+
+/// 大小优先单格式搜索的实现体（pub 供不经 Tauri 运行时测试）。探测编码到暂存目录
+/// 即弃（沿 CLI 大小优先先例），产物落盘仍由前端随后逐档调 onestop_encode 完成。
+pub fn onestop_size_search_impl(
+    reference: &str,
+    format: &str,
+    target_bytes: u64,
+    tools_dir: &std::path::Path,
+) -> Result<SizeSearchDto, String> {
+    let format = pixel_arena_core::encode::OnestopFormat::parse(format)
+        .map_err(|err| err.to_string())?;
+    // 无损对照组大小固定、不参与搜索（前端不会传，fail-fast 兜底；文案与核心库一致）
+    if matches!(
+        format,
+        pixel_arena_core::encode::OnestopFormat::Png
+            | pixel_arena_core::encode::OnestopFormat::WebpLossless
+            | pixel_arena_core::encode::OnestopFormat::JxlLossless
+    ) {
+        return Err(format!(
+            "{} 为无损格式，不参与目标大小搜索",
+            format.display_name()
+        ));
+    }
+    let scratch = tempfile::tempdir().map_err(|err| format!("无法创建探测暂存目录：{err}"))?;
+    let result = pixel_arena_core::ladder::size_search(format, target_bytes, &mut |quality| {
+        pixel_arena_core::encode::probe_onestop_size(
+            reference,
+            format,
+            quality,
+            scratch.path(),
+            tools_dir,
+        )
+    })
+    .map_err(|err| err.to_string())?;
+    // 标注文本先取（借用 result），format 的 String 再 move 出来
+    let note = result.annotation_note();
+    let format = result.format.clone();
+    Ok(SizeSearchDto {
+        format,
+        target_bytes: result.target_bytes,
+        hit: SizePointDto {
+            quality: result.hit.quality,
+            bytes: result.hit.bytes,
+        },
+        note,
+        points: result
+            .points
+            .iter()
+            .map(|point| SizePointDto {
+                quality: point.quality,
+                bytes: point.bytes,
+            })
+            .collect(),
+    })
+}
+
+/// IPC 命令：大小优先单格式逼近搜索（T22）。前端对每个勾选的有损格式逐次调用，
+/// 每次调用天然形成进度；探测可能真实编码多次（约 2+log2(99) 次/格式），放阻塞
+/// 线程池执行。前置校验与 onestop_encode 一致：轮必须存在且原图一致。
+#[tauri::command]
+async fn onestop_size_search(
+    group_id: String,
+    round_id: String,
+    reference_path: String,
+    format: String,
+    target_bytes: u64,
+    state: State<'_, AppState>,
+) -> Result<SizeSearchDto, String> {
+    {
+        let ws = state.workspace.lock().expect("工作区锁不应中毒");
+        let (_, round) = find_round(&ws, &group_id, &round_id)?;
+        if round.reference_path.as_deref() != Some(reference_path.as_str()) {
+            return Err("传入的原图与本轮所选原图不一致，请重新触发一站式跑分".to_string());
+        }
+    }
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        onestop_size_search_impl(&reference_path, &format, target_bytes, tools_dir.as_path())
+    })
+    .await
+    .map_err(|err| format!("大小优先搜索任务执行失败: {err}"))?
+}
+
+
 /// IPC 命令：一站式模式按（格式, 质量）逐次生成一份跑分产物（T11 完整编码阶梯）。
 ///
 /// 格式标识：jpeg / webp / avif / jxl（有损，quality 必填）与 png / webp-lossless /
@@ -718,6 +857,9 @@ pub fn run() {
             onestop_encode,
             // T21 单源化：一站式勾选目录（格式清单与默认质量档同出核心库取点）
             onestop_default_ladder,
+            // T22：质量优先取点与大小优先逼近搜索
+            onestop_quality_ladder,
+            onestop_size_search,
             // T14 视频评测轮
             round_set_video_reference,
             round_add_video_candidates,
