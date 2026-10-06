@@ -721,7 +721,9 @@ body {
 
 .viewer-grid {
   display: grid;
-  gap: 0.5rem;
+  /* fb3（issue #28 第 5 项）：格距收紧（0.5rem→0.2rem），每格随之变大；
+     保留少量缝隙维持呼吸感，格子边框圆角不变 */
+  gap: 0.2rem;
   width: 100%;
   height: 100%;
 }
