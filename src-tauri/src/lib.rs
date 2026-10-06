@@ -207,6 +207,20 @@ async fn round_score_candidate(
     .map_err(|err| format!("跑分任务执行失败: {err}"))?
 }
 
+/// IPC 命令（T18）：从评测轮移除一张跑分图（胶囊上的 × 单独移除）。
+/// 同步命令：只改内存列表并写盘，无耗时计算。
+#[tauri::command]
+fn round_remove_candidate(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.remove_round_candidate(&group_id, &round_id, &candidate_path)
+    })
+}
+
 /// 一站式勾选目录（T21 单源化）：有损/无损格式清单与默认质量档全部由核心库
 /// 质量优先取点驱动（基准 75 = 现行默认 60/75/90），前端 onestop.ts 启动时拉取，
 /// 不再自持档位常量。
@@ -334,6 +348,19 @@ fn round_add_video_candidates(
     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
     mutate(&state, |ws| {
         ws.add_round_video_candidates(&group_id, &round_id, &paths)
+    })
+}
+
+/// IPC 命令（T18）：从评测轮移除一段跑分视频（胶囊上的 × 单独移除）。
+#[tauri::command]
+fn round_remove_video_candidate(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.remove_round_video_candidate(&group_id, &round_id, &candidate_path)
     })
 }
 
@@ -507,6 +534,7 @@ pub fn run() {
             round_activate,
             round_set_reference,
             round_add_candidates,
+            round_remove_candidate,
             round_score_candidate,
             onestop_encode,
             // T21 单源化：一站式勾选目录（格式清单与默认质量档同出核心库取点）
@@ -514,6 +542,7 @@ pub fn run() {
             // T14 视频评测轮
             round_set_video_reference,
             round_add_video_candidates,
+            round_remove_video_candidate,
             round_score_video_candidate,
             video_ensure_ffmpeg,
             // T15 视频逐帧对比（ffprobe 元信息 + 回环流服务）

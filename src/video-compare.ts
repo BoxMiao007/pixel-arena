@@ -15,7 +15,7 @@ import {
   type ViewportState,
 } from './viewport';
 import { resolveCellImage, gridLayout } from './multiview';
-import { fileName } from './util';
+import { fileName, truncateFileName } from './util';
 
 /** video.ts 传进来的上下文：本轮的视频源与状态栏输出 */
 export interface VideoCompareCtx {
@@ -366,7 +366,8 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
       for (const path of sources) {
         const option = document.createElement('option');
         option.value = path;
-        option.textContent = fileName(path);
+        // T18：下拉选项统一中间截断，悬浮 title 看全路径
+        option.textContent = truncateFileName(fileName(path));
         option.title = path;
         select.append(option);
       }
@@ -434,7 +435,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
       for (const path of sources) {
         const option = document.createElement('option');
         option.value = path;
-        option.textContent = fileName(path);
+        option.textContent = truncateFileName(fileName(path));
         option.title = path;
         select.append(option);
       }
