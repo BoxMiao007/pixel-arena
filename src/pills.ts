@@ -1,7 +1,7 @@
 // 胶囊组件（T18）：已选文件以胶囊标签展示——原图/原视频为单选胶囊（点击替换，
 // 走既有覆盖语义）、跑分图/跑分视频为多选胶囊（每颗带 × 单独移除）。
 // 只管 DOM 构建与交互接线，不含状态：移除/替换都由调用方回调（经 IPC 回工作区）。
-// T22 的编码格式/质量挡胶囊复用同一套 API：onClick 做切换、onRemove 做移除。
+// T22 的编码格式/质量点胶囊复用同一套 API：onClick 做切换、onRemove 做移除。
 
 export interface PillOptions {
   /** 胶囊可见文本（调用方先用 truncateFileName 截好，悬浮全名走 title） */

@@ -1,13 +1,13 @@
 // 一站式勾选目录（T21 单源化）的端到端测试：不经 Tauri 运行时，直接调
-// pixel_arena_lib::onestop_default_catalog（与 IPC 命令同一实现体）。
+// pixel_arena_lib::onestop_catalog_impl（与 IPC 命令同一实现体）。
 // 钉住 GUI 勾选区清单与默认档位：与核心库质量优先取点一致（基准 75 = 现行默认
 // 60/75/90），即「数据源切到核心库、界面行为不变」的外部行为锚点。
 
-use pixel_arena_lib::{onestop_default_catalog, onestop_quality_ladder_impl, onestop_size_search_impl};
+use pixel_arena_lib::{onestop_catalog_impl, onestop_quality_ladder_impl, onestop_size_search_impl};
 
 #[test]
 fn onestop_catalog_基准75_清单与默认档位与现行默认阶梯一致() {
-    let catalog = onestop_default_catalog();
+    let catalog = onestop_catalog_impl();
 
     let lossy: Vec<(&str, &str)> = catalog
         .lossy_formats
@@ -108,7 +108,13 @@ fn onestop_quality_ladder_基准越界_中文报错() {
 #[test]
 fn onestop_size_search_无损格式_中文报错不探测() {
     // 无损对照组不参与大小搜索：应在任何探测编码之前 fail-fast
-    let message = onestop_size_search_impl("/tmp/不存在.png", "png", 1024, std::path::Path::new("/tmp"))
+    let message = onestop_size_search_impl(
+        "/tmp/不存在.png",
+        "png",
+        1024,
+        std::path::Path::new("/tmp"),
+        &Default::default(),
+    )
         .unwrap_err();
     assert!(message.contains("无损格式"), "错误应说明无损不参与搜索：{message}");
     assert!(message.contains("不参与目标大小搜索"), "{message}");
@@ -116,7 +122,13 @@ fn onestop_size_search_无损格式_中文报错不探测() {
 
 #[test]
 fn onestop_size_search_未知格式_中文报错() {
-    let message = onestop_size_search_impl("/tmp/不存在.png", "bogus", 1024, std::path::Path::new("/tmp"))
+    let message = onestop_size_search_impl(
+        "/tmp/不存在.png",
+        "bogus",
+        1024,
+        std::path::Path::new("/tmp"),
+        &Default::default(),
+    )
         .unwrap_err();
     assert!(message.contains("不支持的编码格式"), "{message}");
 }

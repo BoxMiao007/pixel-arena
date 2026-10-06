@@ -2,7 +2,14 @@
 
 import { describe, it, expect } from 'vitest';
 import { resolveTheme } from './theme';
-import { parentDir, exportDefaultPath, openDefaultPath, ENCODER_FIELDS } from './settings';
+import {
+  parentDir,
+  exportDefaultPath,
+  openDefaultPath,
+  nextRecentDir,
+  ENCODER_FIELDS,
+  type SettingsData,
+} from './settings';
 
 describe('resolveTheme（主题三选解析）', () => {
   it('浅色/深色直接生效，与系统深浅无关', () => {
@@ -63,6 +70,41 @@ describe('openDefaultPath（最近目录恢复门控）', () => {
 
   it('记录状态开但从未选过文件：undefined', () => {
     expect(openDefaultPath(settings(true, null))).toBeUndefined();
+  });
+});
+
+describe('nextRecentDir（选文件后的最近目录记录，US27/审查修复 B7）', () => {
+  const base: SettingsData = {
+    formatVersion: 1,
+    recordState: true,
+    theme: 'dark',
+    scoreConcurrency: 'half',
+    defaultExportDir: null,
+    recentDir: '/old',
+    window: null,
+    encoderOverrides: {
+      cjpeg: null,
+      cwebp: null,
+      avifenc: null,
+      cjxl: null,
+      avifdec: null,
+    },
+  };
+
+  it('记录状态开：recentDir 更新为所选文件的父目录', () => {
+    const next = nextRecentDir(base, '/home/user/图片/a.png');
+    expect(next?.recentDir).toBe('/home/user/图片');
+    // 其余设置项原样保留
+    expect(next?.recordState).toBe(true);
+    expect(next?.theme).toBe('dark');
+  });
+
+  it('记录状态关：不写最近目录（恢复与写入同一道门控），即使本次选了文件', () => {
+    expect(nextRecentDir({ ...base, recordState: false }, '/home/user/图片/a.png')).toBeNull();
+  });
+
+  it('路径没有父目录（根路径/裸文件名）：不记录', () => {
+    expect(nextRecentDir(base, '/a.png')).toBeNull();
   });
 });
 

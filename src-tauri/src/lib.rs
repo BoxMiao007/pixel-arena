@@ -234,6 +234,16 @@ fn score_concurrency_limit(state: &AppState) -> usize {
     pixel_arena_core::parallel::concurrency_limit(fraction)
 }
 
+/// 把核心库进度回调（已完成数, 总数）转发到 IPC Channel（图片与视频两个整轮
+/// 跑分命令共用，审查修复 C10）。推送失败静默：Channel 随前端重挂等场景可能
+/// 已关闭，进度只是展示，不影响跑分本身。
+fn forward_score_progress(channel: &Channel<ScoreProgress>, completed: usize, total: usize) {
+    let _ = channel.send(ScoreProgress {
+        completed: completed as u32,
+        total: total as u32,
+    });
+}
+
 /// IPC 命令（T24）：对评测轮的全部跑分图整轮并行跑分（一次 IPC 提交整轮）。
 /// 并发度来自设置（默认一半逻辑核），进度经 Channel 推给前端（N/M）；
 /// 单张失败不报错——中文原因由核心库写进行内，界面标「失败」。
@@ -251,10 +261,7 @@ async fn round_score_candidates(
         let mut ws = workspace.lock().expect("工作区锁不应中毒");
         ws.score_round_candidates_parallel(&group_id, &round_id, max_concurrency, &|completed,
                                                                                     total| {
-            let _ = on_progress.send(ScoreProgress {
-                completed: completed as u32,
-                total: total as u32,
-            });
+            forward_score_progress(&on_progress, completed, total);
         })
         .map_err(|err| err.to_string())?;
         ws.save_to_file(&path).map_err(|err| err.to_string())?;
@@ -278,6 +285,21 @@ fn round_remove_candidate(
     })
 }
 
+/// IPC 命令（审查修复 B6/US22）：给一张跑分图设置/清除备注（大小优先不可达标注）。
+/// 备注随评测轮持久化，重启后结果表与导出仍能显示。同步命令，走既有 mutate。
+#[tauri::command]
+fn round_set_candidate_note(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    note: Option<String>,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.set_round_candidate_note(&group_id, &round_id, &candidate_path, note.as_deref())
+    })
+}
+
 /// 一站式勾选目录（T21 单源化）：有损/无损格式清单与默认质量档全部由核心库
 /// 质量优先取点驱动（基准 75 = 现行默认 60/75/90），前端 onestop.ts 启动时拉取，
 /// 不再自持档位常量。
@@ -298,7 +320,7 @@ pub struct OnestopCatalog {
 }
 
 /// 构建一站式勾选目录（pub 供不经 Tauri 运行时端到端测试，沿 export_round_file 先例）。
-pub fn onestop_default_catalog() -> OnestopCatalog {
+pub fn onestop_catalog_impl() -> OnestopCatalog {
     use pixel_arena_core::encode::OnestopFormat;
     use pixel_arena_core::ladder::{quality_points, LOSSLESS_FORMATS, LOSSY_FORMATS};
     let entry = |format: OnestopFormat| OnestopFormatEntry {
@@ -323,10 +345,12 @@ pub fn onestop_default_catalog() -> OnestopCatalog {
     }
 }
 
-/// IPC 命令：一站式勾选目录（T21 单源化，数据源见 onestop_default_catalog）。
+/// IPC 命令：一站式勾选目录（T21 单源化，数据源见 onestop_catalog_impl；
+/// 审查修复 C8：原名 onestop_default_ladder 名不副实——载荷是格式清单目录，
+/// 不是阶梯，改名 onestop_catalog）。
 #[tauri::command]
-fn onestop_default_ladder() -> OnestopCatalog {
-    onestop_default_catalog()
+fn onestop_catalog() -> OnestopCatalog {
+    onestop_catalog_impl()
 }
 
 /// 一站式阶梯项（onestop_quality_ladder 回传）：格式 + 质量（无损组为 null）+ 进度显示名。
@@ -340,7 +364,7 @@ pub struct LadderItemDto {
 
 /// 构建质量优先编码阶梯（T22）：统一基准 0–100 → 核心库 quality_ladder 取点
 ///（每格式 ≥3 点 + 无损对照组，核心库单一实现）。pub 供不经 Tauri 运行时端到端
-/// 测试（沿 onestop_default_catalog 先例）。
+/// 测试（沿 onestop_catalog_impl 先例）。
 pub fn onestop_quality_ladder_impl(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
     pixel_arena_core::ladder::quality_ladder(baseline)
         .map(|items| {
@@ -387,26 +411,20 @@ pub struct SizeSearchDto {
 
 /// 大小优先单格式搜索的实现体（pub 供不经 Tauri 运行时测试）。探测编码到暂存目录
 /// 即弃（沿 CLI 大小优先先例），产物落盘仍由前端随后逐档调 onestop_encode 完成。
+/// 编码器覆盖随调用传入：探测与正式产物（onestop_encode）必须出自同一编码器，
+/// 否则「搜出的大小」对不上「真实产物」（审查修复 A1）。
 pub fn onestop_size_search_impl(
     reference: &str,
     format: &str,
     target_bytes: u64,
     tools_dir: &std::path::Path,
+    overrides: &pixel_arena_core::encode::EncoderOverrides,
 ) -> Result<SizeSearchDto, String> {
     let format = pixel_arena_core::encode::OnestopFormat::parse(format)
         .map_err(|err| err.to_string())?;
-    // 无损对照组大小固定、不参与搜索（前端不会传，fail-fast 兜底；文案与核心库一致）
-    if matches!(
-        format,
-        pixel_arena_core::encode::OnestopFormat::Png
-            | pixel_arena_core::encode::OnestopFormat::WebpLossless
-            | pixel_arena_core::encode::OnestopFormat::JxlLossless
-    ) {
-        return Err(format!(
-            "{} 为无损格式，不参与目标大小搜索",
-            format.display_name()
-        ));
-    }
+    // 无损对照组大小固定、不参与搜索（前端不会传，fail-fast 兜底；
+    // 文案与核心库探测缝同出 OnestopFormat::require_lossy 单一来源）
+    format.require_lossy().map_err(|err| err.to_string())?;
     let scratch = tempfile::tempdir().map_err(|err| format!("无法创建探测暂存目录：{err}"))?;
     let result = pixel_arena_core::ladder::size_search(format, target_bytes, &mut |quality| {
         pixel_arena_core::encode::probe_onestop_size(
@@ -415,6 +433,7 @@ pub fn onestop_size_search_impl(
             quality,
             scratch.path(),
             tools_dir,
+            overrides,
         )
     })
     .map_err(|err| err.to_string())?;
@@ -460,8 +479,13 @@ async fn onestop_size_search(
         }
     }
     let tools_dir = state.tools_dir.clone();
+    // T23：设置中心的编码器覆盖同样作用于大小优先探测——探测与 onestop_encode 的
+    // 正式产物必须出自同一编码器（审查修复 A1）
+    let overrides = to_core_overrides(
+        &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+    );
     tauri::async_runtime::spawn_blocking(move || {
-        onestop_size_search_impl(&reference_path, &format, target_bytes, tools_dir.as_path())
+        onestop_size_search_impl(&reference_path, &format, target_bytes, tools_dir.as_path(), &overrides)
     })
     .await
     .map_err(|err| format!("大小优先搜索任务执行失败: {err}"))?
@@ -589,12 +613,7 @@ async fn round_score_video_candidates(
             &round_id,
             &ffmpeg,
             max_concurrency,
-            &|completed, total| {
-                let _ = on_progress.send(ScoreProgress {
-                    completed: completed as u32,
-                    total: total as u32,
-                });
-            },
+            &|completed, total| forward_score_progress(&on_progress, completed, total),
         )
         .map_err(|err| err.to_string())?;
         ws.save_to_file(&path).map_err(|err| err.to_string())?;
@@ -789,9 +808,12 @@ fn record_window_size(app: &tauri::AppHandle) {
         return;
     }
     settings.window = new_size;
-    if settings.save_to_file(&state.settings_path).is_ok() {
-        *state.settings.lock().expect("设置锁不应中毒") = settings;
+    if let Err(err) = settings.save_to_file(&state.settings_path) {
+        // 记窗口大小失败不炸主流程，但要能在 stderr 定位（设置文件不可写等）
+        eprintln!("记录窗口大小到 settings.json 失败：{err}");
+        return;
     }
+    *state.settings.lock().expect("设置锁不应中毒") = settings;
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -852,11 +874,13 @@ pub fn run() {
             round_set_reference,
             round_add_candidates,
             round_remove_candidate,
+            // US22：大小优先不可达标注持久化
+            round_set_candidate_note,
             // T24 整轮并行跑分（并发度来自设置中心）
             round_score_candidates,
             onestop_encode,
             // T21 单源化：一站式勾选目录（格式清单与默认质量档同出核心库取点）
-            onestop_default_ladder,
+            onestop_catalog,
             // T22：质量优先取点与大小优先逼近搜索
             onestop_quality_ladder,
             onestop_size_search,

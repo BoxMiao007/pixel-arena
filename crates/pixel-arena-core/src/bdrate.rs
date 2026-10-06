@@ -494,6 +494,7 @@ mod tests {
                 ])
             }),
             encoding_params: None,
+            note: None,
             error: None,
         }
     }

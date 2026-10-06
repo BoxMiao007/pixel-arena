@@ -115,6 +115,10 @@ pub struct CandidateImage {
     /// 为 None（参数用户自备，工具不知晓），界面与报告显示 —。
     #[serde(default)]
     pub encoding_params: Option<String>,
+    /// 跑分图备注（US22 大小优先不可达标注）：随评测轮持久化，重启后结果表与
+    /// 导出仍能显示。其余模式为 None。
+    #[serde(default)]
+    pub note: Option<String>,
     /// 跑分失败原因（中文，可直接展示）。成功或未跑分时为 None。
     #[serde(default)]
     pub error: Option<String>,
@@ -380,6 +384,7 @@ impl Workspace {
                     .and_then(|params| params.get(index))
                     .cloned()
                     .flatten(),
+                note: None,
                 error: None,
             });
         }
@@ -515,6 +520,28 @@ impl Workspace {
             .position(|c| c.path == candidate_path.trim())
             .ok_or_else(|| WorkspaceError::CandidateNotFound(candidate_path.to_string()))?;
         round.candidates.remove(index);
+        Ok(())
+    }
+
+    /// 给一张跑分图设置/清除备注（US22 大小优先不可达标注的持久化入口）。
+    /// 备注随评测轮写入 workspace.json，重启后结果表与导出报告仍能显示；
+    /// 传 None（或空白文本）清除。跑分图必须在本轮列表里，错误先于任何内存变更抛出。
+    pub fn set_round_candidate_note(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        candidate_path: &str,
+        note: Option<&str>,
+    ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Image)?;
+        let note = note.map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+        let candidate = self
+            .round_mut(group_id, round_id)?
+            .candidates
+            .iter_mut()
+            .find(|c| c.path == candidate_path.trim())
+            .ok_or_else(|| WorkspaceError::CandidateNotFound(candidate_path.to_string()))?;
+        candidate.note = note;
         Ok(())
     }
 
@@ -1373,6 +1400,7 @@ mod tests {
                 ("SSIM".to_string(), MetricValue::Inf),
             ])),
             encoding_params: None,
+            note: None,
             error: None,
         });
         let restored = Workspace::from_json(&ws.to_json()).unwrap();
@@ -1565,6 +1593,7 @@ mod tests {
             ])),
             error: None,
             encoding_params: None,
+            note: None,
         }));
     }
 
@@ -2030,6 +2059,60 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---------- US22：大小优先不可达标注持久化（审查修复 B6） ----------
+
+    /// US22 回归锚点：大小优先不可达标注的样例文本（与核心库 annotation_note 同口径）。
+    const NOTE_SAMPLE: &str = "目标 200KB 不可达：目标低于最小质量点（q1）的产物大小，取最小质量点";
+
+    #[test]
+    fn set_round_candidate_note_persists_through_json_roundtrip() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")]).unwrap();
+        let path = data("photo-dis.jpg");
+
+        ws.set_round_candidate_note(&g, &r, &path, Some(NOTE_SAMPLE))
+            .unwrap();
+        let candidate = &ws.groups[0].rounds[0].candidates[0];
+        assert_eq!(candidate.note.as_deref(), Some(NOTE_SAMPLE));
+
+        // 持久化往返：camelCase 键名 note；旧文件缺字段回落 None（决策 0004 免迁移演进）
+        let json = ws.to_json();
+        assert!(json.contains("\"note\""), "JSON 键名: {json}");
+        let restored = Workspace::from_json(&json).unwrap();
+        assert_eq!(
+            restored.groups[0].rounds[0].candidates[0].note.as_deref(),
+            Some(NOTE_SAMPLE)
+        );
+
+        // 传 None 清除；空白文本视同清除
+        ws.set_round_candidate_note(&g, &r, &path, None).unwrap();
+        assert_eq!(ws.groups[0].rounds[0].candidates[0].note, None);
+        ws.set_round_candidate_note(&g, &r, &path, Some("   ")).unwrap();
+        assert_eq!(ws.groups[0].rounds[0].candidates[0].note, None);
+
+        // 不在本轮的跑分图报 CandidateNotFound（错误先于任何内存变更）
+        assert!(matches!(
+            ws.set_round_candidate_note(&g, &r, "/不在/列表.png", Some("x")),
+            Err(WorkspaceError::CandidateNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn set_round_candidate_note_rejects_video_group() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("视频对比", GroupKind::Video).unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        assert!(matches!(
+            ws.set_round_candidate_note(&g, &r, "/tmp/x.jpg", Some("x")),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Video,
+                GroupKind::Image
+            ))
+        ));
     }
 
     // ---------- T18：单文件移除（从评测轮移除单个跑分图/跑分视频） ----------

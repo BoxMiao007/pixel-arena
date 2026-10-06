@@ -18,6 +18,7 @@ fn candidate(path: &str, bytes: u64, psnr: Option<f64>) -> CandidateImage {
             ])
         }),
         encoding_params: None,
+        note: None,
         error: None,
     }
 }

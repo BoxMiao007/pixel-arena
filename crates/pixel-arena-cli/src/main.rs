@@ -118,8 +118,8 @@ fn main() -> ExitCode {
             format,
             out,
             tools_dir,
-        } => run_run(
-            &reference,
+        } => run_run(RunArgs {
+            reference,
             formats,
             qualities,
             lossless,
@@ -128,7 +128,7 @@ fn main() -> ExitCode {
             format,
             out,
             tools_dir,
-        ),
+        }),
     }
 }
 
@@ -489,7 +489,6 @@ fn announce_encoder_download(item_format: &str, tools_dir: &Path, announced: &mu
 }
 
 /// 展开编码阶梯：取点数据源 = 核心库 ladder 模块（单一实现，GUI 目录同源）。
-/// 返回 (档位清单, 大小优先不可达标注[格式 → 文本], 是否有失败)。
 fn build_run_ladder(
     mode: &LadderMode,
     lossy_sel: &[OnestopFormat],
@@ -497,7 +496,7 @@ fn build_run_ladder(
     reference: &Path,
     tools_dir: &Path,
     announced: &mut Vec<String>,
-) -> Result<(Vec<LadderItem>, std::collections::HashMap<String, String>, bool), String> {
+) -> Result<BuiltLadder, String> {
     let mut ladder: Vec<LadderItem> = Vec::new();
     let mut notes = std::collections::HashMap::new();
     let mut any_failed = false;
@@ -533,7 +532,15 @@ fn build_run_ladder(
                 announce_encoder_download(format.as_str(), tools_dir, announced);
                 eprintln!("正在搜索 {} 逼近目标大小…", format.display_name());
                 let result = size_search(*format, *target_bytes, &mut |quality| {
-                    probe_onestop_size(reference, *format, quality, scratch.path(), tools_dir)
+                    // CLI 不读 GUI 设置：覆盖恒为默认值，探测与正式生成同一约定
+                    probe_onestop_size(
+                        reference,
+                        *format,
+                        quality,
+                        scratch.path(),
+                        tools_dir,
+                        &EncoderOverrides::default(),
+                    )
                 });
                 match result {
                     Ok(result) => {
@@ -560,7 +567,11 @@ fn build_run_ladder(
     for format in lossless_sel {
         ladder.push(LadderItem::new(*format, None));
     }
-    Ok((ladder, notes, any_failed))
+    Ok(BuiltLadder {
+        items: ladder,
+        notes,
+        any_failed,
+    })
 }
 
 /// 一站式结果表的一行：一个档位的产物相对原图的跑分结果。
@@ -625,8 +636,9 @@ fn default_tools_dir() -> Option<PathBuf> {
     Some(base.join(identifier).join("tools"))
 }
 
-fn run_run(
-    reference: &Path,
+/// run 子命令的 clap 解析结果（审查修复 C11：摊平的 9 个参数捆成一组传递）。
+struct RunArgs {
+    reference: PathBuf,
     formats: Option<Vec<String>>,
     qualities: Option<Vec<String>>,
     lossless: Option<Vec<String>>,
@@ -635,13 +647,34 @@ fn run_run(
     format: OutputFormat,
     out: Option<PathBuf>,
     tools_dir: Option<PathBuf>,
-) -> ExitCode {
+}
+
+/// [`build_run_ladder`] 的返回（阶梯 + 大小优先标注 + 失败标记，不再走三元组）。
+struct BuiltLadder {
+    items: Vec<LadderItem>,
+    /// 大小优先不可达标注：格式 → 文本（与 CLI note 列同源）。
+    notes: std::collections::HashMap<String, String>,
+    any_failed: bool,
+}
+
+fn run_run(args: RunArgs) -> ExitCode {
+    let RunArgs {
+        reference,
+        formats,
+        qualities,
+        lossless,
+        baseline_quality,
+        target_size,
+        format,
+        out,
+        tools_dir,
+    } = args;
     // 原图先于一切校验：最基础的输入错了，后面都不用做
-    let reference_bytes = match std::fs::metadata(reference) {
+    let reference_bytes = match std::fs::metadata(&reference) {
         Ok(metadata) => metadata.len(),
         Err(source) => {
             return fail(&CoreError::Io {
-                path: reference.to_path_buf(),
+                path: reference.clone(),
                 source,
             });
         }
@@ -683,12 +716,15 @@ fn run_run(
 
     // 阶梯构建：大小优先模式在此完成逼近搜索（探测 = 真实编码，标注/失败在此结算）
     let mut announced: Vec<String> = Vec::new();
-    let (ladder, notes, mut any_failed) =
-        match build_run_ladder(&mode, &lossy_sel, &lossless_sel, reference, &tools_dir, &mut announced)
-        {
-            Ok(built) => built,
-            Err(message) => return fail_message(&message),
-        };
+    let BuiltLadder {
+        items: ladder,
+        notes,
+        mut any_failed,
+    } = match build_run_ladder(&mode, &lossy_sel, &lossless_sel, &reference, &tools_dir, &mut announced)
+    {
+        Ok(built) => built,
+        Err(message) => return fail_message(&message),
+    };
     let mut first_error: Option<String> = None;
     let size_mode = matches!(mode, LadderMode::TargetSize(_));
     if ladder.is_empty() && !any_failed {
@@ -722,7 +758,7 @@ fn run_run(
         eprintln!("正在生成 {}（{}/{}）", item.label, index + 1, ladder.len());
         // CLI 行为只由命令行参数决定，不读 GUI 设置：编码器覆盖恒为空（T23）
         match encode_onestop(
-            reference,
+            &reference,
             &item.format,
             item.quality,
             &output_dir,
@@ -759,7 +795,7 @@ fn run_run(
                 continue;
             }
         };
-        match score_images(reference, product) {
+        match score_images(&reference, product) {
             Ok(metrics) => rows.push(RunRow {
                 reference: reference.display().to_string(),
                 candidate: product.display().to_string(),

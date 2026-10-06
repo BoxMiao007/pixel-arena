@@ -469,7 +469,8 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
       const canvas = document.createElement('canvas');
       const tag = document.createElement('span');
       tag.className = 'viewer-tag';
-      tag.textContent = i === 0 && ctx.referencePath ? '原视频' : fileName(path);
+      // US9：栏标签统一中间截断，悬浮 title 看全路径
+      tag.textContent = i === 0 && ctx.referencePath ? '原视频' : truncateFileName(fileName(path));
       tag.title = path;
       pane.append(canvas, tag);
       card.append(pane);

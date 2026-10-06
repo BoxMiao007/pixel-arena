@@ -113,6 +113,19 @@ impl OnestopFormat {
         matches!(self, Self::Png | Self::WebpLossless | Self::JxlLossless)
     }
 
+    /// 大小优先入口的 fail-fast：无损对照组大小固定、不参与目标大小搜索。
+    /// 中文文案的单一来源——核心库探测缝（[`probe_onestop_size`]）与应用壳的
+    /// 前置校验（onestop_size_search_impl）共用，保证两处提示一字不差。
+    pub fn require_lossy(self) -> Result<(), CoreError> {
+        if self.is_lossless() {
+            Err(CoreError::Encode {
+                message: format!("{} 为无损格式，不参与目标大小搜索", self.display_name()),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     /// 用户可读的显示名（进度文本、CLI 输出与中文错误提示共用此单一来源；
     /// 前端 src/onestop.ts 的同名映射跨语言无法复用，新增格式需两处同步）。
     pub fn display_name(self) -> &'static str {
@@ -286,33 +299,27 @@ pub fn encode_onestop(
     let output_dir = output_dir.as_ref();
     let tools_dir = tools_dir.as_ref();
 
+    // 编码器解析与探测共用一份「格式 → 编码器」分派（resolve_onestop_encoder），
+    // 保证设置中心覆盖同时作用于正式产物与大小优先探测
     let product = match format {
-        OnestopFormat::Jpeg => {
-            let encoder = resolve_encoder(overrides.cjpeg.as_deref(), "cjpeg", || {
-                install_encoder(&mozjpeg_source()?, tools_dir)
-            })?;
-            encode_jpeg_using(encoder, source, quality.expect("上方已校验"), output_dir)
-        }
-        OnestopFormat::Webp | OnestopFormat::WebpLossless => {
-            let encoder = resolve_encoder(overrides.cwebp.as_deref(), "cwebp", || {
-                install_encoder(&webp_source()?, tools_dir)
-            })?;
-            encode_webp_using(encoder, source, quality, output_dir)
-        }
-        OnestopFormat::Avif => {
-            let encoder = resolve_encoder(overrides.avifenc.as_deref(), "avifenc", || {
-                // libavif 工件一次下载解出 avifenc 与 avifdec（后者供产物解码/代片用）
-                Ok(install_encoder_members(&avif_source()?, tools_dir, &["avifenc", "avifdec"])?.remove(0))
-            })?;
-            encode_avif_using(&encoder, source, quality, output_dir)
-        }
-        OnestopFormat::Jxl | OnestopFormat::JxlLossless => {
-            let encoder = resolve_encoder(overrides.cjxl.as_deref(), "cjxl", || {
-                install_encoder(&jxl_source()?, tools_dir)
-            })?;
-            encode_jxl_using(encoder, source, quality, output_dir)
-        }
         OnestopFormat::Png => encode_png_product(source, output_dir),
+        _ => {
+            let encoder = resolve_onestop_encoder(format, tools_dir, overrides)?
+                .expect("无损 PNG 已在上方分支处理");
+            match format {
+                OnestopFormat::Jpeg => {
+                    encode_jpeg_using(encoder, source, quality.expect("上方已校验"), output_dir)
+                }
+                OnestopFormat::Webp | OnestopFormat::WebpLossless => {
+                    encode_webp_using(encoder, source, quality, output_dir)
+                }
+                OnestopFormat::Avif => encode_avif_using(&encoder, source, quality, output_dir),
+                OnestopFormat::Jxl | OnestopFormat::JxlLossless => {
+                    encode_jxl_using(encoder, source, quality, output_dir)
+                }
+                OnestopFormat::Png => unreachable!("外层分支已处理"),
+            }
+        }
     }?;
 
     // AVIF/JXL 产物 WebView 原生解不了：自检解码 + 旁路 PNG 代片（决策 0012）。
@@ -350,43 +357,78 @@ pub fn write_view_proxy(product: impl AsRef<Path>) -> Result<PathBuf, CoreError>
     Ok(proxy)
 }
 
+/// 按格式解析一站式编码所用的编码器可执行文件：设置中心覆盖优先，缺省走内置自动
+/// 安装。[`encode_onestop`]（正式产物）与 [`probe_onestop_size`]（大小优先探测）
+/// 共用同一份「格式 → 编码器」分派，保证「搜出的大小」与「真实产物」出自同一个
+/// 编码器（探测旁路设置中心覆盖曾是缺陷：搜索结果与最终产物可能不一致）。
+/// 无损 PNG 为进程内编码、无外部二进制，返回 `None`（两个调用方各自处理）。
+fn resolve_onestop_encoder(
+    format: OnestopFormat,
+    tools_dir: &Path,
+    overrides: &EncoderOverrides,
+) -> Result<Option<PathBuf>, CoreError> {
+    let (over, tool, install): (
+        Option<&Path>,
+        &str,
+        Box<dyn FnOnce() -> Result<PathBuf, CoreError> + '_>,
+    ) = match format {
+        OnestopFormat::Jpeg => (
+            overrides.cjpeg.as_deref(),
+            "cjpeg",
+            Box::new(|| install_encoder(&mozjpeg_source()?, tools_dir)),
+        ),
+        OnestopFormat::Webp | OnestopFormat::WebpLossless => (
+            overrides.cwebp.as_deref(),
+            "cwebp",
+            Box::new(|| install_encoder(&webp_source()?, tools_dir)),
+        ),
+        OnestopFormat::Avif => (
+            overrides.avifenc.as_deref(),
+            "avifenc",
+            // libavif 工件一次下载解出 avifenc 与 avifdec（后者供产物解码/代片用；
+            // 探测路径装上 avifdec 无额外下载成本，换来两侧分派完全一致）
+            Box::new(|| {
+                Ok(install_encoder_members(&avif_source()?, tools_dir, &["avifenc", "avifdec"])?.remove(0))
+            }),
+        ),
+        OnestopFormat::Jxl | OnestopFormat::JxlLossless => (
+            overrides.cjxl.as_deref(),
+            "cjxl",
+            Box::new(|| install_encoder(&jxl_source()?, tools_dir)),
+        ),
+        OnestopFormat::Png => return Ok(None),
+    };
+    resolve_encoder(over, tool, install).map(Some)
+}
+
 /// 大小优先搜索的探测缝（T21）：把原图按格式 + 质量编码到 scratch_dir，返回产物字节数。
 ///
 /// 探测只关心大小，不走 encode_onestop 的代片旁路（探测产物即弃；正式产物仍走
-/// encode_onestop 保留「产物可解码」自检）。搜索逻辑见 ladder::size_search（纯函数，
-/// 本函数是其「质量 → 实际大小」回调的现成实现）。
+/// encode_onestop 保留「产物可解码」自检）。编码器解析与 encode_onestop 共用
+/// [`resolve_onestop_encoder`]：设置中心的编码器路径覆盖同样作用于探测，保证
+/// 大小优先搜出的质量点在正式生成时由同一编码器复现。搜索逻辑见 ladder::size_search
+///（纯函数，本函数是其「质量 → 实际大小」回调的现成实现）。
 pub fn probe_onestop_size(
     source: impl AsRef<Path>,
     format: OnestopFormat,
     quality: u8,
     scratch_dir: impl AsRef<Path>,
     tools_dir: impl AsRef<Path>,
+    overrides: &EncoderOverrides,
 ) -> Result<u64, CoreError> {
     let source = source.as_ref();
     let scratch_dir = scratch_dir.as_ref();
+    let tools_dir = tools_dir.as_ref();
+    // 无损对照组不参与搜索：文案单一来源见 OnestopFormat::require_lossy
+    format.require_lossy()?;
+    let encoder = resolve_onestop_encoder(format, tools_dir, overrides)?
+        .expect("无损格式已被 require_lossy 拒绝");
     let product = match format {
-        OnestopFormat::Jpeg => {
-            let encoder = install_encoder(&mozjpeg_source()?, tools_dir)?;
-            encode_jpeg_using(encoder, source, quality, scratch_dir)?
-        }
-        OnestopFormat::Webp => {
-            let encoder = install_encoder(&webp_source()?, tools_dir)?;
-            encode_webp_using(encoder, source, Some(quality), scratch_dir)?
-        }
-        OnestopFormat::Avif => {
-            // 探测不需要 avifdec 解码自检，装 avifenc 一个成员即可
-            let encoder = install_encoder(&avif_source()?, tools_dir)?;
-            encode_avif_using(encoder, source, Some(quality), scratch_dir)?
-        }
-        OnestopFormat::Jxl => {
-            let encoder = install_encoder(&jxl_source()?, tools_dir)?;
-            encode_jxl_using(encoder, source, Some(quality), scratch_dir)?
-        }
-        OnestopFormat::Png | OnestopFormat::WebpLossless | OnestopFormat::JxlLossless => {
-            return Err(CoreError::Encode {
-                message: format!("{} 为无损格式，不参与目标大小搜索", format.display_name()),
-            });
-        }
+        OnestopFormat::Jpeg => encode_jpeg_using(encoder, source, quality, scratch_dir)?,
+        OnestopFormat::Webp => encode_webp_using(encoder, source, Some(quality), scratch_dir)?,
+        OnestopFormat::Avif => encode_avif_using(&encoder, source, Some(quality), scratch_dir)?,
+        OnestopFormat::Jxl => encode_jxl_using(encoder, source, Some(quality), scratch_dir)?,
+        _ => unreachable!("无损格式已被 require_lossy 拒绝"),
     };
     std::fs::metadata(&product)
         .map(|metadata| metadata.len())
@@ -1110,5 +1152,38 @@ mod tests {
         .to_string();
         assert!(message.contains("fake-cjpeg"), "错误应包含自定义路径: {message}");
         assert!(message.contains("设置中心"), "错误应指向设置中心: {message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_onestop_size_uses_overridden_encoder() {
+        // 大小优先探测同样吃设置中心覆盖：桩 cjpeg 被真正执行（产物大小 = 桩输出字节数），
+        // tools_dir 为空目录全程不联网——探测若绕过覆盖会去安装内置编码器而失败
+        let dir = std::env::temp_dir().join(format!("pixel-arena-r2-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("my-cjpeg.sh");
+        std::fs::write(&stub, "#!/bin/sh\necho FAKEOVERRIDE > \"$4\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let scratch = dir.join("scratch");
+        let bytes = probe_onestop_size(
+            fixture("photo-ref.png"),
+            OnestopFormat::Jpeg,
+            75,
+            &scratch,
+            dir.join("tools"),
+            &EncoderOverrides {
+                cjpeg: Some(stub),
+                ..Default::default()
+            },
+        )
+        .expect("覆盖的编码器应被探测使用");
+        assert_eq!(bytes, b"FAKEOVERRIDE\n".len() as u64, "探测应回传桩产物的大小");
+        assert!(
+            !dir.join("tools/mozjpeg").exists(),
+            "覆盖生效时内置编码器不应被安装"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
