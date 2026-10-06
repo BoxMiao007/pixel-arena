@@ -414,12 +414,65 @@ impl Workspace {
         // 跑分可能耗时（大图 SSIM 秒级），不持有工作区借用
         let result = crate::metrics::score_images(&reference_path, candidate_path);
 
+        // 落库逻辑与并行版共用一份（保证两个入口行级语义一字不差）
+        self.apply_image_score(group_id, round_id, candidate_path, result)
+    }
+
+    // ---------- T24：整轮并行跑分（结果与逐张串行完全一致） ----------
+
+    /// 对整轮全部跑分图并行跑分（T24）。语义与逐张调用
+    /// [`Workspace::score_round_candidate`] 完全一致（一致性由单测用黄金基准
+    /// 样例锚定），只是把各张的指标计算交给 [`crate::parallel::run_parallel`]
+    /// 按 `max_concurrency` 个并发同时执行；写回仍逐行进行，失败照样写行内
+    /// error 不让整轮失败。`on_progress` 以 (已完成数, 总数) 回调，供界面显示。
+    pub fn score_round_candidates_parallel(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        max_concurrency: usize,
+        on_progress: &(dyn Fn(usize, usize) + Sync),
+    ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Image)?;
+        // 快照原图与全部跑分图路径：计算阶段不持有工作区借用
+        let (reference_path, paths) = {
+            let round = self.round_mut(group_id, round_id)?;
+            let reference = round
+                .reference_path
+                .clone()
+                .ok_or(WorkspaceError::ReferenceNotSet)?;
+            let paths: Vec<String> = round.candidates.iter().map(|c| c.path.clone()).collect();
+            (reference, paths)
+        };
+
+        // 每个任务是纯函数：只吃（原图, 跑分图）路径对，吐计算结果，不碰工作区
+        let results = crate::parallel::run_parallel(
+            &paths,
+            max_concurrency,
+            |path| crate::metrics::score_images(&reference_path, path),
+            |completed| on_progress(completed, paths.len()),
+        );
+
+        // 按选入顺序写回，行级语义与单张版一字不差
+        for (path, result) in paths.iter().zip(results) {
+            self.apply_image_score(group_id, round_id, path, result)?;
+        }
+        Ok(())
+    }
+
+    /// 把一张图的指标计算结果写进对应行（单张与并行两个入口共用的落库逻辑）。
+    fn apply_image_score(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        candidate_path: &str,
+        result: Result<crate::metrics::ImageMetrics, crate::error::CoreError>,
+    ) -> Result<(), WorkspaceError> {
         let candidate = self
             .round_mut(group_id, round_id)?
             .candidates
             .iter_mut()
             .find(|c| c.path == candidate_path)
-            .expect("上面刚确认过跑分图在列表里");
+            .expect("跑分图应在本轮列表里（入口函数已校验）");
         match result {
             Ok(metrics) => {
                 // 全部五指标入库（T04 兑现）：结果表与导出报告的数据列由此驱动，
@@ -562,12 +615,67 @@ impl Workspace {
         let result = crate::video::score_videos(ffmpeg, &reference_path, candidate_path);
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
+        // 落库逻辑与并行版共用一份（保证两个入口行级语义一字不差）
+        self.apply_video_score(group_id, round_id, candidate_path, result, elapsed_ms)
+    }
+
+    /// 对整轮全部跑分视频并行跑分（T24）。语义与逐张调用
+    /// [`Workspace::score_round_video_candidate`] 完全一致；每个任务各起一个
+    /// ffmpeg 进程算自己的（原视频, 跑分视频）对，同时在跑的进程数由
+    /// `max_concurrency` 封顶（票面：视频跑分的 ffmpeg 并发进程数受同一上限约束）。
+    /// `on_progress` 以 (已完成数, 总数) 回调。
+    pub fn score_round_video_candidates_parallel(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        ffmpeg: &std::path::Path,
+        max_concurrency: usize,
+        on_progress: &(dyn Fn(usize, usize) + Sync),
+    ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Video)?;
+        let (reference_path, paths) = {
+            let round = self.round_mut(group_id, round_id)?;
+            let reference = round
+                .video_reference_path
+                .clone()
+                .ok_or(WorkspaceError::VideoReferenceNotSet)?;
+            let paths: Vec<String> = round.video_candidates.iter().map(|c| c.path.clone()).collect();
+            (reference, paths)
+        };
+
+        // 每个任务自带耗时计量（行内「耗时」列的数据源，与单张版口径一致）
+        let results = crate::parallel::run_parallel(
+            &paths,
+            max_concurrency,
+            |path| {
+                let started = std::time::Instant::now();
+                let result = crate::video::score_videos(ffmpeg, &reference_path, path);
+                (result, started.elapsed().as_millis() as u64)
+            },
+            |completed| on_progress(completed, paths.len()),
+        );
+
+        for (path, (result, elapsed_ms)) in paths.iter().zip(results) {
+            self.apply_video_score(group_id, round_id, path, result, elapsed_ms)?;
+        }
+        Ok(())
+    }
+
+    /// 把一段视频的指标计算结果写进对应行（单张与并行两个入口共用的落库逻辑）。
+    fn apply_video_score(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        candidate_path: &str,
+        result: Result<crate::video::VideoMetrics, crate::video::VideoError>,
+        elapsed_ms: u64,
+    ) -> Result<(), WorkspaceError> {
         let candidate = self
             .round_mut(group_id, round_id)?
             .video_candidates
             .iter_mut()
             .find(|c| c.path == candidate_path)
-            .expect("上面刚确认过跑分视频在列表里");
+            .expect("跑分视频应在本轮列表里（入口函数已校验）");
         match result {
             Ok(metrics) => {
                 candidate.metrics = Some(BTreeMap::from([
@@ -1752,6 +1860,176 @@ mod tests {
         let error = candidate.error.as_deref().expect("失败行应有原因");
         assert!(error.contains("ffmpeg"), "原因应可定位: {error}");
         assert!(candidate.elapsed_ms.is_some(), "失败也应记录已耗时");
+    }
+
+    // ---------- T24：整轮并行跑分（并行与串行一致性，黄金基准样例锚定） ----------
+
+    /// 构造一个带原图与 6 张跑分图的图片评测轮，跑分图覆盖黄金基准的四类样例
+    ///（照片/渐变/纯色/噪声，其中含同图与跨基准图），与 golden_baseline.rs 同源。
+    fn workspace_with_golden_candidates() -> (Workspace, String, String) {
+        let mut ws = Workspace::new();
+        let g = ws
+            .create_group("并行一致性", GroupKind::Image)
+            .unwrap()
+            .id
+            .clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
+        ws.add_round_candidates(
+            &g,
+            &r,
+            &[
+                &data("photo-dis.jpg"),
+                &data("photo-dis.png"),
+                &data("photo-ref.png"),
+                &data("gradient-dis.png"),
+                &data("solid-dis.png"),
+                &data("noise-dis.png"),
+            ],
+        )
+        .unwrap();
+        (ws, g, r)
+    }
+
+    #[test]
+    fn 并行跑分与逐张串行结果完全一致_黄金基准样例锚定() {
+        // 串行基线：逐张调用单张入口
+        let (mut serial_ws, g, r) = workspace_with_golden_candidates();
+        let paths: Vec<String> = serial_ws.groups[0].rounds[0]
+            .candidates
+            .iter()
+            .map(|c| c.path.clone())
+            .collect();
+        for path in &paths {
+            serial_ws.score_round_candidate(&g, &r, path).unwrap();
+        }
+
+        // 并行：并发 1（退化为串行）、并发 2、并发远超核数三档，全部逐一比对。
+        // 指标是单图闭式计算（无跨图求和），逐行结果必须 bit 级一致而非容差一致。
+        for concurrency in [1usize, 2, 128] {
+            let (mut parallel_ws, g, r) = workspace_with_golden_candidates();
+            parallel_ws
+                .score_round_candidates_parallel(&g, &r, concurrency, &|_, _| {})
+                .unwrap();
+            for (serial, parallel) in serial_ws.groups[0].rounds[0]
+                .candidates
+                .iter()
+                .zip(&parallel_ws.groups[0].rounds[0].candidates)
+            {
+                assert_eq!(
+                    serial.path, parallel.path,
+                    "并发 {concurrency}: 行顺序必须与选入顺序一致"
+                );
+                assert_eq!(
+                    serial.metrics, parallel.metrics,
+                    "并发 {concurrency}: 指标应与串行完全一致（{}）",
+                    serial.path
+                );
+                assert_eq!(serial.error, parallel.error);
+            }
+        }
+    }
+
+    #[test]
+    fn 并行跑分的进度回调_每张完成恰好一次_报到总数() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (mut ws, g, r) = workspace_with_golden_candidates();
+        let total = ws.groups[0].rounds[0].candidates.len();
+        // 回调会从多个工作线程并发进入，用原子量收集；完成序可能交错，
+        // 所以只断言「次数 = 总数」与「最大已报数 = 总数」（进度条只关心这两个量）
+        let calls = AtomicUsize::new(0);
+        let max_completed = AtomicUsize::new(0);
+        ws.score_round_candidates_parallel(&g, &r, 4, &|completed, reported_total| {
+            assert_eq!(reported_total, total);
+            calls.fetch_add(1, Ordering::SeqCst);
+            max_completed.fetch_max(completed, Ordering::SeqCst);
+        })
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), total, "每张完成恰好回调一次");
+        assert_eq!(max_completed.load(Ordering::SeqCst), total);
+    }
+
+    #[test]
+    fn 并行跑分沿用单张版的错误语义() {
+        // 没选原图不能跑分（错误先于任何内存变更抛出）
+        let (mut ws, g, r) = workspace_with_golden_candidates();
+        ws.groups[0].rounds[0].reference_path = None;
+        assert!(matches!(
+            ws.score_round_candidates_parallel(&g, &r, 4, &|_, _| {}),
+            Err(WorkspaceError::ReferenceNotSet)
+        ));
+        // 视频组不能走图片跑分入口（类型约束随 T17 锁定）
+        let (mut vws, vg, vr) = {
+            let mut ws = Workspace::new();
+            let g = ws.create_group("视频组", GroupKind::Video).unwrap().id.clone();
+            let r = ws.create_round(&g, "轮").unwrap().id.clone();
+            (ws, g, r)
+        };
+        assert!(vws
+            .score_round_candidates_parallel(&vg, &vr, 4, &|_, _| {})
+            .is_err());
+    }
+
+    #[test]
+    fn 并行视频跑分与逐张串行结果完全一致() {
+        let Some(ffmpeg) = ffmpeg_with_libvmaf() else {
+            eprintln!("跳过：找不到带 libvmaf 滤镜的 ffmpeg（可设 PIXEL_ARENA_FFMPEG）");
+            return;
+        };
+        let build = || {
+            let mut ws = Workspace::new();
+            let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
+            let r = ws.create_round(&g, "轮").unwrap().id.clone();
+            ws.set_round_video_reference(&g, &r, &video_data("video-ref-500k.mp4"))
+                .unwrap();
+            ws.add_round_video_candidates(
+                &g,
+                &r,
+                &[
+                    &video_data("video-dis-150k.mp4"),
+                    &video_data("video-small-160x120.mp4"),
+                ],
+            )
+            .unwrap();
+            (ws, g, r)
+        };
+
+        let (mut serial_ws, g, r) = build();
+        for path in ["video-dis-150k.mp4", "video-small-160x120.mp4"] {
+            serial_ws
+                .score_round_video_candidate(&g, &r, &video_data(path), &ffmpeg)
+                .unwrap();
+        }
+
+        for concurrency in [1usize, 2, 8] {
+            let (mut parallel_ws, g, r) = build();
+            parallel_ws
+                .score_round_video_candidates_parallel(&g, &r, &ffmpeg, concurrency, &|_, _| {})
+                .unwrap();
+            for (serial, parallel) in serial_ws.groups[0].rounds[0]
+                .video_candidates
+                .iter()
+                .zip(&parallel_ws.groups[0].rounds[0].video_candidates)
+            {
+                assert_eq!(serial.path, parallel.path);
+                assert_eq!(
+                    serial.metrics, parallel.metrics,
+                    "并发 {concurrency}: VMAF/PSNR/SSIM 应与串行完全一致"
+                );
+                // 失败与否必须一致；但失败原因文本不比对——ffmpeg 报错里含
+                // 线程地址等每次运行都不同的内容，文本相等不是一致性的判据
+                assert_eq!(
+                    serial.error.is_some(),
+                    parallel.error.is_some(),
+                    "并发 {concurrency}: 失败与否应与串行一致"
+                );
+                assert_eq!(
+                    serial.elapsed_ms.is_some(),
+                    parallel.elapsed_ms.is_some(),
+                    "耗时是否记录应一致"
+                );
+            }
+        }
     }
 
     // ---------- T18：单文件移除（从评测轮移除单个跑分图/跑分视频） ----------
