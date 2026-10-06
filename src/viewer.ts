@@ -22,7 +22,7 @@ import {
   stopBlink,
 } from './compare-modes';
 import { fileName, truncateFileName } from './util';
-import { mountMultiview } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
+import { mountMultiview, resolvePaneImage } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
 import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 export interface ViewerRound {
@@ -86,6 +86,9 @@ let state: {
   /** 网格每格显式选图（单一网格，T19 的按档位隔离随 2×2/3×3 合并退化为单数组）：
    *  ''=显式留空，数组缺省位=走默认布局；换轮重置 */
   cellPaths: (string | null)[];
+  /** 分屏每栏显式选图（T25）：数组缺省位=走默认布局（第 0 栏原图、第 i 栏第 i 张跑分图），
+   *  选项里没有「（空）」——分屏每栏必须显示一张图；失效选择由 resolvePaneImage 回落 */
+  panePaths: (string | null)[];
   /** 共享视口；null = 待适配（图片就绪后按窗格尺寸 fit） */
   viewport: ViewportState | null;
 } | null = null;
@@ -154,6 +157,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       divider: 0.5,
       candidateChoices: {},
       cellPaths: [],
+      panePaths: [],
       viewport: null,
     };
   }
@@ -265,8 +269,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
 
   let refCanvas: HTMLCanvasElement | null = null;
   let sliderCanvas: HTMLCanvasElement | null = null;
-  // T20 重组：分屏自动 N 栏——第 0 栏原图、其余各一栏跑分图，同一卡片内无缝拼接
-  const splitPanes: Array<{ canvas: HTMLCanvasElement; path: string; role: string }> = [];
+  // T20 重组：分屏自动 N 栏——第 0 栏原图、其余各一栏跑分图；T25 起每栏路径逐帧现解析
+  const splitPanes: Array<{ canvas: HTMLCanvasElement }> = [];
   // T09 接线：叠加/差异/闪烁共用的单画布，以及随内容变化的角标（闪烁时显示当前是哪张）
   let stageCanvas: HTMLCanvasElement | null = null;
   let stageTag: HTMLSpanElement | null = null;
@@ -284,30 +288,45 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     // ---- T20 重组：分屏自动 N 栏 ----
     // 原图固定最左，每张已选跑分图各加一栏（N 张 = N+1 栏）；同一张卡片内无缝拼接，
     // 全部栏读同一份 state.viewport 实现同步缩放平移；栏多时 flex 各自收窄。
+    // T25 第 1 项：每栏左上角由文件名角标改成选图下拉（沿用网格格子样式），
+    // 每栏可独立换图；选项 = 原图 + 全部跑分图，无「（空）」（栏必须显示一张图）。
     area.className = 'viewer-area split';
     const card = document.createElement('div');
     card.className = 'viewer-split-card';
-    const refPane = document.createElement('div');
-    refPane.className = 'viewer-pane';
-    refCanvas = document.createElement('canvas');
-    const refTag = document.createElement('span');
-    refTag.className = 'viewer-tag';
-    refTag.textContent = '原图';
-    refPane.append(refCanvas, refTag);
-    card.append(refPane);
-    splitPanes.push({ canvas: refCanvas, path: round.referencePath, role: '原图' });
-    for (const candidate of round.candidates) {
+    const paneCount = 1 + round.candidates.length;
+    for (let i = 0; i < paneCount; i++) {
       const pane = document.createElement('div');
       pane.className = 'viewer-pane';
       const canvas = document.createElement('canvas');
-      const tag = document.createElement('span');
-      tag.className = 'viewer-tag';
-      // US9：栏标签统一中间截断，悬浮 title 看全路径
-      tag.textContent = truncateFileName(fileName(candidate.path));
-      tag.title = candidate.path;
-      pane.append(canvas, tag);
+      const select = document.createElement('select');
+      select.className = 'viewer-cell-select';
+      select.title = `第 ${i + 1} 栏：选本栏显示的图`;
+      select.ariaLabel = `第 ${i + 1} 栏选图`;
+      const refOption = document.createElement('option');
+      refOption.value = round.referencePath;
+      // T18：下拉选项统一中间截断，悬浮 title 看全路径
+      refOption.textContent = `原图：${truncateFileName(fileName(round.referencePath))}`;
+      refOption.title = round.referencePath;
+      select.append(refOption);
+      for (const candidate of round.candidates) {
+        const option = document.createElement('option');
+        option.value = candidate.path;
+        option.textContent = truncateFileName(fileName(candidate.path));
+        option.title = candidate.path;
+        select.append(option);
+      }
+      select.value = resolvePaneImage(state.panePaths, i, round) ?? round.referencePath;
+      select.addEventListener('change', () => {
+        if (!state) return;
+        // 首次手动改选才落状态；数组按当前栏数扩长（缺省位=默认布局）
+        const next = Array.from({ length: paneCount }, (_, k) => state!.panePaths[k] ?? null);
+        next[i] = select.value;
+        state.panePaths = next;
+        scheduleDraw(); // 换图立即生效：draw() 每帧按最新选择现解析，不重挂
+      });
+      pane.append(canvas, select);
       card.append(pane);
-      splitPanes.push({ canvas, path: candidate.path, role: '跑分图' });
+      splitPanes.push({ canvas });
     }
     area.append(card);
   } else if (state.mode === 'slider') {
@@ -535,19 +554,22 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       const preparedPanes = splitPanes.map((pane) => prepare(pane.canvas));
       const first = preparedPanes[0];
       if (!first) return;
-      // 原图未就绪时用第一栏跑分图兜底 fit（沿用 T07「优先原图、否则候选」行为）
-      const firstCandEntry = splitPanes.length > 1
-        ? ensureImage(splitPanes[1].path, scheduleDraw)
-        : null;
-      ensureFitted(first.size, refEntry.status === 'ok' ? refEntry : firstCandEntry);
+      // T25 第 1 项：每栏路径逐帧现解析（显式选择 / 失效回落 / 越界都在 resolvePaneImage 里），
+      // 换图只改 state.panePaths 后重绘，不重挂；条目解析永远跟随最新槽位（T19 纪律）
+      const paneEntries = splitPanes.map((_, i) => {
+        const path = resolvePaneImage(st.panePaths, i, round);
+        return path ? ensureImage(path, scheduleDraw) : null;
+      });
+      // 原图未就绪时用第一栏的图兜底 fit（沿用 T07「优先原图、否则候选」行为）
+      ensureFitted(first.size, refEntry.status === 'ok' ? refEntry : paneEntries[0]);
       for (let i = 0; i < splitPanes.length; i++) {
         const prepared = preparedPanes[i];
         if (!prepared) continue;
         prepared.ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
         prepared.ctx.fillRect(0, 0, prepared.size.width, prepared.size.height);
-        // 每帧按路径现解析条目（T19 纪律：条目解析永远跟随最新槽位，不闭包绑定）
-        const entry = i === 0 ? refEntry : ensureImage(splitPanes[i].path, scheduleDraw);
-        drawPane(prepared.ctx, prepared.size, entry, splitPanes[i].role, splitPanes[i].path);
+        const path = resolvePaneImage(st.panePaths, i, round);
+        const role = path === round.referencePath ? '原图' : '跑分图';
+        drawPane(prepared.ctx, prepared.size, paneEntries[i], role, path ?? '');
       }
     } else if (sliderCanvas) {
       const prepared = prepare(sliderCanvas);
