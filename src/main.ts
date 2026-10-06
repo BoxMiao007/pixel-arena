@@ -103,12 +103,14 @@ function defaultOpenPath(): string | undefined {
 }
 
 /** 记录最近使用目录（T23）：用户成功选了文件后调用。记录始终进行，
- * 恢复与否由记录状态开关决定；保存失败静默（不影响主流程）。 */
+ * 恢复与否由记录状态开关决定；保存失败不炸主流程，console.warn 留上下文可定位。 */
 function notePickedPath(path: string): void {
   const dir = parentDir(path);
   if (!settings || !dir) return;
   const next: SettingsData = { ...settings, recentDir: dir };
-  void saveSettings(next).catch(() => {}); // 最近目录记不成也无碍，下次再记
+  void saveSettings(next).catch((err) => {
+    console.warn('记录最近使用的目录失败（不影响主流程）:', err);
+  });
 }
 
 // ---------- 跑分与排序的界面状态（不持久化，重启归零） ----------

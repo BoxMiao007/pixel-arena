@@ -798,9 +798,12 @@ fn record_window_size(app: &tauri::AppHandle) {
         return;
     }
     settings.window = new_size;
-    if settings.save_to_file(&state.settings_path).is_ok() {
-        *state.settings.lock().expect("设置锁不应中毒") = settings;
+    if let Err(err) = settings.save_to_file(&state.settings_path) {
+        // 记窗口大小失败不炸主流程，但要能在 stderr 定位（设置文件不可写等）
+        eprintln!("记录窗口大小到 settings.json 失败：{err}");
+        return;
     }
+    *state.settings.lock().expect("设置锁不应中毒") = settings;
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
