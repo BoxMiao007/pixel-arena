@@ -415,18 +415,9 @@ pub fn onestop_size_search_impl(
 ) -> Result<SizeSearchDto, String> {
     let format = pixel_arena_core::encode::OnestopFormat::parse(format)
         .map_err(|err| err.to_string())?;
-    // 无损对照组大小固定、不参与搜索（前端不会传，fail-fast 兜底；文案与核心库一致）
-    if matches!(
-        format,
-        pixel_arena_core::encode::OnestopFormat::Png
-            | pixel_arena_core::encode::OnestopFormat::WebpLossless
-            | pixel_arena_core::encode::OnestopFormat::JxlLossless
-    ) {
-        return Err(format!(
-            "{} 为无损格式，不参与目标大小搜索",
-            format.display_name()
-        ));
-    }
+    // 无损对照组大小固定、不参与搜索（前端不会传，fail-fast 兜底；
+    // 文案与核心库探测缝同出 OnestopFormat::require_lossy 单一来源）
+    format.require_lossy().map_err(|err| err.to_string())?;
     let scratch = tempfile::tempdir().map_err(|err| format!("无法创建探测暂存目录：{err}"))?;
     let result = pixel_arena_core::ladder::size_search(format, target_bytes, &mut |quality| {
         pixel_arena_core::encode::probe_onestop_size(

@@ -113,6 +113,19 @@ impl OnestopFormat {
         matches!(self, Self::Png | Self::WebpLossless | Self::JxlLossless)
     }
 
+    /// 大小优先入口的 fail-fast：无损对照组大小固定、不参与目标大小搜索。
+    /// 中文文案的单一来源——核心库探测缝（[`probe_onestop_size`]）与应用壳的
+    /// 前置校验（onestop_size_search_impl）共用，保证两处提示一字不差。
+    pub fn require_lossy(self) -> Result<(), CoreError> {
+        if self.is_lossless() {
+            Err(CoreError::Encode {
+                message: format!("{} 为无损格式，不参与目标大小搜索", self.display_name()),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     /// 用户可读的显示名（进度文本、CLI 输出与中文错误提示共用此单一来源；
     /// 前端 src/onestop.ts 的同名映射跨语言无法复用，新增格式需两处同步）。
     pub fn display_name(self) -> &'static str {
@@ -406,29 +419,16 @@ pub fn probe_onestop_size(
     let source = source.as_ref();
     let scratch_dir = scratch_dir.as_ref();
     let tools_dir = tools_dir.as_ref();
+    // 无损对照组不参与搜索：文案单一来源见 OnestopFormat::require_lossy
+    format.require_lossy()?;
+    let encoder = resolve_onestop_encoder(format, tools_dir, overrides)?
+        .expect("无损格式已被 require_lossy 拒绝");
     let product = match format {
-        OnestopFormat::Png | OnestopFormat::WebpLossless | OnestopFormat::JxlLossless => {
-            return Err(CoreError::Encode {
-                message: format!("{} 为无损格式，不参与目标大小搜索", format.display_name()),
-            });
-        }
-        _ => {
-            let encoder = resolve_onestop_encoder(format, tools_dir, overrides)?
-                .expect("无损格式已在上方分支拦截");
-            match format {
-                OnestopFormat::Jpeg => encode_jpeg_using(encoder, source, quality, scratch_dir)?,
-                OnestopFormat::Webp => {
-                    encode_webp_using(encoder, source, Some(quality), scratch_dir)?
-                }
-                OnestopFormat::Avif => {
-                    encode_avif_using(&encoder, source, Some(quality), scratch_dir)?
-                }
-                OnestopFormat::Jxl => {
-                    encode_jxl_using(encoder, source, Some(quality), scratch_dir)?
-                }
-                _ => unreachable!("无损格式已在上方分支拦截"),
-            }
-        }
+        OnestopFormat::Jpeg => encode_jpeg_using(encoder, source, quality, scratch_dir)?,
+        OnestopFormat::Webp => encode_webp_using(encoder, source, Some(quality), scratch_dir)?,
+        OnestopFormat::Avif => encode_avif_using(&encoder, source, Some(quality), scratch_dir)?,
+        OnestopFormat::Jxl => encode_jxl_using(encoder, source, Some(quality), scratch_dir)?,
+        _ => unreachable!("无损格式已被 require_lossy 拒绝"),
     };
     std::fs::metadata(&product)
         .map(|metadata| metadata.len())
