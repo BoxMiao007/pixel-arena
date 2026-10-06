@@ -2955,6 +2955,7 @@ version = "0.1.0"
 dependencies = [
  "pixel-arena-core",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

@@ -48,6 +48,10 @@ export interface VideoBlockCtx {
   setStatus(text: string, isError?: boolean, title?: string): void;
   /** 触发整页重渲染（改本模块的排序状态后用）。 */
   rerender(): void;
+  /** T23：文件对话框默认位置（记录状态开启时为最近目录，否则 undefined）。 */
+  openDefaultPath?: () => string | undefined;
+  /** T23：用户成功选了一个文件（记录最近用过的目录）。 */
+  notePicked?: (path: string) => void;
 }
 
 // 核心库不限定视频封装格式（ffmpeg 自己识别），过滤器只是选文件的提示
@@ -223,8 +227,14 @@ function removeVideoCandidate(ctx: VideoBlockCtx, candidatePath: string): void {
 
 /** 弹系统文件对话框选原视频。取消选择则不动工作区。 */
 async function pickVideoReference(ctx: VideoBlockCtx): Promise<void> {
-  const selected = await open({ title: '选择原视频', multiple: false, filters: [VIDEO_FILTER] });
+  const selected = await open({
+    title: '选择原视频',
+    multiple: false,
+    filters: [VIDEO_FILTER],
+    defaultPath: ctx.openDefaultPath?.(), // T23：最近目录
+  });
   if (typeof selected !== 'string') return; // 用户取消
+  ctx.notePicked?.(selected);
   await ctx.apply(() =>
     invoke<WorkspaceLike>('round_set_video_reference', {
       groupId: ctx.groupId,
@@ -240,10 +250,12 @@ async function pickVideoCandidates(ctx: VideoBlockCtx): Promise<void> {
     title: '添加跑分视频（可多选）',
     multiple: true,
     filters: [VIDEO_FILTER],
+    defaultPath: ctx.openDefaultPath?.(), // T23：最近目录
   });
   if (selected === null) return; // 用户取消
   const paths = Array.isArray(selected) ? selected : [selected];
   if (paths.length === 0) return;
+  ctx.notePicked?.(paths[0]);
   await ctx.apply(() =>
     invoke<WorkspaceLike>('round_add_video_candidates', {
       groupId: ctx.groupId,

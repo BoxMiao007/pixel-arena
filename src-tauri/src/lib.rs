@@ -12,7 +12,10 @@ use tauri::{ipc::Channel, Manager, State};
 
 use pixel_arena_core::workspace::{Group, GroupKind, Round, Workspace, WorkspaceError};
 
+use crate::settings::Settings;
+
 mod ffmpeg_setup;
+mod settings;
 mod video_probe;
 mod video_server;
 
@@ -28,12 +31,33 @@ struct AppState {
     /// 视频流服务（T15）：Linux 端 WebKitGTK 媒体引擎不走 asset 协议，视频元素从
     /// 127.0.0.1 回环地址拉流（见 video_server.rs）。
     video_stream: Arc<video_server::VideoStreamServer>,
+    /// T23 设置中心：内存中的设置 + 设置文件路径（<app_data_dir>/settings.json，
+    /// 与 workspace.json 分离）。设置只在保存时写盘，读盘只发生在启动。
+    settings: Arc<Mutex<Settings>>,
+    settings_path: Arc<PathBuf>,
 }
 
 /// IPC 命令：把核心库版本号交给前端显示。
 #[tauri::command]
 fn core_version() -> String {
     pixel_arena_core::version().to_string()
+}
+
+/// IPC 命令（T23）：读当前设置。
+#[tauri::command]
+fn settings_load(state: State<'_, AppState>) -> Settings {
+    state.settings.lock().expect("设置锁不应中毒").clone()
+}
+
+/// IPC 命令（T23）：整体保存设置。空串路径先收成 None（清空恢复内置），
+/// 再校验存在性（假路径当场报中文错误、不落盘），成功后返回保存后的设置。
+#[tauri::command]
+fn settings_save(settings: Settings, state: State<'_, AppState>) -> Result<Settings, String> {
+    let settings = settings.normalized();
+    settings.validate()?;
+    settings.save_to_file(&state.settings_path)?;
+    *state.settings.lock().expect("设置锁不应中毒") = settings.clone();
+    Ok(settings)
 }
 
 /// 一站式单档产物（onestop_encode 回传）：产物路径 + 编码参数文本。
@@ -48,9 +72,15 @@ struct OnestopProduct {
 
 /// 启动时从磁盘恢复工作区。文件不存在（首次启动）回落到空工作区；
 /// 其余加载失败（坏 JSON、版本不支持等）如实上报，界面提示用户。
+/// T23：记录状态关闭时做干净启动——不读 workspace.json、返回空工作区；
+/// 空工作区不会写盘（写盘只发生在改动），上次保存的数据原样保留。
 #[tauri::command]
 fn workspace_load(state: State<AppState>) -> Result<Workspace, String> {
     let mut ws = state.workspace.lock().expect("工作区锁不应中毒");
+    if !state.settings.lock().expect("设置锁不应中毒").record_state {
+        *ws = Workspace::new();
+        return Ok(ws.clone());
+    }
     match Workspace::load_from_file(&state.path) {
         Ok(loaded) => *ws = loaded,
         Err(WorkspaceError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -306,6 +336,10 @@ async fn onestop_encode(
 
     let rounds_dir = state.rounds_dir.clone();
     let tools_dir = state.tools_dir.clone();
+    // T23：设置中心的编码器路径覆盖随命令带入（None 项走内置自动安装路径）
+    let overrides = to_core_overrides(
+        &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+    );
     tauri::async_runtime::spawn_blocking(move || {
         pixel_arena_core::encode::encode_onestop(
             &reference_path,
@@ -313,6 +347,7 @@ async fn onestop_encode(
             quality,
             rounds_dir.join(&round_id),
             tools_dir.as_path(),
+            &overrides,
         )
         .map(|product| OnestopProduct {
             path: product.to_string_lossy().into_owned(),
@@ -488,6 +523,99 @@ pub fn export_round_file(
     Ok(path.to_string())
 }
 
+/// T23：设置里的编码器覆盖 → 核心库 EncoderOverrides（一次性编码调用携带，
+/// 不做进程级全局状态；CLI 侧恒为默认值，行为只由命令行参数决定）。
+fn to_core_overrides(over: &settings::EncoderOverrides) -> pixel_arena_core::encode::EncoderOverrides {
+    let to_path = |raw: &Option<String>| raw.as_deref().map(std::path::PathBuf::from);
+    pixel_arena_core::encode::EncoderOverrides {
+        cjpeg: to_path(&over.cjpeg),
+        cwebp: to_path(&over.cwebp),
+        avifenc: to_path(&over.avifenc),
+        cjxl: to_path(&over.cjxl),
+    }
+}
+
+/// T23：把 AVIF 代片解码器（avifdec）的定位注入 PIXEL_ARENA_AVIFDEC 环境变量
+///（decode.rs 按它分派）。设置中心的自定义路径优先；清空时回落内置安装路径。
+/// 启动与每次保存设置后调用；decode 侧逐次读取环境变量，改动即时生效。
+fn apply_avifdec_env(state: &AppState) {
+    let custom = state
+        .settings
+        .lock()
+        .expect("设置锁不应中毒")
+        .encoder_overrides
+        .avifdec
+        .clone();
+    if let Some(path) = custom {
+        std::env::set_var("PIXEL_ARENA_AVIFDEC", path);
+        return;
+    }
+    // 未设置覆盖：保持既有行为——内置安装路径存在时注入（已注入则不动）
+    if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_none() {
+        if let Some(avifdec) = pixel_arena_core::decode::avif_decoder_path(state.tools_dir.as_path()) {
+            std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
+        }
+    }
+}
+
+/// T23：记录状态开启时，按设置恢复主窗口大小（逻辑像素，与 DPI 无关）。
+/// 只恢复宽高不恢复位置（票面范围是「窗口大小」）；关闭时保持配置里的默认尺寸。
+fn restore_window_size(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let (record_state, window_size) = {
+        let settings = state.settings.lock().expect("设置锁不应中毒");
+        (settings.record_state, settings.window)
+    };
+    if !record_state {
+        return;
+    }
+    if let (Some(window), Some(size)) = (app.get_webview_window("main"), window_size) {
+        let _ = window.set_size(tauri::LogicalSize::new(size.width, size.height));
+    }
+}
+
+/// T23：把当前主窗口大小记进设置文件（逻辑像素，与 DPI 无关；仅记录状态开启、
+/// 窗口未最大化时）。读-改-写 settings.json，只动 window 字段，值没变不重写。
+/// 记录时机挂窗口 Resized 事件持续记录而非退出时一次性记录：实测（WSLg/X11）关窗
+/// 会触发致命 X 错误（BadDrawable），GDK 直接终止进程，事件循环收不到任何关闭
+/// 事件（CloseRequested/ExitRequested 均不达）；Resized 事件则始终可达，且顺带
+/// 兜住崩溃退出。Windows/macOS 上关窗事件正常，CloseRequested 兜底写一次终值。
+fn record_window_size(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if !state.settings.lock().expect("设置锁不应中毒").record_state {
+        return;
+    }
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let Ok(physical) = window.inner_size() else {
+        return;
+    };
+    let logical = physical.to_logical::<f64>(scale);
+    // 最小尺寸下限兜底：防止最小化/异常尺寸（配置里 minWidth 800）被记成普通尺寸
+    if logical.width < 100.0 || logical.height < 100.0 {
+        return;
+    }
+    let new_size = Some(settings::WindowSize {
+        width: logical.width,
+        height: logical.height,
+    });
+    let mut settings = state.settings.lock().expect("设置锁不应中毒").clone();
+    if settings.window == new_size {
+        return;
+    }
+    settings.window = new_size;
+    if settings.save_to_file(&state.settings_path).is_ok() {
+        *state.settings.lock().expect("设置锁不应中毒") = settings;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -509,6 +637,9 @@ pub fn run() {
                     std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
                 }
             }
+            // T23：加载设置（坏文件 fail-soft 回默认，见 settings.rs 模块头）。
+            // avifdec 覆盖在 apply_avifdec_env 里处理：设置了自定义路径则盖过上面的注入。
+            let settings = Settings::load_from_file(&dir.join("settings.json"));
             let video_stream = video_server::VideoStreamServer::spawn()
                 .expect("视频流服务启动失败");
             app.manage(AppState {
@@ -517,12 +648,20 @@ pub fn run() {
                 tools_dir: Arc::new(tools_dir),
                 rounds_dir: Arc::new(dir.join("rounds")),
                 video_stream: Arc::new(video_stream),
+                settings: Arc::new(Mutex::new(settings.clone())),
+                settings_path: Arc::new(dir.join("settings.json")),
             });
+            apply_avifdec_env(app.state::<AppState>().inner());
+            // 记录状态开启时恢复上次窗口大小（关闭 = 配置里的默认尺寸）
+            restore_window_size(app.handle());
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             core_version,
+            // T23 设置中心
+            settings_load,
+            settings_save,
             workspace_load,
             group_create,
             group_rename,
@@ -552,6 +691,18 @@ pub fn run() {
             round_bdrate,
             round_export,
         ])
-        .run(tauri::generate_context!())
-        .expect("Tauri 应用启动失败");
+        .build(tauri::generate_context!())
+        .expect("Tauri 应用启动失败")
+        .run(|app, event| {
+            // T23：窗口大小随变化持续记回设置（记录状态开启时），下次启动恢复。
+            // 挂 Resized 而非关闭类事件的实测依据见 record_window_size 的注释；
+            // CloseRequested 兜底在关窗事件正常 platforms（Windows/macOS）写终值。
+            if let tauri::RunEvent::WindowEvent { event, .. } = event {
+                match event {
+                    tauri::WindowEvent::Resized(_) => record_window_size(app),
+                    tauri::WindowEvent::CloseRequested { .. } => record_window_size(app),
+                    _ => {}
+                }
+            }
+        });
 }
