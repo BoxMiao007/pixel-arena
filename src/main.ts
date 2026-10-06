@@ -180,6 +180,8 @@ const qualityLadderCache = new Map<number, LadderItem[]>();
 const contentScrollByRound = new Map<string, number>();
 /** 当前内容区渲染的评测轮 id（renderContent 开头据此记录离开前的滚动位置） */
 let contentRoundId: string | null = null;
+/** 当前渲染轮的滚动目标（异步内容填充完再套一次，防高度未就绪被钳制） */
+let contentScrollTarget = 0;
 
 /** 拉取并缓存指定基准的质量阶梯（失败上抛交调用方提示）。 */
 async function refreshQualityLadder(baseline: number): Promise<LadderItem[]> {
@@ -757,6 +759,8 @@ function buildBdrateTable(summary: BdrateSummary): HTMLTableElement {
 /**
  * 异步填充 BD-rate 汇总区：invoke → 只更新容器内部，不触发整页重渲染（避免循环）。
  * 渲染期间切了评测轮时容器已被整页重渲染丢弃，写进脱离的 DOM 无副作用。
+ * T25：汇总比「计算中…」占位高，填充完再套一次本轮的滚动目标——否则渲染时高度还没长出来，
+ * 恢复滚动位置会被浏览器钳到较小值（切标签回来滚动位置对不上）。
  */
 async function fillBdrateSummary(
   box: HTMLDivElement,
@@ -779,6 +783,9 @@ async function fillBdrateSummary(
       box.append(note);
     }
     box.append(buildBdrateTable(summary));
+    if (box.isConnected && contentRoundId === roundId) {
+      $content.scrollTop = contentScrollTarget;
+    }
   } catch (err) {
     box.textContent = `BD-rate 汇总计算失败：${String(err)}`;
   }
@@ -996,7 +1003,8 @@ function renderContent(): void {
   }
 
   // T25：恢复本轮的滚动位置（新轮为 0）
-  $content.scrollTop = contentScrollByRound.get(round.id) ?? 0;
+  contentScrollTarget = contentScrollByRound.get(round.id) ?? 0;
+  $content.scrollTop = contentScrollTarget;
 }
 
 /** T17：导出按钮（图片/视频组共用；exportable = 本轮有任何可导出的跑分内容）。 */
