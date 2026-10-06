@@ -21,6 +21,6 @@ tauri-plugin-dialog = "2.8.1"
 serde = { version = "1", features = ["derive"] }
 # T23 设置文件（settings.json）的读写
 serde_json = "1"
-
-[dev-dependencies]
+# onestop_size_search（T22）大小优先探测编码的暂存目录（探测产物即弃）；
+# settings.rs 单测（T23）也用——放在 [dependencies] 里测试同样可见
 tempfile = "3"

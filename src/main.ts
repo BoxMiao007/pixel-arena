@@ -17,16 +17,22 @@ import {
   type SettingsData,
 } from './settings';
 import { openSettingsPanel } from './settings-ui';
-// T11 接线点：一站式跑分升级为完整编码阶梯（格式/质量档/无损组可勾选），
-// 清单与生成循环在 src/onestop.ts，本文件只做勾选 UI、触发与进度显示
+// T11/T22 接线点：一站式跑分升级为两种模式（质量优先拉杆 / 大小优先逼近），
+// 编码格式用胶囊多选；取点全部走核心库（onestop_quality_ladder / onestop_size_search），
+// 清单与生成循环在 src/onestop.ts，本文件只做模式 UI、触发与进度显示
 import {
   runOnestop as runOnestopLadder,
-  buildLadder,
+  fetchQualityLadder,
+  filterLadder,
+  losslessLadder,
+  searchSizeFormat,
+  sizeOutcomeLadder,
   defaultSelection,
   initOnestopCatalog,
   LOSSY_FORMATS,
-  QUALITIES,
   LOSSLESS_FORMATS,
+  type LadderItem,
+  type OnestopMode,
   type OnestopSelection,
 } from './onestop';
 import './style.css';
@@ -116,8 +122,28 @@ let sortState: { key: string; dir: 1 | -1 } | null = null;
 // 排序状态跟随评测轮：切到另一轮就归零
 let sortRoundId: string | null = null;
 
-// T11 接线点：一站式编码阶梯的勾选状态（界面会话态，重启归零，默认全开 = 决策 0003）
+// T11 接线点：一站式编码阶梯的勾选状态（界面会话态，重启归零，默认全选）
 let onestopSelection: OnestopSelection = defaultSelection();
+
+// T22：一站式模式二选一（质量优先为默认）；拉杆基准 0–100；大小优先目标以字节为
+// 唯一真值（KB/MB 只是显示口径，传后端一律是字节）。均为界面会话态，重启归零。
+let onestopMode: OnestopMode = 'quality';
+let onestopBaseline = 75;
+let sizeTargetBytes = 200 * 1024;
+let sizeUnit: 'KB' | 'MB' = 'KB';
+// 质量阶梯缓存（键 = 拉杆基准）：取点在核心库，启动预取 75，拉杆 change 时按需补拉，
+// 供阶梯预览与「一站式跑分」按钮计数使用
+const qualityLadderCache = new Map<number, LadderItem[]>();
+// 大小优先不可达标注（会话态，重启归零）：轮 id →（跑分图路径 → 备注文本）。
+// 与核心库 annotation_note 同源；CSV/HTML 导出走核心库既有行为，不含此会话态列。
+const sizeNotes = new Map<string, Map<string, string>>();
+
+/** 拉取并缓存指定基准的质量阶梯（失败上抛交调用方提示）。 */
+async function refreshQualityLadder(baseline: number): Promise<LadderItem[]> {
+  const ladder = await fetchQualityLadder(baseline);
+  qualityLadderCache.set(baseline, ladder);
+  return ladder;
+}
 
 const $tabs = document.querySelector<HTMLDivElement>('#tabs')!;
 const $rounds = document.querySelector<HTMLDivElement>('#rounds')!;
@@ -302,24 +328,58 @@ async function scoreAllCandidates(): Promise<void> {
 // ---------- 一站式跑分（T11 完整编码阶梯，清单实现在 src/onestop.ts） ----------
 
 /**
- * 触发一站式跑分：按勾选的格式 × 质量档 + 无损组逐项生成 → 产物自动纳入本轮 →
- * 复用上面的逐张跑分循环出分。期间沿用 scoring 忙标志置灰全部操作按钮。
- * 某项失败不回滚已成功的项，失败项的中文原因在跑分结束后补充提示。
+ * 触发一站式跑分（T22 两种模式）：质量优先 = 拉杆基准经核心库取点展开清单；
+ * 大小优先 = 每个勾选格式先逼近搜索（探测编码在后端执行），命中点 + 邻近补点入
+ * 清单，不可达标注挂到产物路径（结果表备注列）。产物自动纳入本轮 → 复用逐张跑分
+ * 循环出分。期间沿用 scoring 忙标志置灰全部操作按钮。某项失败不回滚已成功的项。
  */
 async function runOnestop(): Promise<void> {
   const session = activeRound();
   if (!session || scoring || !session.round.referencePath) return;
-  const ladder = buildLadder(onestopSelection);
-  if (ladder.length === 0) {
-    setStatus('请先勾选至少一个编码格式、质量档或无损组', true);
-    return;
-  }
 
   scoring = true;
   scoringPath = null;
   render();
 
   try {
+    let ladder: LadderItem[];
+    const notesByFormat = new Map<string, string>();
+    if (onestopMode === 'quality') {
+      // 质量优先：核心库 quality_ladder 取点（缓存优先），按格式勾选过滤
+      const full =
+        qualityLadderCache.get(onestopBaseline) ?? (await refreshQualityLadder(onestopBaseline));
+      ladder = filterLadder(full, onestopSelection);
+    } else {
+      if (!Number.isFinite(sizeTargetBytes) || sizeTargetBytes < 1) {
+        setStatus('目标大小无效：请输入大于 0 的数值', true);
+        return;
+      }
+      // 大小优先：每格式逐次逼近搜索（每次调用天然形成进度）
+      ladder = [];
+      const selected = LOSSY_FORMATS.filter((f) =>
+        onestopSelection.lossyFormats.includes(f.format),
+      );
+      for (const { format, label } of selected) {
+        setStatus(`正在搜索 ${label} 逼近目标大小…`);
+        render();
+        const outcome = await searchSizeFormat({
+          groupId: session.group.id,
+          roundId: session.round.id,
+          referencePath: session.round.referencePath,
+          format,
+          targetBytes: sizeTargetBytes,
+        });
+        ladder.push(...sizeOutcomeLadder(outcome));
+        if (outcome.note) notesByFormat.set(format, outcome.note);
+      }
+      // 无损对照组大小固定、不参与搜索，按勾选原样补入（US24）
+      ladder.push(...losslessLadder(onestopSelection));
+    }
+    if (ladder.length === 0) {
+      setStatus('请先选择至少一个编码格式或无损组', true);
+      return;
+    }
+
     const result = await runOnestopLadder({
       groupId: session.group.id,
       roundId: session.round.id,
@@ -332,6 +392,15 @@ async function runOnestop(): Promise<void> {
         markSaved();
       },
     });
+    // 大小优先：不可达标注按格式挂到产物路径，结果表追加「备注」列（会话态）
+    if (notesByFormat.size > 0) {
+      const byPath = sizeNotes.get(session.round.id) ?? new Map<string, string>();
+      for (const product of result.products) {
+        const note = notesByFormat.get(product.format);
+        if (note) byPath.set(product.path, note);
+      }
+      sizeNotes.set(session.round.id, byPath);
+    }
     if (result.generated > 0) {
       await scoreAllCandidates();
       if (result.failures.length > 0) {
@@ -350,69 +419,185 @@ async function runOnestop(): Promise<void> {
 }
 
 /**
- * T11 接线点：一站式勾选区（格式 × 质量档 × 无损组，默认全开）。
- * 勾选状态放在模块级 onestopSelection，重渲染后按它恢复勾选框。
+ * T22 接线点：一站式操作区（模式二选一 + 参数行 + 格式胶囊 + 无损组胶囊）。
+ * 模式/基准/目标/勾选都是模块级会话状态，重渲染后按它恢复。
  */
-function buildOnestopOptions(): HTMLDivElement {
+function buildOnestopControls(): HTMLDivElement {
   const box = document.createElement('div');
-  box.className = 'onestop-options';
+  box.className = 'onestop-controls';
 
-  const group = (labelText: string): { wrap: HTMLLabelElement; input: HTMLInputElement } => {
-    const wrap = document.createElement('label');
-    wrap.className = 'onestop-check';
+  // 模式二选一：质量优先 / 大小优先，互斥生效（分段按钮，active 高亮）
+  const modeSwitch = document.createElement('div');
+  modeSwitch.className = 'onestop-modes';
+  modeSwitch.role = 'group';
+  modeSwitch.ariaLabel = '一站式模式';
+  const modes = [
+    ['quality', '质量优先', '统一拉杆定基准，自动在基准附近取多个质量点（保 BD-rate 曲线）'],
+    ['size', '大小优先', '输入期望文件大小，每个格式自动逼近；不可达时取最接近点并标注'],
+  ] as const;
+  for (const [mode, label, title] of modes) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = label;
+    btn.title = title;
+    btn.disabled = scoring;
+    btn.classList.toggle('active', onestopMode === mode);
+    btn.ariaPressed = onestopMode === mode ? 'true' : 'false';
+    btn.addEventListener('click', () => {
+      if (onestopMode !== mode) {
+        onestopMode = mode;
+        render();
+      }
+    });
+    modeSwitch.append(btn);
+  }
+  box.append(modeSwitch);
+
+  if (onestopMode === 'quality') {
+    const row = document.createElement('div');
+    row.className = 'onestop-param-row';
+
+    const label = document.createElement('span');
+    label.className = 'onestop-param-label';
+    label.textContent = '基准质量';
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'onestop-slider';
+    slider.min = '0';
+    slider.max = '100';
+    slider.step = '1';
+    slider.value = String(onestopBaseline);
+    slider.disabled = scoring;
+    slider.title = '统一基准质量（0–100），自动映射到各格式自身质量参数';
+
+    const value = document.createElement('span');
+    value.className = 'onestop-param-value';
+    value.textContent = String(onestopBaseline);
+
+    // 拖动中只更新数值显示；松手（change）才取点重渲染，避免拖动期间频繁 IPC
+    slider.addEventListener('input', () => {
+      value.textContent = slider.value;
+    });
+    slider.addEventListener('change', () => {
+      onestopBaseline = Number(slider.value);
+      void refreshQualityLadder(onestopBaseline)
+        .then(() => render())
+        .catch((err) => setStatus(`取点失败: ${String(err)}`, true));
+    });
+
+    row.append(label, slider, value);
+    box.append(row);
+
+    const cached = qualityLadderCache.get(onestopBaseline);
+    const preview = document.createElement('span');
+    preview.className = 'muted onestop-preview';
+    preview.textContent = cached
+      ? `按基准 ${onestopBaseline} 自动取点：共 ${filterLadder(cached, onestopSelection).length} 项（每格式 ≥3 点，含无损对照组）`
+      : '正在计算取点…';
+    box.append(preview);
+  } else {
+    const row = document.createElement('div');
+    row.className = 'onestop-param-row';
+
+    const label = document.createElement('span');
+    label.className = 'onestop-param-label';
+    label.textContent = '目标大小';
+
     const input = document.createElement('input');
-    input.type = 'checkbox';
+    input.type = 'number';
+    input.className = 'onestop-size-input';
+    input.min = '0';
+    input.step = 'any';
     input.disabled = scoring;
-    const span = document.createElement('span');
-    span.textContent = labelText;
-    wrap.append(input, span);
-    return { wrap, input };
-  };
-
-  const formats = document.createElement('span');
-  formats.className = 'onestop-group-label';
-  formats.textContent = '格式';
-  box.append(formats);
-  for (const { format, label } of LOSSY_FORMATS) {
-    const { wrap, input } = group(label);
-    input.checked = onestopSelection.lossyFormats.includes(format);
+    input.title = '期望的跑分图文件大小；每格式自动逼近，不可达时取最接近点并标注';
+    // 显示口径：字节为唯一真值，单位切换只换显示数值，传后端一律是字节
+    const unitBytes = sizeUnit === 'KB' ? 1024 : 1024 * 1024;
+    const displayValue = sizeTargetBytes / unitBytes;
+    input.value = Number.isInteger(displayValue) ? String(displayValue) : displayValue.toFixed(2);
     input.addEventListener('change', () => {
-      onestopSelection.lossyFormats = input.checked
-        ? [...onestopSelection.lossyFormats, format]
-        : onestopSelection.lossyFormats.filter((f) => f !== format);
+      const bytes = Math.round(Number(input.value) * unitBytes);
+      if (!Number.isFinite(bytes) || bytes < 1) {
+        setStatus('目标大小无效：请输入大于 0 的数值', true);
+      } else {
+        sizeTargetBytes = bytes;
+      }
+      render(); // 无效输入回显原值；有效输入同步预览文案
     });
-    box.append(wrap);
+
+    const unit = document.createElement('select');
+    unit.className = 'onestop-size-unit';
+    unit.disabled = scoring;
+    unit.title = '大小单位（默认 KB；切换只改显示口径，同一目标大小不变）';
+    for (const unitName of ['KB', 'MB'] as const) {
+      const opt = document.createElement('option');
+      opt.value = unitName;
+      opt.textContent = unitName;
+      unit.append(opt);
+    }
+    unit.value = sizeUnit;
+    unit.addEventListener('change', () => {
+      sizeUnit = unit.value as 'KB' | 'MB';
+      render();
+    });
+
+    row.append(label, input, unit);
+    box.append(row);
+
+    const hint = document.createElement('span');
+    hint.className = 'muted onestop-preview';
+    hint.textContent = `每个格式自动逼近目标并补邻近点（保 BD-rate）；不可达时取最接近点并标注`;
+    box.append(hint);
   }
 
-  const qualities = document.createElement('span');
-  qualities.className = 'onestop-group-label';
-  qualities.textContent = '质量档';
-  box.append(qualities);
-  for (const quality of QUALITIES) {
-    const { wrap, input } = group(`q${quality}`);
-    input.checked = onestopSelection.qualities.includes(quality);
-    input.addEventListener('change', () => {
-      onestopSelection.qualities = input.checked
-        ? [...onestopSelection.qualities, quality]
-        : onestopSelection.qualities.filter((q) => q !== quality);
-    });
-    box.append(wrap);
-  }
+  // 格式胶囊（多选）：点击切换选择，选中态 pill-on 高亮
+  box.append(
+    buildPillList(
+      LOSSY_FORMATS.map((f) => {
+        const selected = onestopSelection.lossyFormats.includes(f.format);
+        return {
+          label: f.label,
+          title: selected ? `点击移除 ${f.label}` : `点击选择 ${f.label}`,
+          onClick: () => {
+            onestopSelection.lossyFormats = selected
+              ? onestopSelection.lossyFormats.filter((x) => x !== f.format)
+              : [...onestopSelection.lossyFormats, f.format];
+            render();
+          },
+          disabled: scoring,
+          extraClass: selected ? 'pill-on' : undefined,
+        };
+      }),
+      '格式：',
+      '一站式有损格式选择',
+    ),
+  );
 
-  const lossless = document.createElement('span');
-  lossless.className = 'onestop-group-label';
-  lossless.textContent = '无损组';
-  box.append(lossless);
-  for (const { format, label } of LOSSLESS_FORMATS) {
-    const { wrap, input } = group(label);
-    input.checked = onestopSelection.losslessFormats.includes(format);
-    input.addEventListener('change', () => {
-      onestopSelection.losslessFormats = input.checked
-        ? [...onestopSelection.losslessFormats, format]
-        : onestopSelection.losslessFormats.filter((f) => f !== format);
-    });
-    box.append(wrap);
-  }
+  // 无损对照组胶囊：默认在列，点击或 × 移除；移除后可再点回来（US24）
+  box.append(
+    buildPillList(
+      LOSSLESS_FORMATS.map((f) => {
+        const selected = onestopSelection.losslessFormats.includes(f.format);
+        const toggle = () => {
+          onestopSelection.losslessFormats = selected
+            ? onestopSelection.losslessFormats.filter((x) => x !== f.format)
+            : [...onestopSelection.losslessFormats, f.format];
+          render();
+        };
+        return {
+          label: f.label,
+          title: selected ? `点击移除 ${f.label}（无损对照组）` : `点击选择 ${f.label}（无损对照组）`,
+          onClick: toggle,
+          onRemove: selected ? toggle : undefined,
+          disabled: scoring,
+          extraClass: selected ? 'pill-on' : undefined,
+        };
+      }),
+      '无损组：',
+      '一站式无损对照组选择',
+    ),
+  );
+
   return box;
 }
 
@@ -598,11 +783,12 @@ async function boot(): Promise<void> {
   } catch (err) {
     setStatus(`加载设置失败: ${String(err)}`, true);
   }
-  // T21 接线点：一站式目录（格式清单 + 默认质量档）改由核心库取点驱动，
-  // 必须先于首次渲染拉取，并按目录重设默认全开的勾选状态
+  // T21 接线点：一站式目录（格式清单）改由核心库驱动，必须先于首次渲染拉取；
+  // T22：随后预取默认基准 75 的质量阶梯（拉杆预览与按钮计数用），并重设默认全选
   try {
     await initOnestopCatalog();
     onestopSelection = defaultSelection();
+    await refreshQualityLadder(onestopBaseline);
   } catch (err) {
     setStatus(`加载编码阶梯目录失败: ${String(err)}`, true);
   }
@@ -804,17 +990,25 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
   scoreBtn.disabled = scoring || !round.referencePath || round.candidates.length === 0;
   scoreBtn.addEventListener('click', () => void startScoring());
 
-  // T11 接线点：一站式跑分（完整编码阶梯）——勾选项逐个生成并跑分，进度亮在状态栏
-  const ladderCount = buildLadder(onestopSelection).length;
+  // T22 接线点：一站式跑分按钮。质量优先可按缓存阶梯给出项数；大小优先的项数要
+  // 搜索后才知道（每格式命中点 + 邻近补点），只提示行为不报数
+  const cachedLadder = qualityLadderCache.get(onestopBaseline);
+  const ladderCount =
+    onestopMode === 'quality' && cachedLadder
+      ? filterLadder(cachedLadder, onestopSelection).length
+      : null;
   const onestopBtn = document.createElement('button');
   onestopBtn.className = 'add-btn onestop-btn';
   onestopBtn.textContent = scoring ? '一站式跑分中…' : '一站式跑分';
+  const downloadHint = '编码器首次使用需联网下载；AVIF/JXL 编码较慢';
   onestopBtn.title =
     !round.referencePath
       ? '需要先选择原图'
       : ladderCount === 0
-        ? '请先在下方勾选至少一个格式、质量档或无损组'
-        : `按下方勾选自动生成 ${ladderCount} 份跑分图并逐张跑分（编码器首次使用需联网下载；AVIF/JXL 编码较慢）`;
+        ? '请先在下方选择至少一个格式或无损组'
+        : onestopMode === 'quality'
+          ? `按基准 ${onestopBaseline} 自动取点生成 ${ladderCount ?? '—'} 份跑分图并逐张跑分（${downloadHint}）`
+          : `按目标大小为每个格式自动搜索最接近点并补邻近点，逐张跑分（${downloadHint}）`;
   onestopBtn.disabled = scoring || !round.referencePath || ladderCount === 0;
   onestopBtn.addEventListener('click', () => void runOnestop());
 
@@ -847,9 +1041,10 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
       ),
     );
   }
-  // T11 接线点：格式/质量档/无损组勾选区（有原图才可触发，故仅在已选原图时展示）
+  // T22 接线点：一站式操作区（模式二选一 + 拉杆/大小输入 + 格式与无损组胶囊）；
+  // 有原图才可触发，故仅在已选原图时展示
   if (round.referencePath) {
-    $content.append(buildOnestopOptions());
+    $content.append(buildOnestopControls());
   }
 
   if (round.candidates.length === 0) {
@@ -872,7 +1067,8 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
       });
     }
 
-    $content.append(buildResultTable(round.candidates));
+    // T22：大小优先不可达标注挂备注列（会话态，按轮隔离）
+    $content.append(buildResultTable(round.candidates, sizeNotes.get(round.id)));
 
     // T13 接线点：BD-rate 汇总区（与导出报告同一数据源；异步填充，不触发整页重渲染）
     const bdrateBox = document.createElement('div');
@@ -964,11 +1160,20 @@ function firstClickDir(key: string): 1 | -1 {
   return key === 'fileSize' || key === 'name' || key === 'encodingParams' ? 1 : -1;
 }
 
-function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
+function buildResultTable(
+  candidates: CandidateImage[],
+  notes?: Map<string, string>,
+): HTMLTableElement {
+  // T22：大小优先不可达标注（会话态，来源核心库 annotation_note）——任一行有备注
+  // 才追加尾随「备注」列（对齐 CLI 大小优先模式的 note 列）；其余模式列序不变
+  const noteFor = (candidate: CandidateImage): string | null =>
+    notes?.get(candidate.path) ?? null;
+  const hasNotes = candidates.some((c) => noteFor(c) !== null);
+
   const table = document.createElement('table');
   table.className = 'result-table';
 
-  // 列：排名 | 跑分图 | 文件大小 | 体积比 | 编码参数 | 指标列… | 状态
+  // 列：排名 | 跑分图 | 文件大小 | 体积比 | 编码参数 | 指标列… | 状态 |（备注）
   const columns: { key: string; label: string; sortable: boolean }[] = [
     { key: 'name', label: '跑分图', sortable: true },
     { key: 'fileSize', label: '文件大小', sortable: true },
@@ -977,6 +1182,7 @@ function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
     ...metricKeys(candidates).map((key) => ({ key, label: key, sortable: true })),
     { key: 'status', label: '状态', sortable: false },
   ];
+  if (hasNotes) columns.push({ key: 'note', label: '备注', sortable: false });
 
   const rows = [...candidates];
   if (sortState) {
@@ -1077,6 +1283,16 @@ function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
     }
 
     tr.append(rank, name, fileSize, ratio, encodingParams, ...metricCells, status);
+
+    // T22：备注列（大小优先不可达标注），悬浮 title 看完整文本
+    if (hasNotes) {
+      const note = document.createElement('td');
+      note.className = 'cell-note';
+      const text = noteFor(candidate);
+      note.textContent = text ?? '';
+      if (text) note.title = text;
+      tr.append(note);
+    }
     body.append(tr);
   });
   table.append(body);
