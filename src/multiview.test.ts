@@ -5,7 +5,14 @@
 // T19 的「档位隔离」用例随双入口消失而删除（合并后无档位可言，见 shared/notes/T19.md）。
 
 import { describe, it, expect } from 'vitest';
-import { defaultCellImage, gridLayout, resolveCellImage, type MultiviewState } from './multiview';
+import {
+  defaultCellImage,
+  defaultPaneImage,
+  gridLayout,
+  resolveCellImage,
+  resolvePaneImage,
+  type MultiviewState,
+} from './multiview';
 
 const round = {
   referencePath: '/demo/ref.png',
@@ -97,5 +104,49 @@ describe('resolveCellImage（每格最终显示的图）', () => {
     const st = shared([null, '/demo/b.webp']);
     expect(resolveCellImage(st, 1, round)).toBe('/demo/b.webp');
     expect(resolveCellImage(st, 5, round)).toBeNull();
+  });
+});
+
+// T25 第 1 项：分屏每栏换图与网格每格换图共用同一套选图逻辑（通用形式 resolvePaneImage），
+// 网格侧（resolveCellImage）只是它的状态切片封装
+describe('resolvePaneImage / defaultPaneImage（分屏栏与网格格共用的通用选图）', () => {
+  it('默认布局：第 0 位原图，第 i 位第 i 张跑分图（分屏每栏与网格首行一致）', () => {
+    expect(defaultPaneImage(0, round)).toBe('/demo/ref.png');
+    expect(defaultPaneImage(1, round)).toBe('/demo/a.jpg');
+    expect(defaultPaneImage(2, round)).toBe('/demo/b.webp');
+  });
+
+  it('默认布局越界（图不够填满栏/格）时为 null', () => {
+    expect(defaultPaneImage(3, round)).toBeNull();
+    expect(defaultPaneImage(9, round)).toBeNull();
+  });
+
+  it('无显式选择（null/undefined/空数组）时全部走默认布局', () => {
+    expect(resolvePaneImage(null, 0, round)).toBe('/demo/ref.png');
+    expect(resolvePaneImage(undefined, 1, round)).toBe('/demo/a.jpg');
+    expect(resolvePaneImage([], 2, round)).toBe('/demo/b.webp');
+    expect(resolvePaneImage([], 3, round)).toBeNull();
+  });
+
+  it('显式选择仍在本轮（原图或任一张跑分图）时原样生效', () => {
+    expect(resolvePaneImage(['/demo/b.webp'], 0, round)).toBe('/demo/b.webp');
+    expect(resolvePaneImage([null, '/demo/ref.png'], 1, round)).toBe('/demo/ref.png');
+  });
+
+  it('显式选择的图已被移出本轮时回落该位默认，不显示失效图', () => {
+    expect(resolvePaneImage(['/demo/removed.jpg', '/demo/a.jpg'], 0, round)).toBe('/demo/ref.png');
+    expect(resolvePaneImage([null, '/demo/removed.jpg'], 1, round)).toBe('/demo/a.jpg');
+  });
+
+  it('显式留空（空字符串）返回 null；分屏每栏不提供该选项，但语义仍由同一函数承载', () => {
+    expect(resolvePaneImage(['', null], 0, round)).toBeNull();
+  });
+
+  it('数组缺省位（undefined）走默认布局，显式位不受影响', () => {
+    const paths = [undefined, '/demo/b.webp'] as (string | null | undefined)[];
+    expect(resolvePaneImage(paths, 0, round)).toBe('/demo/ref.png');
+    expect(resolvePaneImage(paths, 1, round)).toBe('/demo/b.webp'); // 显式位
+    expect(resolvePaneImage(paths, 2, round)).toBe('/demo/b.webp'); // 缺省位 → 默认布局（第 2 张跑分图）
+    expect(resolvePaneImage(paths, 3, round)).toBeNull(); // 越界
   });
 });

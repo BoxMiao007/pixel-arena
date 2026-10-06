@@ -58,10 +58,35 @@ export function gridLayout(count: number): { rows: number; cols: number } {
   return { rows: Math.ceil(n / 3), cols: 3 };
 }
 
-/** 第 index 格的默认选图：第 1 格原图，其余按跑分图顺序填入，不够的留空 */
-export function defaultCellImage(index: number, round: MultiviewRound): string | null {
+/** 第 index 位的默认选图：第 0 位原图，其余按跑分图顺序填入，不够的留空。
+ *  网格（cellPaths）与分屏（panePaths）的默认布局完全同构，共用本函数。 */
+export function defaultPaneImage(index: number, round: MultiviewRound): string | null {
   if (index === 0) return round.referencePath;
   return round.candidates[index - 1]?.path ?? null;
+}
+
+/** 第 index 位最终显示的图：显式选择仍有效则用之（''=显式留空），否则回落到默认布局。
+ *  T25 抽成通用形式：网格每格与分屏每栏共用同一套「显式选择 / 失效回落 / 越界留空」语义
+ *  （分屏不提供「（空）」选项，但空串语义仍由本函数承载）。 */
+export function resolvePaneImage(
+  paths: ReadonlyArray<string | null | undefined> | null | undefined,
+  index: number,
+  round: MultiviewRound,
+): string | null {
+  const chosen = paths?.[index];
+  if (chosen !== null && chosen !== undefined) {
+    if (chosen === '') return null; // 显式留空
+    const valid = chosen === round.referencePath
+      || round.candidates.some((c) => c.path === chosen);
+    if (valid) return chosen;
+    // 图已不在本轮（被删除等）：回落默认，不显示失效图
+  }
+  return defaultPaneImage(index, round);
+}
+
+/** 第 index 格的默认选图：默认布局（第 1 格原图，其余按跑分图顺序填入，不够的留空） */
+export function defaultCellImage(index: number, round: MultiviewRound): string | null {
+  return defaultPaneImage(index, round);
 }
 
 /** 每格最终显示的图：显式选择仍有效则用之（''=显式留空），否则回落到默认布局 */
@@ -70,15 +95,7 @@ export function resolveCellImage(
   index: number,
   round: MultiviewRound,
 ): string | null {
-  const chosen = shared.cellPaths?.[index];
-  if (chosen !== null && chosen !== undefined) {
-    if (chosen === '') return null; // 显式留空
-    const valid = chosen === round.referencePath
-      || round.candidates.some((c) => c.path === chosen);
-    if (valid) return chosen;
-    // 图已不在本轮（被删除等）：回落默认，不显示失效图
-  }
-  return defaultCellImage(index, round);
+  return resolvePaneImage(shared.cellPaths, index, round);
 }
 
 // ---------- 挂载 ----------

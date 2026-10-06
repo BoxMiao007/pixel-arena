@@ -109,10 +109,9 @@ export function resolveCellVideo(
   );
 }
 
-// ---------- 查看器界面状态（跟随评测轮，不持久化，重启归零） ----------
+// ---------- 逐帧对比界面状态（按评测轮键控：切走保留、切回还原；不持久化，重启归零） ----------
 
-let state: {
-  roundId: string;
+interface VideoState {
   mode: CompareMode;
   /** 左路 = 基准路：分屏/滑动的左栏，多视图第 0 格默认，帧步进的步长取自它 */
   leftPath: string | null;
@@ -123,7 +122,32 @@ let state: {
   viewport: ViewportState | null;
   /** 两路共享的当前时间点（秒） */
   time: number;
-} | null = null;
+}
+
+/** T25 第 2 项：会话状态按评测轮键控（此前「模块级单例 + 换轮重置」，切标签会丢模式/视口/时间点） */
+const videoStates = new Map<string, VideoState>();
+
+/** 当前挂载的逐帧对比状态（元素级回调——视频载入完成、seek 完成——经它对齐时间点） */
+let active: VideoState | null = null;
+
+/** 取该评测轮的状态；首次用到时按默认值创建（分屏、默认左右两路、时间点 0）。 */
+function videoStateFor(roundId: string): VideoState {
+  let st = videoStates.get(roundId);
+  if (!st) {
+    const pair = defaultPair(sources);
+    st = {
+      mode: 'split',
+      leftPath: pair?.left ?? sources[0] ?? null,
+      rightPath: pair?.right ?? sources[1] ?? null,
+      cellPaths: null,
+      divider: 0.5,
+      viewport: null,
+      time: 0,
+    };
+    videoStates.set(roundId, st);
+  }
+  return st;
+}
 
 // 本轮的源列表与状态栏输出（挂载时更新；元素级事件回调经模块级变量拿到当前上下文）
 let sources: string[] = [];
@@ -243,7 +267,7 @@ function ensureVideo(path: string, onReady: () => void): VideoEntry {
         e.height = el.videoHeight;
         e.duration = Number.isFinite(el.duration) ? el.duration : 0;
         // 新载入的视频停在 0：就绪后把画面带到共享时间点
-        if (state && Math.abs(el.currentTime - state.time) > 5e-4) seekVideo(el, state.time);
+        if (active && Math.abs(el.currentTime - active.time) > 5e-4) seekVideo(el, active.time);
       }
       for (const fn of e.listeners) fn();
       e.listeners = [];
@@ -279,13 +303,15 @@ function ensureVideo(path: string, onReady: () => void): VideoEntry {
 
 // ---------- 挂载 ----------
 
-/** 把逐帧对比挂到 host 上（host 原有内容被替换）。源不足两段时只显示一行说明。 */
+/** 把逐帧对比挂到 host 上（host 原有内容被替换）。源不足两段时只显示一行说明。
+ *  界面状态按评测轮键控（T25 第 2 项）：切走保留、切回还原；新轮回到默认（分屏、默认两路、时间点 0）。 */
 export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void {
   sources = videoSources(ctx.referencePath, ctx.candidatePaths);
   probeStatus = ctx.setStatus;
 
   if (sources.length < 2) {
-    state = null;
+    videoStates.delete(ctx.roundId);
+    active = null;
     const hint = document.createElement('p');
     hint.className = 'content-placeholder';
     hint.textContent = '逐帧对比：先选原视频并添加跑分视频（至少两段）后可用。';
@@ -293,19 +319,8 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
     return;
   }
 
-  if (!state || state.roundId !== ctx.roundId) {
-    const pair = defaultPair(sources);
-    state = {
-      roundId: ctx.roundId,
-      mode: 'split',
-      leftPath: pair?.left ?? sources[0] ?? null,
-      rightPath: pair?.right ?? sources[1] ?? null,
-      cellPaths: null,
-      divider: 0.5,
-      viewport: null,
-      time: 0,
-    };
-  }
+  const state = videoStateFor(ctx.roundId);
+  active = state;
   // 源可能被移除：失效回落到默认两路
   if (!state.leftPath || !sources.includes(state.leftPath)) {
     state.leftPath = sources[0] ?? null;
@@ -353,7 +368,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
     modes.append(btn);
   }
   const syncModeButtons = (): void => {
-    for (const [id, btn] of modeButtons) btn.classList.toggle('active', state!.mode === id);
+    for (const [id, btn] of modeButtons) btn.classList.toggle('active', state.mode === id);
   };
 
   bar.append(modes);
@@ -444,10 +459,9 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
         ? resolveCellVideo(i, state.cellPaths, state.leftPath, sources) ?? ''
         : '';
       select.addEventListener('change', () => {
-        if (!state) return;
         // 首次手动改选才落状态；数组按当前格数扩长（缺省位=默认布局）
         if (!state.cellPaths || state.cellPaths.length < count) {
-          state.cellPaths = Array.from({ length: count }, (_, k) => state!.cellPaths?.[k] ?? null);
+          state.cellPaths = Array.from({ length: count }, (_, k) => state.cellPaths?.[k] ?? null);
         }
         state.cellPaths[i] = select.value; // '' = 显式留空
         refreshVideos();
@@ -508,7 +522,6 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
   stepBack.type = 'button';
   stepBack.textContent = '−1 帧';
   stepBack.addEventListener('click', () => {
-    if (!state) return;
     const fps = stepFps();
     if (!fps) return;
     seekAll(prevFrameTime(state.time, fps, timelineDuration()));
@@ -518,7 +531,6 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
   stepFwd.type = 'button';
   stepFwd.textContent = '+1 帧';
   stepFwd.addEventListener('click', () => {
-    if (!state) return;
     const fps = stepFps();
     if (!fps) return;
     seekAll(nextFrameTime(state.time, fps, timelineDuration()));
@@ -551,7 +563,6 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
 
   // ----- 视频就绪与时间点对齐 -----
   function refreshVideos(): void {
-    if (!state) return;
     for (const path of displayedPaths()) {
       const entry = ensureVideo(path, scheduleDraw);
       if (entry.status === 'ready' && entry.el && Math.abs(entry.el.currentTime - state.time) > 5e-4) {
@@ -599,7 +610,6 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
   }
 
   function seekAll(t: number): void {
-    if (!state) return;
     state.time = clampTime(t, timelineDuration());
     for (const entry of displayedEntries()) {
       if (entry.status === 'ready' && entry.el) seekVideo(entry.el, state.time);
@@ -653,7 +663,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
     canvas.addEventListener('pointerup', stopPan);
     canvas.addEventListener('pointercancel', stopPan);
     canvas.addEventListener('dblclick', () => {
-      if (state) state.viewport = null; // 复位 = 重新按窗格 fit
+      state.viewport = null; // 复位 = 重新按窗格 fit
       scheduleDraw();
     });
   }
@@ -669,7 +679,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
       e.preventDefault();
     });
     dividerEl.addEventListener('pointermove', (e) => {
-      if (!dragging || !state) return;
+      if (!dragging) return;
       const rect = canvas.getBoundingClientRect();
       state.divider = Math.min(0.98, Math.max(0.02, (e.clientX - rect.left) / rect.width));
       dividerEl!.style.left = `${state.divider * rect.width}px`;
@@ -713,7 +723,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
 
   /** 把一路视频的当前帧按共享视口画进窗格；只画可见部分（与图片查看器同一范式） */
   function drawVideo(ctx: CanvasRenderingContext2D, size: Size, path: string | null): void {
-    const st = state!;
+    const st = state;
     if (!path) {
       drawMessage(ctx, size, '（空）');
       return;
@@ -744,7 +754,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
 
   /** 视口待适配时用第一份就绪的帧按窗格尺寸 fit（帧尺寸当图片尺寸） */
   function ensureFitted(): void {
-    const st = state!;
+    const st = state;
     if (st.viewport) return;
     const rect = panes[0]?.canvas.getBoundingClientRect();
     if (!rect || rect.width < 2 || rect.height < 2) return;
@@ -759,7 +769,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
 
   /** 时间轴控件随状态刷新（fps/时长异步就位后自动解锁） */
   function syncTimeline(): void {
-    const st = state!;
+    const st = state;
     const duration = timelineDuration();
     slider.disabled = duration <= 0;
     if (duration > 0) {
@@ -823,13 +833,11 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
 
   // 左右路下拉（分屏/滑动）：换路后重新对齐到共享时间点
   leftSelect?.addEventListener('change', () => {
-    if (!state) return;
     state.leftPath = leftSelect!.value || null;
     refreshVideos();
     scheduleDraw();
   });
   rightSelect?.addEventListener('change', () => {
-    if (!state) return;
     state.rightPath = rightSelect!.value || null;
     refreshVideos();
     scheduleDraw();

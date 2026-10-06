@@ -16,13 +16,14 @@ import {
 } from './viewport';
 import {
   buildT09Controls,
-  compareUi,
+  defaultCompareUi,
   renderDiffCanvas,
   startBlink,
   stopBlink,
+  type CompareUiState,
 } from './compare-modes';
 import { fileName, truncateFileName } from './util';
-import { mountMultiview } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
+import { mountMultiview, resolvePaneImage } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
 import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 export interface ViewerRound {
@@ -73,22 +74,48 @@ export function resolveModeCandidatePath(
 /** 缩放≥100% 后关闭平滑，按最近邻显示原始像素（像素级查看） */
 const NEAREST_ZOOM = 1;
 
-// ---------- 查看器界面状态（跟随评测轮，不持久化，重启归零） ----------
+// ---------- 查看器界面状态（按评测轮键控：切走保留、切回还原；不持久化，重启归零） ----------
 
-let state: {
-  roundId: string;
+interface ViewerState {
   mode: ViewerMode;
   /** 滑动对比的分割线位置：占画布宽度的比例 0~1 */
   divider: number;
   /** 各单槽模式（滑动/叠加/差异/闪烁）手动选中的跑分图（US16 按「轮×模式」隔离）：
-   *  键缺省 = 未手动选过（跟随当前候选顺序）；分屏自动 N 栏、网格用 cellPaths 不用此槽 */
+   *  键缺省 = 未手动选过（跟随当前候选顺序）；分屏用 panePaths、网格用 cellPaths 不用此槽 */
   candidateChoices: ModeCandidateChoices;
   /** 网格每格显式选图（单一网格，T19 的按档位隔离随 2×2/3×3 合并退化为单数组）：
-   *  ''=显式留空，数组缺省位=走默认布局；换轮重置 */
+   *  ''=显式留空，数组缺省位=走默认布局 */
   cellPaths: (string | null)[];
+  /** 分屏每栏显式选图（T25）：数组缺省位=走默认布局（第 0 栏原图、第 i 栏第 i 张跑分图），
+   *  选项里没有「（空）」——分屏每栏必须显示一张图；失效选择由 resolvePaneImage 回落 */
+  panePaths: (string | null)[];
   /** 共享视口；null = 待适配（图片就绪后按窗格尺寸 fit） */
   viewport: ViewportState | null;
-} | null = null;
+  /** T09 三种模式的控件状态（T25 第 2 项：每轮一份，切标签互不串扰、切走保留） */
+  compareUi: CompareUiState;
+}
+
+/** T25 第 2 项：会话状态按评测轮键控（此前是「模块级单例 + 换轮重置」，
+ *  切标签会丢模式和视口）。切走保留、切回还原，不持久化（重启归零）。 */
+const viewerStates = new Map<string, ViewerState>();
+
+/** 取该评测轮的状态；首次用到时按默认值创建（左右分屏、分割线居中、视口待 fit）。 */
+function viewerStateFor(roundId: string): ViewerState {
+  let st = viewerStates.get(roundId);
+  if (!st) {
+    st = {
+      mode: 'split',
+      divider: 0.5,
+      candidateChoices: {},
+      cellPaths: [],
+      panePaths: [],
+      viewport: null,
+      compareUi: defaultCompareUi(),
+    };
+    viewerStates.set(roundId, st);
+  }
+  return st;
+}
 
 // ---------- 解码图片缓存（会话级，同一张图切换模式/跑分刷新后直接复用） ----------
 
@@ -141,22 +168,13 @@ function ensureImage(path: string, onReady: () => void): ImageEntry {
 
 /**
  * 把对比查看器挂到 container 上（container 原有内容被替换）。
- * 状态跟随评测轮：换轮重置（回到左右分屏、分割线居中、选中第一张跑分图并 fit）；
- * 同一轮内切换模式/跑分图/跑分刷新都保留视口与分割线。
+ * 界面状态按评测轮键控（T25 第 2 项）：切走保留、切回还原；新轮回到默认（左右分屏、
+ * 分割线居中、选中第一张跑分图并 fit）。同一轮内切换模式/跑分图/跑分刷新都保留视口与分割线。
  */
 export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   // T09 接线：重挂（换轮/切模式/跑分刷新）先停闪烁定时器；若仍处于闪烁模式，挂载尾部会重启
   stopBlink();
-  if (!state || state.roundId !== round.roundId) {
-    state = {
-      roundId: round.roundId,
-      mode: 'split',
-      divider: 0.5,
-      candidateChoices: {},
-      cellPaths: [],
-      viewport: null,
-    };
-  }
+  const state = viewerStateFor(round.roundId);
 
   // ----- 工具条：模式切换 + 跑分图选择 -----
   const bar = document.createElement('div');
@@ -183,11 +201,11 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   const modeButtons = new Map<ViewerMode, HTMLButtonElement>();
   const syncModeButtons = (): void => {
     for (const [id, btn] of modeButtons) {
-      btn.classList.toggle('active', state!.mode === id);
+      btn.classList.toggle('active', state.mode === id);
     }
   };
   const switchMode = (mode: ViewerMode): void => {
-    if (!state || state.mode === mode) return;
+    if (state.mode === mode) return;
     stopBlink(); // 离开闪烁模式先停表；若正切进闪烁模式，挂载尾部会重启
     state.mode = mode;
     state.viewport = null; // 切模式后窗格几何变了，重新 fit（沿用 T07 行为）
@@ -225,7 +243,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     // T19 修复：换图只更新槽位状态即可——draw() 每次绘制按最新选择重新解析
     // 图像条目，不再依赖挂载时闭包捕获的 candEntry（曾导致画布持续画旧图直到重挂）。
     // US16：选择写进当前模式自己的键位，不串扰其他单槽模式
-    if (!state || !isSingleSlotMode(state.mode)) return;
+    if (!isSingleSlotMode(state.mode)) return;
     state.candidateChoices = { ...state.candidateChoices, [state.mode]: candSelect.value };
     scheduleDraw();
   });
@@ -233,26 +251,30 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
 
   const hint = document.createElement('span');
   hint.className = 'viewer-hint';
-  hint.textContent = '滚轮缩放 · 拖拽平移 · 双击复位';
+  // T25 第 4 项：闪烁模式提示补「长按看对比图」（该模式的手动对比交互，不新增按钮）
+  hint.textContent = state.mode === 'blink'
+    ? '滚轮缩放 · 拖拽平移 · 双击复位 · 长按看对比图'
+    : '滚轮缩放 · 拖拽平移 · 双击复位';
 
   bar.append(title, modes);
 
-  // T09 接线：三种新模式的专属控件（叠加不透明度滑杆 / 差异阈值滑杆 / 闪烁播放与手动切换），
-  // 控件构建与状态在 compare-modes.ts；改动后回调整 scheduleDraw（闪烁还要管定时器启停）
+  // T09 接线：三种新模式的专属控件（叠加不透明度滑杆 / 差异阈值滑杆 / 闪烁播放按钮），
+  // 控件构建在 compare-modes.ts、状态由本轮 state.compareUi 持有；改动后回调整 scheduleDraw
+  //（闪烁还要管定时器启停）
   if (state.mode === 'overlay' || state.mode === 'diff' || state.mode === 'blink') {
     const onChange =
       state.mode === 'blink'
         ? (): void => {
-            if (compareUi.blinkPlaying) startBlink(onBlinkFlip);
+            if (state.compareUi.blinkPlaying) startBlink(onBlinkFlip);
             else stopBlink();
             scheduleDraw();
           }
         : (): void => scheduleDraw();
-    bar.append(buildT09Controls(state.mode, onChange));
+    bar.append(buildT09Controls(state.mode, state.compareUi, onChange));
   }
 
-  // T20 重组：分屏已改自动 N 栏（原图最左 + 各跑分图一栏，无需选图），
-  // 单槽「跑分图」下拉只属于滑动/叠加/差异/闪烁四个模式（网格用每格自己的下拉）
+  // T20 重组：分屏每栏有自己的下拉（挂到画布区），单槽「跑分图」下拉只属于
+  // 滑动/叠加/差异/闪烁四个模式（网格用每格自己的下拉）
   if (isSingleSlotMode(state.mode)) {
     bar.append(candLabel);
   }
@@ -265,8 +287,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
 
   let refCanvas: HTMLCanvasElement | null = null;
   let sliderCanvas: HTMLCanvasElement | null = null;
-  // T20 重组：分屏自动 N 栏——第 0 栏原图、其余各一栏跑分图，同一卡片内无缝拼接
-  const splitPanes: Array<{ canvas: HTMLCanvasElement; path: string; role: string }> = [];
+  // T20 重组：分屏自动 N 栏——第 0 栏原图、其余各一栏跑分图；T25 起每栏路径逐帧现解析
+  const splitPanes: Array<{ canvas: HTMLCanvasElement }> = [];
   // T09 接线：叠加/差异/闪烁共用的单画布，以及随内容变化的角标（闪烁时显示当前是哪张）
   let stageCanvas: HTMLCanvasElement | null = null;
   let stageTag: HTMLSpanElement | null = null;
@@ -284,30 +306,44 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     // ---- T20 重组：分屏自动 N 栏 ----
     // 原图固定最左，每张已选跑分图各加一栏（N 张 = N+1 栏）；同一张卡片内无缝拼接，
     // 全部栏读同一份 state.viewport 实现同步缩放平移；栏多时 flex 各自收窄。
+    // T25 第 1 项：每栏左上角由文件名角标改成选图下拉（沿用网格格子样式），
+    // 每栏可独立换图；选项 = 原图 + 全部跑分图，无「（空）」（栏必须显示一张图）。
     area.className = 'viewer-area split';
     const card = document.createElement('div');
     card.className = 'viewer-split-card';
-    const refPane = document.createElement('div');
-    refPane.className = 'viewer-pane';
-    refCanvas = document.createElement('canvas');
-    const refTag = document.createElement('span');
-    refTag.className = 'viewer-tag';
-    refTag.textContent = '原图';
-    refPane.append(refCanvas, refTag);
-    card.append(refPane);
-    splitPanes.push({ canvas: refCanvas, path: round.referencePath, role: '原图' });
-    for (const candidate of round.candidates) {
+    const paneCount = 1 + round.candidates.length;
+    for (let i = 0; i < paneCount; i++) {
       const pane = document.createElement('div');
       pane.className = 'viewer-pane';
       const canvas = document.createElement('canvas');
-      const tag = document.createElement('span');
-      tag.className = 'viewer-tag';
-      // US9：栏标签统一中间截断，悬浮 title 看全路径
-      tag.textContent = truncateFileName(fileName(candidate.path));
-      tag.title = candidate.path;
-      pane.append(canvas, tag);
+      const select = document.createElement('select');
+      select.className = 'viewer-cell-select';
+      select.title = `第 ${i + 1} 栏：选本栏显示的图`;
+      select.ariaLabel = `第 ${i + 1} 栏选图`;
+      const refOption = document.createElement('option');
+      refOption.value = round.referencePath;
+      // T18：下拉选项统一中间截断，悬浮 title 看全路径
+      refOption.textContent = `原图：${truncateFileName(fileName(round.referencePath))}`;
+      refOption.title = round.referencePath;
+      select.append(refOption);
+      for (const candidate of round.candidates) {
+        const option = document.createElement('option');
+        option.value = candidate.path;
+        option.textContent = truncateFileName(fileName(candidate.path));
+        option.title = candidate.path;
+        select.append(option);
+      }
+      select.value = resolvePaneImage(state.panePaths, i, round) ?? round.referencePath;
+      select.addEventListener('change', () => {
+        // 首次手动改选才落状态；数组按当前栏数扩长（缺省位=默认布局）
+        const next = Array.from({ length: paneCount }, (_, k) => state.panePaths[k] ?? null);
+        next[i] = select.value;
+        state.panePaths = next;
+        scheduleDraw(); // 换图立即生效：draw() 每帧按最新选择现解析，不重挂
+      });
+      pane.append(canvas, select);
       card.append(pane);
-      splitPanes.push({ canvas, path: candidate.path, role: '跑分图' });
+      splitPanes.push({ canvas });
     }
     area.append(card);
   } else if (state.mode === 'slider') {
@@ -352,7 +388,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
 
   // T09 接线：闪烁定时器每次到点把显示内容翻面（tag 文案在 draw 里随内容同步）
   const onBlinkFlip = (): void => {
-    compareUi.blinkShowingRef = !compareUi.blinkShowingRef;
+    state.compareUi.blinkShowingRef = !state.compareUi.blinkShowingRef;
     scheduleDraw();
   };
 
@@ -360,12 +396,11 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   function attachPanZoom(canvas: HTMLCanvasElement): void {
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const st = state;
-      if (!st?.viewport) return;
+      if (!state.viewport) return;
       const rect = canvas.getBoundingClientRect();
       const factor = Math.pow(1.0015, -e.deltaY);
-      st.viewport = zoomAt(
-        st.viewport,
+      state.viewport = zoomAt(
+        state.viewport,
         factor,
         e.clientX - rect.left,
         e.clientY - rect.top,
@@ -387,9 +422,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     });
     canvas.addEventListener('pointermove', (e) => {
       if (!panning) return;
-      const st = state;
-      if (st?.viewport) {
-        st.viewport = panBy(st.viewport, e.clientX - lastX, e.clientY - lastY);
+      if (state.viewport) {
+        state.viewport = panBy(state.viewport, e.clientX - lastX, e.clientY - lastY);
         scheduleDraw();
       }
       lastX = e.clientX;
@@ -402,7 +436,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     canvas.addEventListener('pointerup', stopPan);
     canvas.addEventListener('pointercancel', stopPan);
     canvas.addEventListener('dblclick', () => {
-      if (state) state.viewport = null; // 复位 = 重新按窗格 fit
+      state.viewport = null; // 复位 = 重新按窗格 fit
       scheduleDraw();
     });
   }
@@ -412,6 +446,53 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   } else if (refCanvas) {
     attachPanZoom(refCanvas);
   }
+
+  // ----- T25 第 4 项：闪烁模式的「长按看对比图」-----
+  // 画布按下 400ms 无位移 → 一直显示跑分图（覆盖自动播放状态），角标随之显示「跑分图」；
+  // 松开或指针取消 → 回原图。与拖拽平移兼容：位移超过 5px 即取消长按判定（拖动时不闪出
+  // 对比图），长按触发后继续拖动仍平移（平移路径不受影响）。
+  const LONG_PRESS_MS = 400;
+  const LONG_PRESS_CANCEL_PX = 5;
+  /** 长按期间是否强制显示跑分图（瞬时交互态，不进状态容器：松手即失效） */
+  let longPressComparing = false;
+  function attachBlinkLongPress(canvas: HTMLCanvasElement): void {
+    let timer = 0;
+    let originX = 0;
+    let originY = 0;
+    const cancelTimer = (): void => {
+      if (timer) {
+        window.clearTimeout(timer);
+        timer = 0;
+      }
+    };
+    const release = (): void => {
+      cancelTimer();
+      if (!longPressComparing) return;
+      longPressComparing = false;
+      state.compareUi.blinkShowingRef = true; // 松开恢复原图
+      scheduleDraw();
+    };
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      cancelTimer();
+      originX = e.clientX;
+      originY = e.clientY;
+      timer = window.setTimeout(() => {
+        timer = 0;
+        longPressComparing = true;
+        scheduleDraw();
+      }, LONG_PRESS_MS);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!timer) return;
+      // 「位移」按离按下原点的距离判定：静止长按的微小抖动不误取消，真拖动（>5px）正常取消
+      if (Math.hypot(e.clientX - originX, e.clientY - originY) > LONG_PRESS_CANCEL_PX) cancelTimer();
+    });
+    // 指针抬起/取消都要收回对比图（指针可能移出画布，事件仍经 pointer capture 回到本画布）
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+  }
+  if (state.mode === 'blink' && stageCanvas) attachBlinkLongPress(stageCanvas);
 
   // ----- 分割线拖动 -----
   if (dividerEl && sliderCanvas) {
@@ -424,8 +505,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     dividerEl.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       const rect = sliderCanvas!.getBoundingClientRect();
-      state!.divider = Math.min(0.98, Math.max(0.02, (e.clientX - rect.left) / rect.width));
-      dividerEl!.style.left = `${state!.divider * rect.width}px`;
+      state.divider = Math.min(0.98, Math.max(0.02, (e.clientX - rect.left) / rect.width));
+      dividerEl!.style.left = `${state.divider * rect.width}px`;
       scheduleDraw();
     });
     const stopDrag = (): void => { dragging = false; };
@@ -514,17 +595,17 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
 
   /** 视口待适配时，用已就绪的图（优先原图）按窗格尺寸 fit。 */
   function ensureFitted(size: Size, first: ImageEntry | null | undefined): void {
-    const st = state!;
+    const st = state;
     if (st.viewport || !first || first.status !== 'ok') return;
     st.viewport = fitViewport({ width: first.width, height: first.height }, size);
   }
 
   function draw(): void {
     const st = state;
-    if (!st || !area.isConnected) return;
+    if (!area.isConnected) return;
     // T19 修复：每次绘制按最新选择重新解析跑分图条目——换图立即生效。
     // US16：解析走当前模式自己的键位（滑动/叠加/差异/闪烁各用各的，互不串扰）；
-    // 分屏自动 N 栏不走单槽；差异图缓存 key 含解析出的路径，随之自动失效重算。
+    // 分屏每栏走 panePaths；差异图缓存 key 含解析出的路径，随之自动失效重算。
     const candPath = isSingleSlotMode(st.mode)
       ? resolveModeCandidatePath(st.candidateChoices, st.mode, round)
       : null;
@@ -535,19 +616,22 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       const preparedPanes = splitPanes.map((pane) => prepare(pane.canvas));
       const first = preparedPanes[0];
       if (!first) return;
-      // 原图未就绪时用第一栏跑分图兜底 fit（沿用 T07「优先原图、否则候选」行为）
-      const firstCandEntry = splitPanes.length > 1
-        ? ensureImage(splitPanes[1].path, scheduleDraw)
-        : null;
-      ensureFitted(first.size, refEntry.status === 'ok' ? refEntry : firstCandEntry);
+      // T25 第 1 项：每栏路径逐帧现解析（显式选择 / 失效回落 / 越界都在 resolvePaneImage 里），
+      // 换图只改 state.panePaths 后重绘，不重挂；条目解析永远跟随最新槽位（T19 纪律）
+      const paneEntries = splitPanes.map((_, i) => {
+        const path = resolvePaneImage(st.panePaths, i, round);
+        return path ? ensureImage(path, scheduleDraw) : null;
+      });
+      // 原图未就绪时用第一栏的图兜底 fit（沿用 T07「优先原图、否则候选」行为）
+      ensureFitted(first.size, refEntry.status === 'ok' ? refEntry : paneEntries[0]);
       for (let i = 0; i < splitPanes.length; i++) {
         const prepared = preparedPanes[i];
         if (!prepared) continue;
         prepared.ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
         prepared.ctx.fillRect(0, 0, prepared.size.width, prepared.size.height);
-        // 每帧按路径现解析条目（T19 纪律：条目解析永远跟随最新槽位，不闭包绑定）
-        const entry = i === 0 ? refEntry : ensureImage(splitPanes[i].path, scheduleDraw);
-        drawPane(prepared.ctx, prepared.size, entry, splitPanes[i].role, splitPanes[i].path);
+        const path = resolvePaneImage(st.panePaths, i, round);
+        const role = path === round.referencePath ? '原图' : '跑分图';
+        drawPane(prepared.ctx, prepared.size, paneEntries[i], role, path ?? '');
       }
     } else if (sliderCanvas) {
       const prepared = prepare(sliderCanvas);
@@ -591,8 +675,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
           drawPane(ctx, size, refEntry, '原图', round.referencePath);
         } else {
           drawImage(ctx, size, refEntry);
-          if (candOk && compareUi.opacity > 0) {
-            ctx.globalAlpha = compareUi.opacity;
+          if (candOk && st.compareUi.opacity > 0) {
+            ctx.globalAlpha = st.compareUi.opacity;
             drawImage(ctx, size, candEntry);
             ctx.globalAlpha = 1;
           } else if (!candOk) {
@@ -610,7 +694,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
           drawMessage(ctx, size, '原图与跑分图尺寸不一致，无法生成差异图');
           if (stageTag) stageTag.textContent = '差异图';
         } else {
-          const key = `${round.referencePath}|${candPath}|${compareUi.threshold}`;
+          const key = `${round.referencePath}|${candPath}|${st.compareUi.threshold}`;
           if (diffCache && diffCache.key === key) {
             drawSource(ctx, size, diffCache.canvas, refEntry.width, refEntry.height);
           } else {
@@ -620,7 +704,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
               diffComputing = true;
               const refImg = refEntry.img!;
               const candImg = candEntry.img!;
-              const threshold = compareUi.threshold;
+              const threshold = st.compareUi.threshold;
               setTimeout(() => {
                 diffComputing = false;
                 const canvas = renderDiffCanvas(refImg, candImg, threshold);
@@ -632,8 +716,9 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
           if (stageTag) stageTag.textContent = '差异图';
         }
       } else {
-        // 闪烁切换：按固定间隔在原图/跑分图之间翻面（定时器启停见 compare-modes.ts 接线）
-        const showRef = compareUi.blinkShowingRef;
+        // 闪烁切换：按固定间隔在原图/跑分图之间翻面（定时器启停见 compare-modes.ts 接线）；
+        // T25 第 4 项：长按期间强制显示跑分图（覆盖自动播放），松手回原图
+        const showRef = longPressComparing ? false : st.compareUi.blinkShowingRef;
         const entry = showRef ? refEntry : candEntry;
         const role = showRef ? '原图' : '跑分图';
         if (entry && entry.status === 'ok' && entry.img !== undefined) {
@@ -647,7 +732,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   }
 
   // T09 接线：重挂后仍处于闪烁模式且在播放中，恢复自动交替（定时器生命周期见 compare-modes.ts）
-  if (state.mode === 'blink' && compareUi.blinkPlaying) {
+  if (state.mode === 'blink' && state.compareUi.blinkPlaying) {
     startBlink(onBlinkFlip);
   }
 
