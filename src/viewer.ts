@@ -278,7 +278,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       const canvas = document.createElement('canvas');
       const tag = document.createElement('span');
       tag.className = 'viewer-tag';
-      tag.textContent = fileName(candidate.path);
+      // US9：栏标签统一中间截断，悬浮 title 看全路径
+      tag.textContent = truncateFileName(fileName(candidate.path));
       tag.title = candidate.path;
       pane.append(canvas, tag);
       card.append(pane);
