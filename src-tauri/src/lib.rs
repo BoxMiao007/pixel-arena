@@ -125,10 +125,11 @@ fn find_round<'a>(
 
 /// IPC 命令：新建跑分组（T17 起带类型：kind = "image" | "video"，创建后不可更改，
 /// 组内评测轮的类型随组锁定；workspace_load 的旧文件迁移在核心库 from_json 内完成）。
+/// fb3/issue #28：建组自动附带一个同类型评测轮（核心库 create_group_with_round）。
 #[tauri::command]
 fn group_create(name: String, kind: String, state: State<AppState>) -> Result<Workspace, String> {
     let kind = GroupKind::parse(&kind).map_err(|err| err.to_string())?;
-    mutate(&state, |ws| ws.create_group(&name, kind).map(|_| ()))
+    mutate(&state, |ws| ws.create_group_with_round(&name, kind).map(|_| ()))
 }
 
 #[tauri::command]
