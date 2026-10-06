@@ -23,7 +23,7 @@ import {
   type CompareUiState,
 } from './compare-modes';
 import { fileName, truncateFileName } from './util';
-import { mountMultiview, resolvePaneImage } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
+import { mountMultiview, resolvePaneImage, applyGridZoom, gridZoomLabel, gridLayout } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts；T27：网格放大
 import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 export interface ViewerRound {
@@ -91,6 +91,8 @@ interface ViewerState {
   panePaths: (string | null)[];
   /** 共享视口；null = 待适配（图片就绪后按窗格尺寸 fit） */
   viewport: ViewportState | null;
+  /** 网格放大态（T27，issue #32）：显式「放大/还原」切换，按轮键控，新轮默认未放大 */
+  gridZoomed: boolean;
   /** T09 三种模式的控件状态（T25 第 2 项：每轮一份，切标签互不串扰、切走保留） */
   compareUi: CompareUiState;
 }
@@ -110,6 +112,7 @@ function viewerStateFor(roundId: string): ViewerState {
       cellPaths: [],
       panePaths: [],
       viewport: null,
+      gridZoomed: false,
       compareUi: defaultCompareUi(),
     };
     viewerStates.set(roundId, st);
@@ -260,6 +263,23 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     : '滚轮缩放 · 拖拽平移 · 双击复位';
 
   bar.append(title, modes);
+
+  // T27（issue #32）：网格模式的显式「放大/还原」切换。放大状态按轮键控（决策 0019），
+  // 切换只改格子几何（CSS 高度），不重置视口；重挂载后按钮文案按状态恢复。
+  // area 在下方才创建，点击回调运行时必然已完成挂载（闭包引用不越 TDZ）
+  if (state.mode === 'grid') {
+    const zoomBtn = document.createElement('button');
+    zoomBtn.type = 'button';
+    zoomBtn.textContent = gridZoomLabel(state.gridZoomed);
+    zoomBtn.title = '放大/还原网格：放大后网格区占满内容区可用高度，矮窗口多图时每格恢复可用大小';
+    zoomBtn.addEventListener('click', () => {
+      state.gridZoomed = !state.gridZoomed;
+      zoomBtn.textContent = gridZoomLabel(state.gridZoomed);
+      const { rows } = gridLayout(1 + round.candidates.length);
+      applyGridZoom(area, rows, state.gridZoomed);
+    });
+    bar.append(zoomBtn);
+  }
 
   // T09 接线：三种新模式的专属控件（叠加不透明度滑杆 / 差异阈值滑杆 / 闪烁播放按钮），
   // 控件构建在 compare-modes.ts、状态由本轮 state.compareUi 持有；改动后回调整 scheduleDraw

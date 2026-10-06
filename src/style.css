@@ -725,6 +725,15 @@ body {
   height: clamp(240px, calc(100vh - 259px), 560px);
 }
 
+/* T27（issue #32）：网格放大态（显式「放大/还原」按钮，状态按轮键控）。
+   放大 = 高度取「内容区自然满高」与「行数 × 每行最小可用高度」（JS 按行数写入
+   --grid-zoom-h，见 multiview.ts 的 gridZoomHeight）的较大者：矮窗口 + 多图
+   （如 950×525 放 16 张排 6 行）时每格恢复可用高度，超出可视区的行随页面滚动查看；
+   视口状态不重置，仅格子几何变化（重绘沿用「视口不动只重绘」语义） */
+.viewer-area.grid.zoomed {
+  height: max(calc(100vh - 259px), var(--grid-zoom-h, 0px));
+}
+
 .viewer-grid {
   display: grid;
   /* fb3（issue #28 第 5 项）：格距收紧（0.5rem→0.2rem），每格随之变大；
@@ -856,6 +865,11 @@ body {
 
 .video-compare .viewer-area.grid {
   height: clamp(220px, calc(100vh - 400px), 420px);
+}
+
+/* T27：视频网格放大态，语义同图片网格（上方 clamp 规则被本规则覆盖） */
+.video-compare .viewer-area.grid.zoomed {
+  height: max(calc(100vh - 400px), var(--grid-zoom-h, 0px));
 }
 
 /* 时间轴行：±1 帧按钮 + 同步拖动滑杆 + 时间显示 */
