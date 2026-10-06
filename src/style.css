@@ -172,6 +172,12 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
 
+/* display:flex 会盖过 hidden 属性的 UA 样式（display:none），必须显式收回，
+   否则菜单常开（GUI 冒烟实测踩过） */
+.group-menu[hidden] {
+  display: none;
+}
+
 .group-menu-item {
   border: none;
   background: transparent;
