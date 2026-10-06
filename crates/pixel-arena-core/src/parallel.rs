@@ -15,7 +15,12 @@ pub fn logical_cores() -> usize {
 /// 按比例换算并发上限：floor(逻辑核数 × fraction)，夹在 [1, 逻辑核数]。
 /// 「默认只用一半核心留余量」由此保证——偶数核减半，奇数核向下取整。
 pub fn concurrency_limit(fraction: f64) -> usize {
-    let cores = logical_cores();
+    concurrency_from_cores(logical_cores(), fraction)
+}
+
+/// [`concurrency_limit`] 的核数参数化版本（审查修复 C13）：换算规则单一来源，
+/// 测试用给定核数锚定规则，不依赖本机核数。
+fn concurrency_from_cores(cores: usize, fraction: f64) -> usize {
     let scaled = (cores as f64 * fraction).floor() as usize;
     scaled.clamp(1, cores)
 }
@@ -74,18 +79,12 @@ mod tests {
     #[test]
     fn 并发上限_按比例换算并夹取() {
         // 换算规则直接锚定典型核数，防止实现漂移
-        assert_eq!(concurrency_from(8, 0.5), 4, "8 核的一半 = 4");
-        assert_eq!(concurrency_from(5, 0.5), 2, "5 核的一半向下取整 = 2");
-        assert_eq!(concurrency_from(4, 0.25), 1, "4 核的 1/4 = 1");
-        assert_eq!(concurrency_from(4, 0.75), 3, "4 核的 3/4 = 3");
-        assert_eq!(concurrency_from(4, 1.0), 4, "全部 = 核数本身");
-        assert_eq!(concurrency_from(1, 0.25), 1, "单核任何档都至少 1");
-    }
-
-    /// 与 concurrency_limit 相同的换算，但核数由测试给定（不依赖本机核数）。
-    fn concurrency_from(cores: usize, fraction: f64) -> usize {
-        let scaled = (cores as f64 * fraction).floor() as usize;
-        scaled.clamp(1, cores)
+        assert_eq!(concurrency_from_cores(8, 0.5), 4, "8 核的一半 = 4");
+        assert_eq!(concurrency_from_cores(5, 0.5), 2, "5 核的一半向下取整 = 2");
+        assert_eq!(concurrency_from_cores(4, 0.25), 1, "4 核的 1/4 = 1");
+        assert_eq!(concurrency_from_cores(4, 0.75), 3, "4 核的 3/4 = 3");
+        assert_eq!(concurrency_from_cores(4, 1.0), 4, "全部 = 核数本身");
+        assert_eq!(concurrency_from_cores(1, 0.25), 1, "单核任何档都至少 1");
     }
 
     #[test]
