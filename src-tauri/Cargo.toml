@@ -19,6 +19,8 @@ pixel-arena-core = { path = "../crates/pixel-arena-core" }
 tauri-plugin-dialog = "2.8.1"
 # video_probe_meta（T15）的 VideoMeta 直接跨 IPC 返回，需要 serde derive 序列化
 serde = { version = "1", features = ["derive"] }
+# T23 设置文件（settings.json）的读写
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
