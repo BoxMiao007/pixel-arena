@@ -1,7 +1,9 @@
 // T09 三种对比模式（叠加 / 差异图 / 闪烁切换）的模块：
 // - computeDiffData：逐像素差异的纯逻辑（PixelBuffer 输入输出，无 DOM），由 compare-modes.test.ts 守护；
 // - renderDiffCanvas：把两整张图生成一张差异画布（缓存键见 viewer.ts 接线处）；
-// - 控件与闪烁定时器：叠加不透明度、差异阈值、闪烁播放/手动切换，状态存模块级 compareUi。
+// - 控件与闪烁定时器：叠加不透明度、差异阈值、闪烁播放，控件状态由查看器按评测轮持有
+//   （T25 起每轮一份，见 CompareUiState），本模块只按传入的状态构建控件、不自己存状态；
+//   闪烁定时器仍是模块级单定时器（同一时刻只挂一个）。
 // viewer.ts 只做接线：模式按钮注册 + draw() 分支调用本模块（并行票合并时按「T09 接线」注释找点）。
 
 // ---------- 纯逻辑：逐像素差异热图 ----------
@@ -87,21 +89,31 @@ export function renderDiffCanvas(
   return canvas;
 }
 
-// ---------- 界面状态与控件（模块级：不透明度/阈值跨评测轮保留，闪烁跟随模式进出） ----------
+// ---------- 界面状态与控件（状态由查看器按评测轮持有并传入：切标签保留、互不串扰） ----------
 
 export const BLINK_INTERVAL_MS = 500;
 
-/** T09 界面状态（模块级单例；viewer.ts 读写 showingRef 驱动闪烁绘制） */
-export const compareUi = {
+/** T09 三种模式的控件状态（T25 第 2 项：从模块级单例改为每评测轮一份，由查看器状态持有） */
+export interface CompareUiState {
   /** 叠加模式：跑分图叠加不透明度 0~1（默认 50%） */
-  opacity: 0.5,
+  opacity: number;
   /** 差异模式：亮度差阈值（0~255 里的实用区间取 0~100，默认 24） */
-  threshold: 24,
+  threshold: number;
   /** 闪烁模式：是否自动交替（暂停后仍可手动切换） */
-  blinkPlaying: true,
+  blinkPlaying: boolean;
   /** 闪烁模式：当前显示的是不是原图 */
-  blinkShowingRef: false,
-};
+  blinkShowingRef: boolean;
+}
+
+/** 新评测轮的控件默认值（每轮首次进入时取一份） */
+export function defaultCompareUi(): CompareUiState {
+  return {
+    opacity: 0.5,
+    threshold: 24,
+    blinkPlaying: true,
+    blinkShowingRef: false,
+  };
+}
 
 // 闪烁定时器（模块级：同一时刻最多一个；mountViewer 重挂/离开模式时必须 stopBlink）
 let blinkTimer: ReturnType<typeof setInterval> | null = null;
@@ -120,11 +132,13 @@ export function stopBlink(): void {
 }
 
 /**
- * 构建 T09 模式的工具条控件（叠加滑杆 / 阈值滑杆 / 闪烁按钮）。
- * onChange 在任一控件改动后回调（viewer.ts 里用于 scheduleDraw）。
+ * 构建 T09 模式的工具条控件（叠加滑杆 / 阈值滑杆 / 闪烁按钮）。ui 是该评测轮的控件状态
+ * （viewer.ts 按轮持有），控件读写它、不自己存；onChange 在任一控件改动后回调
+ * （viewer.ts 里用于 scheduleDraw）。
  */
 export function buildT09Controls(
   mode: 'overlay' | 'diff' | 'blink',
+  ui: CompareUiState,
   onChange: () => void,
 ): HTMLElement {
   const box = document.createElement('span');
@@ -138,13 +152,13 @@ export function buildT09Controls(
     slider.min = '0';
     slider.max = '100';
     slider.step = '1';
-    slider.value = String(Math.round(compareUi.opacity * 100));
+    slider.value = String(Math.round(ui.opacity * 100));
     slider.title = '跑分图叠在原图上的不透明度';
     const value = document.createElement('span');
     value.className = 'value';
     value.textContent = `${slider.value}%`;
     slider.addEventListener('input', () => {
-      compareUi.opacity = Number(slider.value) / 100;
+      ui.opacity = Number(slider.value) / 100;
       value.textContent = `${slider.value}%`;
       onChange();
     });
@@ -161,13 +175,13 @@ export function buildT09Controls(
     slider.min = '0';
     slider.max = '100';
     slider.step = '1';
-    slider.value = String(compareUi.threshold);
+    slider.value = String(ui.threshold);
     slider.title = '亮度差超过该值（0~255）的像素标为红/黄热区；调小更敏感';
     const value = document.createElement('span');
     value.className = 'value';
     value.textContent = slider.value;
     slider.addEventListener('input', () => {
-      compareUi.threshold = Number(slider.value);
+      ui.threshold = Number(slider.value);
       value.textContent = slider.value;
       onChange();
     });
@@ -179,11 +193,11 @@ export function buildT09Controls(
   // blink：自动交替（500ms）+ 手动切换。播放中点「暂停」停表；暂停时可手动翻面
   const playBtn = document.createElement('button');
   playBtn.type = 'button';
-  playBtn.textContent = compareUi.blinkPlaying ? '暂停' : '播放';
+  playBtn.textContent = ui.blinkPlaying ? '暂停' : '播放';
   playBtn.title = '自动交替显示原图与跑分图（500ms）';
   playBtn.addEventListener('click', () => {
-    compareUi.blinkPlaying = !compareUi.blinkPlaying;
-    playBtn.textContent = compareUi.blinkPlaying ? '暂停' : '播放';
+    ui.blinkPlaying = !ui.blinkPlaying;
+    playBtn.textContent = ui.blinkPlaying ? '暂停' : '播放';
     onChange();
   });
 
@@ -192,7 +206,7 @@ export function buildT09Controls(
   flipBtn.textContent = '手动切换';
   flipBtn.title = '立刻翻到另一张';
   flipBtn.addEventListener('click', () => {
-    compareUi.blinkShowingRef = !compareUi.blinkShowingRef;
+    ui.blinkShowingRef = !ui.blinkShowingRef;
     onChange();
   });
 

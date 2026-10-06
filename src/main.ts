@@ -116,29 +116,70 @@ function notePickedPath(path: string): void {
   });
 }
 
-// ---------- 跑分与排序的界面状态（不持久化，重启归零） ----------
+// ---------- 跑分与界面状态（按评测轮键控：切走保留、切回还原；不持久化，重启归零） ----------
 
 // 跑分进行中：三个操作按钮置灰，整轮完成后整份工作区刷新
+// （T25：scoring/scoringPaths 仍是全局忙标志——同一时刻只有一条跑分会话，不按轮键控）
 let scoring = false;
 // 本轮正在跑分的跑分图/视频集合（T24 并行：多张同时在算，命中即在行内显示「跑分中…」）
 let scoringPaths: ReadonlySet<string> = new Set();
-// 结果表排序：null 按选入顺序；dir=1 升序 / -1 降序
-let sortState: { key: string; dir: 1 | -1 } | null = null;
-// 排序状态跟随评测轮：切到另一轮就归零
-let sortRoundId: string | null = null;
 
-// T11 接线点：一站式编码阶梯的勾选状态（界面会话态，重启归零，默认全选）
-let onestopSelection: OnestopSelection = defaultSelection();
+/** 结果表排序：null 按选入顺序；dir=1 升序 / -1 降序 */
+type SortState = { key: string; dir: 1 | -1 };
 
-// T22：一站式模式二选一（质量优先为默认）；拉杆基准 0–100；大小优先目标以字节为
-// 唯一真值（KB/MB 只是显示口径，传后端一律是字节）。均为界面会话态，重启归零。
-let onestopMode: OnestopMode = 'quality';
-let onestopBaseline = 75;
-let sizeTargetBytes = 200 * 1024;
-let sizeUnit: 'KB' | 'MB' = 'KB';
+/** T25 第 2 项：排序按评测轮保存（此前换轮归零）；键是评测轮 id */
+const sortStates = new Map<string, SortState | null>();
+/** 当前渲染轮的排序状态（renderContent 时从 sortStates 取出，点表头后写回） */
+let sortState: SortState | null = null;
+
+/** 一站式界面状态（模式/基准/目标大小/单位/格式与无损组勾选），T25 起每评测轮一份 */
+interface OnestopUiState {
+  mode: OnestopMode;
+  /** 质量优先的拉杆基准 0–100 */
+  baseline: number;
+  /** 大小优先的目标字节数（KB/MB 只是显示口径，真值一律是字节） */
+  targetBytes: number;
+  unit: 'KB' | 'MB';
+  selection: OnestopSelection;
+}
+
+/** 一站式默认基准（拉杆初始值；启动时预取该基准的质量阶梯） */
+const DEFAULT_ONESTOP_BASELINE = 75;
+/** 大小优先默认目标 200KB */
+const DEFAULT_SIZE_TARGET_BYTES = 200 * 1024;
+
+/** 新评测轮的一站式默认值：质量优先、基准 75、200KB、KB、默认全选 */
+function defaultOnestopUi(): OnestopUiState {
+  return {
+    mode: 'quality',
+    baseline: DEFAULT_ONESTOP_BASELINE,
+    targetBytes: DEFAULT_SIZE_TARGET_BYTES,
+    unit: 'KB',
+    selection: defaultSelection(),
+  };
+}
+
+/** T25 第 2 项：一站式控件状态按评测轮保存（此前模块级共享，切标签会串扰） */
+const onestopStates = new Map<string, OnestopUiState>();
+
+/** 取该评测轮的一站式状态；首次用到时按默认值创建 */
+function onestopStateFor(roundId: string): OnestopUiState {
+  let st = onestopStates.get(roundId);
+  if (!st) {
+    st = defaultOnestopUi();
+    onestopStates.set(roundId, st);
+  }
+  return st;
+}
+
 // 质量阶梯缓存（键 = 拉杆基准）：取点在核心库，启动预取 75，拉杆 change 时按需补拉，
-// 供阶梯预览与「一站式跑分」按钮计数使用
+// 供阶梯预览与「一站式跑分」按钮计数使用。与具体评测轮无关，全局共享。
 const qualityLadderCache = new Map<number, LadderItem[]>();
+
+/** T25 第 2 项：内容区滚动位置按评测轮记录（离开时记、渲染后恢复；首见轮为 0） */
+const contentScrollByRound = new Map<string, number>();
+/** 当前内容区渲染的评测轮 id（renderContent 开头据此记录离开前的滚动位置） */
+let contentRoundId: string | null = null;
 
 /** 拉取并缓存指定基准的质量阶梯（失败上抛交调用方提示）。 */
 async function refreshQualityLadder(baseline: number): Promise<LadderItem[]> {
@@ -371,6 +412,8 @@ async function scoreAllCandidates(): Promise<void> {
 async function runOnestop(): Promise<void> {
   const session = activeRound();
   if (!session || scoring || !session.round.referencePath) return;
+  // T25：模式/基准/目标/勾选取本轮自己的状态并快照（跑分期间即使界面重渲染也不中途变卦）
+  const ui = onestopStateFor(session.round.id);
 
   scoring = true;
   scoringPaths = new Set();
@@ -379,20 +422,20 @@ async function runOnestop(): Promise<void> {
   try {
     let ladder: LadderItem[];
     const notesByFormat = new Map<string, string>();
-    if (onestopMode === 'quality') {
+    if (ui.mode === 'quality') {
       // 质量优先：核心库 quality_ladder 取点（缓存优先），按格式勾选过滤
       const full =
-        qualityLadderCache.get(onestopBaseline) ?? (await refreshQualityLadder(onestopBaseline));
-      ladder = filterLadder(full, onestopSelection);
+        qualityLadderCache.get(ui.baseline) ?? (await refreshQualityLadder(ui.baseline));
+      ladder = filterLadder(full, ui.selection);
     } else {
-      if (!Number.isFinite(sizeTargetBytes) || sizeTargetBytes < 1) {
+      if (!Number.isFinite(ui.targetBytes) || ui.targetBytes < 1) {
         setStatus('目标大小无效：请输入大于 0 的数值', true);
         return;
       }
       // 大小优先：每格式逐次逼近搜索（每次调用天然形成进度）
       ladder = [];
       const selected = LOSSY_FORMATS.filter((f) =>
-        onestopSelection.lossyFormats.includes(f.format),
+        ui.selection.lossyFormats.includes(f.format),
       );
       for (const { format, label } of selected) {
         setStatus(`正在搜索 ${label} 逼近目标大小…`);
@@ -402,13 +445,13 @@ async function runOnestop(): Promise<void> {
           roundId: session.round.id,
           referencePath: session.round.referencePath,
           format,
-          targetBytes: sizeTargetBytes,
+          targetBytes: ui.targetBytes,
         });
         ladder.push(...sizeOutcomeLadder(outcome));
         if (outcome.note) notesByFormat.set(format, outcome.note);
       }
       // 无损对照组大小固定、不参与搜索，按勾选原样补入（US24）
-      ladder.push(...losslessLadder(onestopSelection));
+      ladder.push(...losslessLadder(ui.selection));
     }
     if (ladder.length === 0) {
       setStatus('请先选择至少一个编码格式或无损组', true);
@@ -461,9 +504,9 @@ async function runOnestop(): Promise<void> {
 
 /**
  * T22 接线点：一站式操作区（模式二选一 + 参数行 + 格式胶囊 + 无损组胶囊）。
- * 模式/基准/目标/勾选都是模块级会话状态，重渲染后按它恢复。
+ * ui 是该评测轮的一站式状态（T25：按轮持有，切标签不串扰、切走保留），控件读写它、不自己存状态。
  */
-function buildOnestopControls(): HTMLDivElement {
+function buildOnestopControls(ui: OnestopUiState): HTMLDivElement {
   const box = document.createElement('div');
   box.className = 'onestop-controls';
 
@@ -482,11 +525,11 @@ function buildOnestopControls(): HTMLDivElement {
     btn.textContent = label;
     btn.title = title;
     btn.disabled = scoring;
-    btn.classList.toggle('active', onestopMode === mode);
-    btn.ariaPressed = onestopMode === mode ? 'true' : 'false';
+    btn.classList.toggle('active', ui.mode === mode);
+    btn.ariaPressed = ui.mode === mode ? 'true' : 'false';
     btn.addEventListener('click', () => {
-      if (onestopMode !== mode) {
-        onestopMode = mode;
+      if (ui.mode !== mode) {
+        ui.mode = mode;
         render();
       }
     });
@@ -494,7 +537,7 @@ function buildOnestopControls(): HTMLDivElement {
   }
   box.append(modeSwitch);
 
-  if (onestopMode === 'quality') {
+  if (ui.mode === 'quality') {
     const row = document.createElement('div');
     row.className = 'onestop-param-row';
 
@@ -508,21 +551,21 @@ function buildOnestopControls(): HTMLDivElement {
     slider.min = '0';
     slider.max = '100';
     slider.step = '1';
-    slider.value = String(onestopBaseline);
+    slider.value = String(ui.baseline);
     slider.disabled = scoring;
     slider.title = '统一基准质量（0–100），自动映射到各格式自身质量参数';
 
     const value = document.createElement('span');
     value.className = 'onestop-param-value';
-    value.textContent = String(onestopBaseline);
+    value.textContent = String(ui.baseline);
 
     // 拖动中只更新数值显示；松手（change）才取点重渲染，避免拖动期间频繁 IPC
     slider.addEventListener('input', () => {
       value.textContent = slider.value;
     });
     slider.addEventListener('change', () => {
-      onestopBaseline = Number(slider.value);
-      void refreshQualityLadder(onestopBaseline)
+      ui.baseline = Number(slider.value);
+      void refreshQualityLadder(ui.baseline)
         .then(() => render())
         .catch((err) => setStatus(`取点失败: ${String(err)}`, true));
     });
@@ -530,11 +573,11 @@ function buildOnestopControls(): HTMLDivElement {
     row.append(label, slider, value);
     box.append(row);
 
-    const cached = qualityLadderCache.get(onestopBaseline);
+    const cached = qualityLadderCache.get(ui.baseline);
     const preview = document.createElement('span');
     preview.className = 'muted onestop-preview';
     preview.textContent = cached
-      ? `按基准 ${onestopBaseline} 自动取点：共 ${filterLadder(cached, onestopSelection).length} 项（每格式 ≥3 点，含无损对照组）`
+      ? `按基准 ${ui.baseline} 自动取点：共 ${filterLadder(cached, ui.selection).length} 项（每格式 ≥3 点，含无损对照组）`
       : '正在计算取点…';
     box.append(preview);
   } else {
@@ -553,15 +596,15 @@ function buildOnestopControls(): HTMLDivElement {
     input.disabled = scoring;
     input.title = '期望的跑分图文件大小；每格式自动逼近，不可达时取最接近点并标注';
     // 显示口径：字节为唯一真值，单位切换只换显示数值，传后端一律是字节
-    const unitBytes = sizeUnit === 'KB' ? 1024 : 1024 * 1024;
-    const displayValue = sizeTargetBytes / unitBytes;
+    const unitBytes = ui.unit === 'KB' ? 1024 : 1024 * 1024;
+    const displayValue = ui.targetBytes / unitBytes;
     input.value = Number.isInteger(displayValue) ? String(displayValue) : displayValue.toFixed(2);
     input.addEventListener('change', () => {
       const bytes = Math.round(Number(input.value) * unitBytes);
       if (!Number.isFinite(bytes) || bytes < 1) {
         setStatus('目标大小无效：请输入大于 0 的数值', true);
       } else {
-        sizeTargetBytes = bytes;
+        ui.targetBytes = bytes;
       }
       render(); // 无效输入回显原值；有效输入同步预览文案
     });
@@ -576,9 +619,9 @@ function buildOnestopControls(): HTMLDivElement {
       opt.textContent = unitName;
       unit.append(opt);
     }
-    unit.value = sizeUnit;
+    unit.value = ui.unit;
     unit.addEventListener('change', () => {
-      sizeUnit = unit.value as 'KB' | 'MB';
+      ui.unit = unit.value as 'KB' | 'MB';
       render();
     });
 
@@ -596,13 +639,13 @@ function buildOnestopControls(): HTMLDivElement {
   // 无损组不再有 × 移除，点胶囊本体即可切换选中/取消（选中态 pill-on 高亮）。
   const formatList = buildPillList(
     LOSSY_FORMATS.map((f) => {
-      const selected = onestopSelection.lossyFormats.includes(f.format);
+      const selected = ui.selection.lossyFormats.includes(f.format);
       return {
         label: f.label,
         title: selected ? `点击移除 ${f.label}` : `点击选择 ${f.label}`,
         onClick: () => {
-          onestopSelection.lossyFormats = toggleFormat(
-            onestopSelection.lossyFormats,
+          ui.selection.lossyFormats = toggleFormat(
+            ui.selection.lossyFormats,
             f.format,
           );
           render();
@@ -620,14 +663,14 @@ function buildOnestopControls(): HTMLDivElement {
   losslessLead.textContent = '无损组：';
   formatList.append(losslessLead);
   for (const f of LOSSLESS_FORMATS) {
-    const selected = onestopSelection.losslessFormats.includes(f.format);
+    const selected = ui.selection.losslessFormats.includes(f.format);
     formatList.append(
       buildPill({
         label: f.label,
         title: selected ? `点击取消 ${f.label}（无损对照组）` : `点击选择 ${f.label}（无损对照组）`,
         onClick: () => {
-          onestopSelection.losslessFormats = toggleFormat(
-            onestopSelection.losslessFormats,
+          ui.selection.losslessFormats = toggleFormat(
+            ui.selection.losslessFormats,
             f.format,
           );
           render();
@@ -813,11 +856,11 @@ async function boot(): Promise<void> {
     setStatus(`加载设置失败: ${String(err)}`, true);
   }
   // T21 接线点：一站式目录（格式清单）改由核心库驱动，必须先于首次渲染拉取；
-  // T22：随后预取默认基准 75 的质量阶梯（拉杆预览与按钮计数用），并重设默认全选
+  // T22：随后预取默认基准 75 的质量阶梯（拉杆预览与按钮计数用）。
+  // T25：勾选状态改为「每评测轮一份」，首轮首次渲染时按默认全选创建，无需在启动时预置。
   try {
     await initOnestopCatalog();
-    onestopSelection = defaultSelection();
-    await refreshQualityLadder(onestopBaseline);
+    await refreshQualityLadder(DEFAULT_ONESTOP_BASELINE);
   } catch (err) {
     setStatus(`加载编码阶梯目录失败: ${String(err)}`, true);
   }
@@ -923,6 +966,9 @@ function renderRounds(): void {
 }
 
 function renderContent(): void {
+  // T25 第 2 项：先把离开前的内容区滚动位置记到上一轮名下，渲染完再恢复本轮的
+  if (contentRoundId) contentScrollByRound.set(contentRoundId, $content.scrollTop);
+  contentRoundId = null;
   $content.replaceChildren();
   $content.classList.remove('filled');
   if (!ws || ws.groups.length === 0) {
@@ -935,11 +981,9 @@ function renderContent(): void {
     return;
   }
   const { round } = session;
-  // 排序状态跟随评测轮：切到另一轮就归零
-  if (sortRoundId !== round.id) {
-    sortRoundId = round.id;
-    sortState = null;
-  }
+  contentRoundId = round.id;
+  // T25 第 2 项：排序与一站式控件状态都按评测轮取用（此前换轮归零 / 跨轮串扰）
+  sortState = sortStates.get(round.id) ?? null;
 
   $content.classList.add('filled');
 
@@ -948,8 +992,11 @@ function renderContent(): void {
   if (session.group.kind === 'video') {
     renderVideoGroupContent(session);
   } else {
-    renderImageGroupContent(session);
+    renderImageGroupContent(session, onestopStateFor(round.id));
   }
+
+  // T25：恢复本轮的滚动位置（新轮为 0）
+  $content.scrollTop = contentScrollByRound.get(round.id) ?? 0;
 }
 
 /** T17：导出按钮（图片/视频组共用；exportable = 本轮有任何可导出的跑分内容）。 */
@@ -971,8 +1018,8 @@ function buildExportButtons(exportable: boolean): HTMLButtonElement[] {
 }
 
 /** 图片跑分组的内容区（T17）：外部导入 + 一站式 + 编码阶梯 + 对比查看器；
- * 不挂载视频评测区块（视频导入只在视频跑分组出现）。 */
-function renderImageGroupContent(session: { group: Group; round: Round }): void {
+ * 不挂载视频评测区块（视频导入只在视频跑分组出现）。ui = 本评测轮的一站式界面状态（T25）。 */
+function renderImageGroupContent(session: { group: Group; round: Round }, ui: OnestopUiState): void {
   const { round } = session;
   const toolbar = document.createElement('div');
   toolbar.className = 'toolbar';
@@ -1021,10 +1068,10 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
 
   // T22 接线点：一站式跑分按钮。质量优先可按缓存阶梯给出项数；大小优先的项数要
   // 搜索后才知道（每格式命中点 + 邻近补点），只提示行为不报数
-  const cachedLadder = qualityLadderCache.get(onestopBaseline);
+  const cachedLadder = qualityLadderCache.get(ui.baseline);
   const ladderCount =
-    onestopMode === 'quality' && cachedLadder
-      ? filterLadder(cachedLadder, onestopSelection).length
+    ui.mode === 'quality' && cachedLadder
+      ? filterLadder(cachedLadder, ui.selection).length
       : null;
   const onestopBtn = document.createElement('button');
   onestopBtn.className = 'add-btn onestop-btn';
@@ -1035,8 +1082,8 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
       ? '需要先选择原图'
       : ladderCount === 0
         ? '请先在下方选择至少一个格式或无损组'
-        : onestopMode === 'quality'
-          ? `按基准 ${onestopBaseline} 自动取点生成 ${ladderCount ?? '—'} 份跑分图并逐张跑分（${downloadHint}）`
+        : ui.mode === 'quality'
+          ? `按基准 ${ui.baseline} 自动取点生成 ${ladderCount ?? '—'} 份跑分图并逐张跑分（${downloadHint}）`
           : `按目标大小为每个格式自动搜索最接近点并补邻近点，逐张跑分（${downloadHint}）`;
   onestopBtn.disabled = scoring || !round.referencePath || ladderCount === 0;
   onestopBtn.addEventListener('click', () => void runOnestop());
@@ -1071,9 +1118,9 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
     );
   }
   // T22 接线点：一站式操作区（模式二选一 + 拉杆/大小输入 + 格式与无损组胶囊）；
-  // 有原图才可触发，故仅在已选原图时展示
+  // 有原图才可触发，故仅在已选原图时展示；ui 是本轮自己的状态（T25）
   if (round.referencePath) {
-    $content.append(buildOnestopControls());
+    $content.append(buildOnestopControls(ui));
   }
 
   if (round.candidates.length === 0) {
@@ -1097,7 +1144,7 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
     }
 
     // 备注列随行内 note 持久化（US22），悬浮 title 看完整文本
-    $content.append(buildResultTable(round.candidates));
+    $content.append(buildResultTable(round.id, round.candidates));
 
     // T13 接线点：BD-rate 汇总区（与导出报告同一数据源；异步填充，不触发整页重渲染）
     const bdrateBox = document.createElement('div');
@@ -1122,7 +1169,7 @@ function renderVideoGroupContent(session: { group: Group; round: Round }): void 
 
   // 遗留图片评测内容（旧工作区混用时期产生）：只读结果表，不提供图片操作入口
   if (round.candidates.length > 0) {
-    $content.append(buildResultTable(round.candidates));
+    $content.append(buildResultTable(round.id, round.candidates));
     const bdrateBox = document.createElement('div');
     bdrateBox.className = 'bdrate-summary';
     bdrateBox.textContent = 'BD-rate 汇总计算中…';
@@ -1188,7 +1235,7 @@ function firstClickDir(key: string): 1 | -1 {
   return key === 'fileSize' || key === 'name' || key === 'encodingParams' ? 1 : -1;
 }
 
-function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
+function buildResultTable(roundId: string, candidates: CandidateImage[]): HTMLTableElement {
   // US22：大小优先不可达标注随评测轮持久化，直接读行内 note——任一行有备注
   // 才追加尾随「备注」列（对齐 CLI 大小优先模式的 note 列）；其余模式列序不变
   const noteFor = (candidate: CandidateImage): string | null => candidate.note ?? null;
@@ -1248,6 +1295,7 @@ function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
       } else {
         sortState = { key: column.key, dir: firstClickDir(column.key) };
       }
+      sortStates.set(roundId, sortState); // T25：排序按轮保存，切走切回仍在
       render();
     });
     th.append(btn);

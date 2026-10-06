@@ -96,20 +96,20 @@ export function formatElapsed(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
-// ---------- 排序状态（模块级，跟随评测轮；重启归零，与 main.ts 的图片表一致） ----------
+// ---------- 排序状态（T25 第 2 项：按评测轮保存，切走保留、切回还原；重启归零） ----------
 
-let sortState: { key: string; dir: 1 | -1 } | null = null;
-let sortRoundId: string | null = null;
+type VideoSortState = { key: string; dir: 1 | -1 };
+
+const sortStatesByRound = new Map<string, VideoSortState | null>();
+/** 当前渲染轮的排序状态（mountVideoBlock 时取出，点表头后写回） */
+let sortState: VideoSortState | null = null;
 
 // ---------- 挂载 ----------
 
 export function mountVideoBlock(host: HTMLElement, ctx: VideoBlockCtx): void {
   const { round } = ctx;
-  // 排序状态跟随评测轮：切到另一轮就归零
-  if (sortRoundId !== round.id) {
-    sortRoundId = round.id;
-    sortState = null;
-  }
+  // T25 第 2 项：排序按评测轮取用（此前换轮归零）
+  sortState = sortStatesByRound.get(round.id) ?? null;
 
   const box = document.createElement('div');
   box.className = 'video-block';
@@ -359,6 +359,7 @@ function buildVideoTable(ctx: VideoBlockCtx): HTMLTableElement {
       } else {
         sortState = { key: column.key, dir: firstClickDir(column.key) };
       }
+      sortStatesByRound.set(round.id, sortState); // T25：按轮保存，切走切回仍在
       ctx.rerender();
     });
     th.append(btn);
