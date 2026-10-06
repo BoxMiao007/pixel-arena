@@ -120,10 +120,13 @@ pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String
 
     lines.push(String::new());
     lines.push("# 【图片跑分结果】".to_string());
-    lines.push(
-        "candidate,encoding_params,candidate_bytes,size_ratio,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,status"
-            .to_string(),
-    );
+    // US22（审查修复 B6）：任一行有备注（大小优先不可达标注）才追加尾随 note 列，
+    // 无备注的轮保持既有列序不变（与 GUI 结果表同口径）
+    let has_notes = round.candidates.iter().any(|c| c.note.is_some());
+    lines.push(format!(
+        "candidate,encoding_params,candidate_bytes,size_ratio,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,status{}",
+        if has_notes { ",note" } else { "" },
+    ));
     for candidate in &round.candidates {
         let metrics = candidate.metrics.as_ref();
         let cell = |key: &str| {
@@ -136,7 +139,7 @@ pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String
             .size_ratio
             .map(|r| format!("{r:.6}"))
             .unwrap_or_default();
-        lines.push(format!(
+        let base = format!(
             "{},{},{},{},{},{},{},{},{},{}",
             csv_field(&candidate.path),
             candidate.encoding_params.as_deref().map(csv_field).unwrap_or_default(),
@@ -148,7 +151,16 @@ pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String
             cell("Butteraugli"),
             cell("SSIMULACRA2"),
             csv_field(&status_text(&candidate.error, metrics.is_some())),
-        ));
+        );
+        if has_notes {
+            lines.push(format!(
+                "{},{}",
+                base,
+                candidate.note.as_deref().map(csv_field).unwrap_or_default(),
+            ));
+        } else {
+            lines.push(base);
+        }
     }
 
     if round.video_reference_path.is_some() || !round.video_candidates.is_empty() {
@@ -252,12 +264,17 @@ pub fn export_html(group_name: &str, round: &Round, generated_at: &str) -> Strin
         None => "<p class=\"meta\">原图：未设置</p>\n".to_string(),
     });
 
-    // 图片跑分结果表
+    // 图片跑分结果表（任一行有备注才追加「备注」列，与 GUI 结果表/CSV 同口径）
+    let has_notes = round.candidates.iter().any(|c| c.note.is_some());
     html.push_str("<h2>图片跑分结果</h2>\n<table>\n<thead><tr><th>跑分图</th><th>路径</th><th>文件大小</th><th>体积比</th><th>编码参数</th>");
     for key in IMAGE_METRIC_KEYS {
         html.push_str(&format!("<th>{key}</th>"));
     }
-    html.push_str("<th>状态</th></tr></thead>\n<tbody>\n");
+    html.push_str("<th>状态</th>");
+    if has_notes {
+        html.push_str("<th>备注</th>");
+    }
+    html.push_str("</tr></thead>\n<tbody>\n");
     for candidate in &round.candidates {
         let metrics = candidate.metrics.as_ref();
         html.push_str(&format!(
@@ -284,7 +301,14 @@ pub fn export_html(group_name: &str, round: &Round, generated_at: &str) -> Strin
         } else {
             ""
         };
-        html.push_str(&format!("<td{class}>{}</td></tr>\n", esc(&status)));
+        html.push_str(&format!("<td{class}>{}</td>", esc(&status)));
+        if has_notes {
+            html.push_str(&format!(
+                "<td>{}</td>",
+                esc(candidate.note.as_deref().unwrap_or(""))
+            ));
+        }
+        html.push_str("</tr>\n");
     }
     html.push_str("</tbody>\n</table>\n");
 
@@ -375,6 +399,7 @@ mod tests {
             size_ratio: Some(0.136_424),
             metrics: metrics.map(|m| m.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
             encoding_params: None,
+            note: None,
             error: None,
         }
     }
@@ -507,6 +532,40 @@ mod tests {
         assert!(html.contains("<th>编码参数</th>"), "HTML 表头应有编码参数列");
         assert!(html.contains("JPEG q75"));
         assert!(html.contains("<td>—</td>"), "外部导入行编码参数显示 —");
+    }
+
+    /// US22（审查修复 B6）：备注（大小优先不可达标注）随导出落进 CSV 与 HTML；
+    /// 无备注的轮保持既有列序不变（任一行有备注才追加尾随 note 列，与 GUI 结果表
+    /// 同口径；CLI 大小优先自有的 note 列不受影响）。
+    #[test]
+    fn csv_and_html_carry_note_column_only_when_any_note_exists() {
+        let mut noted = image("/r/产物-q1.jpg", 17_341, None);
+        noted.note = Some("目标 200KB 不可达：目标低于最小质量点（q1）的产物大小，取最小质量点".to_string());
+        let round_with = round(vec![noted, image("/r/产物-q75.jpg", 9_999, None)]);
+
+        let csv = export_csv("组", &round_with, "t");
+        assert!(
+            csv.contains(
+                "candidate,encoding_params,candidate_bytes,size_ratio,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,status,note"
+            ),
+            "有备注时 CSV 表头应追加 note 列"
+        );
+        let row = csv.lines().find(|l| l.contains("产物-q1.jpg")).unwrap();
+        assert!(row.contains("目标 200KB 不可达"), "备注应进行内：{row}");
+        let plain_row = csv.lines().find(|l| l.contains("产物-q75.jpg")).unwrap();
+        assert!(plain_row.ends_with(",待跑分,"), "无备注行该列留空: {plain_row}");
+
+        let html = export_html("组", &round_with, "t");
+        assert!(html.contains("<th>备注</th>"), "HTML 应有备注列");
+        assert!(html.contains("目标 200KB 不可达"), "HTML 备注应进行内");
+
+        // 无备注的轮：列序与既有 schema 完全一致（不加 note 列）
+        let plain = export_csv("组", &round(vec![image("/r/a.jpg", 100, None)]), "t");
+        let header = plain
+            .lines()
+            .find(|l| l.starts_with("candidate,"))
+            .unwrap();
+        assert!(!header.ends_with(",note"), "无备注不得加列: {header}");
     }
 
     #[test]

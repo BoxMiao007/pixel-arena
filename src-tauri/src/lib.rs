@@ -278,6 +278,21 @@ fn round_remove_candidate(
     })
 }
 
+/// IPC 命令（审查修复 B6/US22）：给一张跑分图设置/清除备注（大小优先不可达标注）。
+/// 备注随评测轮持久化，重启后结果表与导出仍能显示。同步命令，走既有 mutate。
+#[tauri::command]
+fn round_set_candidate_note(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    note: Option<String>,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.set_round_candidate_note(&group_id, &round_id, &candidate_path, note.as_deref())
+    })
+}
+
 /// 一站式勾选目录（T21 单源化）：有损/无损格式清单与默认质量档全部由核心库
 /// 质量优先取点驱动（基准 75 = 现行默认 60/75/90），前端 onestop.ts 启动时拉取，
 /// 不再自持档位常量。
@@ -864,6 +879,8 @@ pub fn run() {
             round_set_reference,
             round_add_candidates,
             round_remove_candidate,
+            // US22：大小优先不可达标注持久化
+            round_set_candidate_note,
             // T24 整轮并行跑分（并发度来自设置中心）
             round_score_candidates,
             onestop_encode,

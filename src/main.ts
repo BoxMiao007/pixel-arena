@@ -50,6 +50,8 @@ interface CandidateImage {
   /** 编码参数文本（如「JPEG q75」「PNG 无损」），一站式模式写入；外部导入为 null
    *（参数用户自备，工具不知晓），界面显示 —。 */
   encodingParams?: string | null;
+  /** 备注（US22 大小优先不可达标注）：随评测轮持久化，重启后仍显示；其余模式为 null。 */
+  note?: string | null;
   error: string | null;
 }
 
@@ -136,9 +138,6 @@ let sizeUnit: 'KB' | 'MB' = 'KB';
 // 质量阶梯缓存（键 = 拉杆基准）：取点在核心库，启动预取 75，拉杆 change 时按需补拉，
 // 供阶梯预览与「一站式跑分」按钮计数使用
 const qualityLadderCache = new Map<number, LadderItem[]>();
-// 大小优先不可达标注（会话态，重启归零）：轮 id →（跑分图路径 → 备注文本）。
-// 与核心库 annotation_note 同源；CSV/HTML 导出走核心库既有行为，不含此会话态列。
-const sizeNotes = new Map<string, Map<string, string>>();
 
 /** 拉取并缓存指定基准的质量阶梯（失败上抛交调用方提示）。 */
 async function refreshQualityLadder(baseline: number): Promise<LadderItem[]> {
@@ -392,14 +391,20 @@ async function runOnestop(): Promise<void> {
         markSaved();
       },
     });
-    // 大小优先：不可达标注按格式挂到产物路径，结果表追加「备注」列（会话态）
-    if (notesByFormat.size > 0) {
-      const byPath = sizeNotes.get(session.round.id) ?? new Map<string, string>();
-      for (const product of result.products) {
-        const note = notesByFormat.get(product.format);
-        if (note) byPath.set(product.path, note);
+    // 大小优先：不可达标注按产物路径经 IPC 持久化进评测轮（US22，重启后
+    // 结果表与导出仍可读；与核心库 annotation_note 同源）
+    for (const product of result.products) {
+      const note = notesByFormat.get(product.format);
+      if (note) {
+        await apply(() =>
+          invoke('round_set_candidate_note', {
+            groupId: session.group.id,
+            roundId: session.round.id,
+            candidatePath: product.path,
+            note,
+          }),
+        );
       }
-      sizeNotes.set(session.round.id, byPath);
     }
     if (result.generated > 0) {
       await scoreAllCandidates();
@@ -1055,8 +1060,8 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
       });
     }
 
-    // T22：大小优先不可达标注挂备注列（会话态，按轮隔离）
-    $content.append(buildResultTable(round.candidates, sizeNotes.get(round.id)));
+    // 备注列随行内 note 持久化（US22），悬浮 title 看完整文本
+    $content.append(buildResultTable(round.candidates));
 
     // T13 接线点：BD-rate 汇总区（与导出报告同一数据源；异步填充，不触发整页重渲染）
     const bdrateBox = document.createElement('div');
@@ -1147,14 +1152,10 @@ function firstClickDir(key: string): 1 | -1 {
   return key === 'fileSize' || key === 'name' || key === 'encodingParams' ? 1 : -1;
 }
 
-function buildResultTable(
-  candidates: CandidateImage[],
-  notes?: Map<string, string>,
-): HTMLTableElement {
-  // T22：大小优先不可达标注（会话态，来源核心库 annotation_note）——任一行有备注
+function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
+  // US22：大小优先不可达标注随评测轮持久化，直接读行内 note——任一行有备注
   // 才追加尾随「备注」列（对齐 CLI 大小优先模式的 note 列）；其余模式列序不变
-  const noteFor = (candidate: CandidateImage): string | null =>
-    notes?.get(candidate.path) ?? null;
+  const noteFor = (candidate: CandidateImage): string | null => candidate.note ?? null;
   const hasNotes = candidates.some((c) => noteFor(c) !== null);
 
   const table = document.createElement('table');
