@@ -80,8 +80,8 @@ export function gridZoomLabel(zoomed: boolean): string {
 }
 
 /** 把网格区切到放大/还原态：zoomed 类 + 按行数算出的高度下限 CSS 变量。
- *  只改格子几何（CSS 高度），不碰视口状态——格子尺寸变化后 ResizeObserver 触发重绘，
- *  沿用「视口保持不动只重绘」的语义；重挂载时按状态重放本函数即可恢复。 */
+ *  只改格子几何（CSS 高度）：挂载重放（按状态恢复类与高度）时不应碰视口，
+ *  格子尺寸变化后 ResizeObserver 触发重绘。 */
 export function applyGridZoom(area: HTMLElement, rows: number, zoomed: boolean): void {
   area.classList.toggle('zoomed', zoomed);
   if (zoomed) {
@@ -89,6 +89,36 @@ export function applyGridZoom(area: HTMLElement, rows: number, zoomed: boolean):
   } else {
     area.style.removeProperty('--grid-zoom-h');
   }
+}
+
+/** 放大按钮需要的查看器状态切片：只声明用到的两个字段（viewer.ts 与
+ *  video-compare.ts 的状态对象都结构兼容，不必强迫视频侧归一 cellPaths 口径） */
+interface GridZoomState {
+  gridZoomed: boolean;
+  viewport: ViewportState | null;
+}
+
+/** 放大/还原按钮的构建与接线（图片网格与视频逐帧网格共用，审查修复：两处逐行
+ *  重复的接线收敛于此）：点击翻转放大态、文案随动、按当前行数切换几何，并把视口
+ *  置 null 走「窗格几何变了重新 fit」的既有路径（与切模式行为一致）——放大后
+ *  立刻满格可用，而不是沿用矮格 fit 出的小比例画面。行数与网格区由回调提供
+ *  （构建按钮时二者尚未挂载）。 */
+export function buildGridZoomButton(
+  shared: GridZoomState,
+  rowsOf: () => number,
+  areaOf: () => HTMLElement,
+): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = gridZoomLabel(shared.gridZoomed);
+  btn.title = '放大/还原网格：放大后网格区占满内容区可用高度，矮窗口多图时每格恢复可用大小';
+  btn.addEventListener('click', () => {
+    shared.gridZoomed = !shared.gridZoomed;
+    btn.textContent = gridZoomLabel(shared.gridZoomed);
+    applyGridZoom(areaOf(), rowsOf(), shared.gridZoomed);
+    shared.viewport = null;
+  });
+  return btn;
 }
 
 /** 第 index 位的默认选图：第 0 位原图，其余按跑分图顺序填入，不够的留空。

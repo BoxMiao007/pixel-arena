@@ -373,7 +373,7 @@ fn score_并发2_输出与并发1逐行一致_进度保持n_of_m() {
     let reference = sample("photo-ref.png");
     let first = sample("photo-dis.png");
     let second = sample("photo-dis.jpg");
-    let run_with = |concurrency: &str| {
+    let run_with = |concurrency: &str, format: &str| {
         Command::cargo_bin("pixel-arena-cli")
             .unwrap()
             .args([
@@ -385,19 +385,21 @@ fn score_并发2_输出与并发1逐行一致_进度保持n_of_m() {
                 second.to_str().unwrap(),
                 "--concurrency",
                 concurrency,
+                "--format",
+                format,
             ])
             .output()
             .unwrap()
     };
 
-    let serial = run_with("1");
+    let serial = run_with("1", "csv");
     assert_eq!(
         serial.status.code(),
         Some(0),
         "stderr：{}",
         String::from_utf8_lossy(&serial.stderr)
     );
-    let parallel = run_with("2");
+    let parallel = run_with("2", "csv");
     assert_eq!(
         parallel.status.code(),
         Some(0),
@@ -407,6 +409,20 @@ fn score_并发2_输出与并发1逐行一致_进度保持n_of_m() {
     assert_eq!(
         serial.stdout, parallel.stdout,
         "并发度不应改变输出数据（保序 + 闭式指标）"
+    );
+
+    // JSON 档同样双跑直证（审查修复：CSV 之外的第二输出形态；HTML 与两者同源 rows 生成）
+    let serial_json = run_with("1", "json");
+    let parallel_json = run_with("2", "json");
+    assert_eq!(
+        serial_json.status.code(),
+        Some(0),
+        "stderr：{}",
+        String::from_utf8_lossy(&serial_json.stderr)
+    );
+    assert_eq!(
+        serial_json.stdout, parallel_json.stdout,
+        "JSON 输出同样不应随并发度变化"
     );
 
     let stderr = String::from_utf8(parallel.stderr).unwrap();

@@ -23,7 +23,7 @@ import {
   type CompareUiState,
 } from './compare-modes';
 import { fileName, truncateFileName } from './util';
-import { mountMultiview, resolvePaneImage, applyGridZoom, gridZoomLabel, gridLayout } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts；T27：网格放大
+import { mountMultiview, resolvePaneImage, applyGridZoom, buildGridZoomButton, gridLayout } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts；T27：网格放大按钮同源
 import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 export interface ViewerRound {
@@ -265,20 +265,10 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   bar.append(title, modes);
 
   // T27（issue #32）：网格模式的显式「放大/还原」切换。放大状态按轮键控（决策 0019），
-  // 切换只改格子几何（CSS 高度），不重置视口；重挂载后按钮文案按状态恢复。
-  // area 在下方才创建，点击回调运行时必然已完成挂载（闭包引用不越 TDZ）
+  // 接线与视频网格共用 multiview 的 buildGridZoomButton（几何切换 + 重新 fit）；
+  // area 在下方才创建，由回调延迟取用
   if (state.mode === 'grid') {
-    const zoomBtn = document.createElement('button');
-    zoomBtn.type = 'button';
-    zoomBtn.textContent = gridZoomLabel(state.gridZoomed);
-    zoomBtn.title = '放大/还原网格：放大后网格区占满内容区可用高度，矮窗口多图时每格恢复可用大小';
-    zoomBtn.addEventListener('click', () => {
-      state.gridZoomed = !state.gridZoomed;
-      zoomBtn.textContent = gridZoomLabel(state.gridZoomed);
-      const { rows } = gridLayout(1 + round.candidates.length);
-      applyGridZoom(area, rows, state.gridZoomed);
-    });
-    bar.append(zoomBtn);
+    bar.append(buildGridZoomButton(state, () => gridLayout(1 + round.candidates.length).rows, () => area));
   }
 
   // T09 接线：三种新模式的专属控件（叠加不透明度滑杆 / 差异阈值滑杆 / 闪烁播放按钮），
@@ -331,6 +321,9 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     // 因此格子间同步、切模式保留状态、图片不重复解码都与现有模式一致。
     area.className = 'viewer-area grid';
     mountMultiview(area, round, state, ensureImage);
+    // T27：放大态按轮状态恢复（area 每次挂载都是新建元素，类与高度变量必须重放，
+    // 否则切轮回来按钮显示「还原」而网格区是默认高度；与视频侧同一模式）
+    applyGridZoom(area, gridLayout(1 + round.candidates.length).rows, state.gridZoomed);
   } else if (state.mode === 'split') {
     // ---- T20 重组：分屏自动 N 栏 ----
     // 原图固定最左，每张已选跑分图各加一栏（N 张 = N+1 栏）；同一张卡片内无缝拼接，

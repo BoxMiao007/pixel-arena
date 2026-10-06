@@ -1051,9 +1051,8 @@ mod tests {
     #[test]
     fn 并发参数_区间内原样使用() {
         let cores = logical_cores();
-        if cores >= 2 {
-            assert_eq!(resolve_concurrency(Some(2)), 2);
-        }
+        // 2 在核数 ≥2 时原样使用；单核机器上被钳到 1（2.min(cores) 两端都锚定，无条件断言）
+        assert_eq!(resolve_concurrency(Some(2)), 2.min(cores));
         assert_eq!(resolve_concurrency(Some(1)), 1);
     }
 }
