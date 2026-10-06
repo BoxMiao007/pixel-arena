@@ -123,3 +123,10 @@
 - 决策：设置存应用数据目录的 `settings.json`（与 workspace.json 分离，坏文件 fail-soft 回默认不挡启动，工作区那边维持 fail-fast），camelCase 形状 Rust/TS 两侧对应。首批项：记录状态开关（默认开）、界面主题（浅/深/跟随系统，`data-theme` 驱动 CSS 变量，画布底色读 `--canvas-bg` 同源）、默认导出目录、最近目录（记录恒进行、恢复由记录状态门控）、编码器路径覆盖（空串归一为 None=恢复内置；保存时校验存在性）。窗口大小不用 tauri-plugin-window-state，随 settings.json 记逻辑像素宽高（窗口 Resized 时持续记录、值变才写盘、最大化与过小尺寸跳过，启动恢复；不挂退出事件——实测 WSLg/X11 关窗触发致命 X 错误，GDK 直接终止进程，CloseRequested/ExitRequested 均不可达，Resized 始终可达且兜住崩溃退出）。编码器覆盖进核心库：`encode_onestop` 增加 `EncoderOverrides` 参数，覆盖路径优先于内置自动安装、假路径在启动编码器前 fail-fast 中文报错；CLI 恒传默认值，行为只由命令行参数决定（不读 GUI 设置）。avifdec（AVIF 代片解码）沿用 PIXEL_ARENA_AVIFDEC 环境变量注入机制，由 GUI 壳在启动与保存设置后刷新。
 - 为什么：设置是可重配偏好，独立文件让「删设置不伤评测数据」、fail-soft 与工作区数据分级一致；路径覆盖放核心库签名让 GUI/CLI 边界在类型上可见（CLI 想读设置都读不到，settings 模块在 src-tauri crate），报错在编码入口 fail-fast 且点名工具与路径；CSS 变量方案让主题切换零 JS 分支、查看器画布与界面同源即时生效。
 - 放弃了：tauri-plugin-window-state（多一个插件/capabilities 面，且窗口大小本就要和记录状态开关一起门控，自管一个字段更可控）；tauri-plugin-store（键值存储对带校验的结构化设置无增益）；设置存 localStorage（Rust 侧单测不可达，且编码器覆盖必须在 Rust 侧使用）；CLI 读 GUI 设置（票面明确禁止）；主题只切界面壳（画布底色写死会留深色孤岛，验收要求查看器区域一并切换）。
+
+## 0018 · 并行跑分：核心库自带工作池而非 rayon，整轮一次 IPC + Channel 推进度（已确认）
+
+- 日期：2026-10-06
+- 决策：整轮跑分并行化落在核心库 `parallel` 模块——`run_parallel`（候选列表 + 单候选评分闭包 + 并发上限 + 单调进度回调，结果保序）与 `concurrency_limit`（floor 核数×比例，夹在 [1, 核数]），std::thread::scope 工作池实现、不引 rayon。workspace 层新增 `score_round_candidates_parallel` / `score_round_video_candidates_parallel`，行级落库逻辑与单张入口共用一份函数；GUI 侧单张命令 `round_score_candidate` / `round_score_video_candidate` 替换为整轮命令（一次 IPC 提交全部跑分图/视频），进度经 Channel 推 N/M。并发度档位（quarter/half/threequarters/full，默认 half = 一半逻辑核）作为 `scoreConcurrency` 进 T23 设置中心（缺字段 serde 兜底，无迁移），比例→线程数的换算在核心库、档位枚举留在 GUI 壳层；视频侧每任务各起一个 ffmpeg 进程，同时在跑的进程数受同一上限约束。CLI 本票不改（仍逐张串行），调度函数已就位可后续共用。
+- 为什么：调度需求只有「固定并发上限 + 保序 + 进度」，一个作用域线程池就够，rayon 的依赖树与全局池语义（吃满核、与并发度设置相抵触）都不合算；整轮一次 IPC 让并发调度在后端闭环，前端只剩订阅进度，不再自己开并发调用（逐张循环既拿不到统一上限也无法一次写盘）；「默认一半核心」直接对应票面「电脑不卡死、留余量」。
+- 放弃了：rayon / tauri 异步任务池（前者引依赖且默认吃满核，后者要自己补保序与上限）；前端逐张循环改 Promise 并发（上限散在 UI 层、视频 ffmpeg 进程数无法约束）；并行结果容差比对（指标是单图闭式计算，逐行必须 bit 级一致，单测以黄金基准样例锚定）；CLI 同步并行化（票面验收只要求 GUI 提速，避免扩散回归面）。
