@@ -60,7 +60,9 @@ jobs:
       - name: 安装前端依赖
         run: npm install
 
-      # beforeBuildCommand（tsc + vite build）由 tauri CLI 自动执行
+      # beforeBuildCommand（tsc + vite build）由 tauri CLI 自动执行。
+      # 产物在仓库根 target/（Cargo workspace 布局，tauri CLI 检测到 workspace root），
+      # 不是 src-tauri/target/——首次 CI 真跑时上传路径写错，三端产物上传全挂过。
       - name: 构建安装产物
         run: npm run tauri build -- --bundles ${{ matrix.bundles }}
 
@@ -70,9 +72,9 @@ jobs:
         with:
           name: pixel-arena-windows
           path: |
-            src-tauri/target/release/pixel-arena.exe
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+            target/release/pixel-arena.exe
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
           if-no-files-found: error
 
       - name: 上传 Linux 产物
@@ -81,8 +83,8 @@ jobs:
         with:
           name: pixel-arena-linux
           path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
       - name: 上传 macOS 产物
@@ -91,8 +93,8 @@ jobs:
         with:
           name: pixel-arena-macos
           path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app
           if-no-files-found: error
 
   # ---------- 编码器工件上传 Release encoders-v1 ----------
