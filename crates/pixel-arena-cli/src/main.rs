@@ -533,7 +533,15 @@ fn build_run_ladder(
                 announce_encoder_download(format.as_str(), tools_dir, announced);
                 eprintln!("正在搜索 {} 逼近目标大小…", format.display_name());
                 let result = size_search(*format, *target_bytes, &mut |quality| {
-                    probe_onestop_size(reference, *format, quality, scratch.path(), tools_dir)
+                    // CLI 不读 GUI 设置：覆盖恒为默认值，探测与正式生成同一约定
+                    probe_onestop_size(
+                        reference,
+                        *format,
+                        quality,
+                        scratch.path(),
+                        tools_dir,
+                        &EncoderOverrides::default(),
+                    )
                 });
                 match result {
                     Ok(result) => {

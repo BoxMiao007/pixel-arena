@@ -387,11 +387,14 @@ pub struct SizeSearchDto {
 
 /// 大小优先单格式搜索的实现体（pub 供不经 Tauri 运行时测试）。探测编码到暂存目录
 /// 即弃（沿 CLI 大小优先先例），产物落盘仍由前端随后逐档调 onestop_encode 完成。
+/// 编码器覆盖随调用传入：探测与正式产物（onestop_encode）必须出自同一编码器，
+/// 否则「搜出的大小」对不上「真实产物」（审查修复 A1）。
 pub fn onestop_size_search_impl(
     reference: &str,
     format: &str,
     target_bytes: u64,
     tools_dir: &std::path::Path,
+    overrides: &pixel_arena_core::encode::EncoderOverrides,
 ) -> Result<SizeSearchDto, String> {
     let format = pixel_arena_core::encode::OnestopFormat::parse(format)
         .map_err(|err| err.to_string())?;
@@ -415,6 +418,7 @@ pub fn onestop_size_search_impl(
             quality,
             scratch.path(),
             tools_dir,
+            overrides,
         )
     })
     .map_err(|err| err.to_string())?;
@@ -460,8 +464,13 @@ async fn onestop_size_search(
         }
     }
     let tools_dir = state.tools_dir.clone();
+    // T23：设置中心的编码器覆盖同样作用于大小优先探测——探测与 onestop_encode 的
+    // 正式产物必须出自同一编码器（审查修复 A1）
+    let overrides = to_core_overrides(
+        &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+    );
     tauri::async_runtime::spawn_blocking(move || {
-        onestop_size_search_impl(&reference_path, &format, target_bytes, tools_dir.as_path())
+        onestop_size_search_impl(&reference_path, &format, target_bytes, tools_dir.as_path(), &overrides)
     })
     .await
     .map_err(|err| format!("大小优先搜索任务执行失败: {err}"))?

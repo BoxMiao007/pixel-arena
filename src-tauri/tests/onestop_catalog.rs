@@ -108,7 +108,13 @@ fn onestop_quality_ladder_基准越界_中文报错() {
 #[test]
 fn onestop_size_search_无损格式_中文报错不探测() {
     // 无损对照组不参与大小搜索：应在任何探测编码之前 fail-fast
-    let message = onestop_size_search_impl("/tmp/不存在.png", "png", 1024, std::path::Path::new("/tmp"))
+    let message = onestop_size_search_impl(
+        "/tmp/不存在.png",
+        "png",
+        1024,
+        std::path::Path::new("/tmp"),
+        &Default::default(),
+    )
         .unwrap_err();
     assert!(message.contains("无损格式"), "错误应说明无损不参与搜索：{message}");
     assert!(message.contains("不参与目标大小搜索"), "{message}");
@@ -116,7 +122,13 @@ fn onestop_size_search_无损格式_中文报错不探测() {
 
 #[test]
 fn onestop_size_search_未知格式_中文报错() {
-    let message = onestop_size_search_impl("/tmp/不存在.png", "bogus", 1024, std::path::Path::new("/tmp"))
+    let message = onestop_size_search_impl(
+        "/tmp/不存在.png",
+        "bogus",
+        1024,
+        std::path::Path::new("/tmp"),
+        &Default::default(),
+    )
         .unwrap_err();
     assert!(message.contains("不支持的编码格式"), "{message}");
 }

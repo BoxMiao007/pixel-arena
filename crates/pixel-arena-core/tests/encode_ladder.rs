@@ -619,6 +619,7 @@ fn probe_onestop_size_返回产物字节数_复用已装编码器() {
         75,
         scratch.path(),
         tools.path(),
+        &Default::default(),
     )
     .expect("探测应成功");
 
@@ -635,6 +636,7 @@ fn probe_onestop_size_无损格式不参与搜索_中文报错() {
         75,
         scratch.path(),
         scratch.path(),
+        &Default::default(),
     )
     .err()
     .expect("无损格式应拒绝探测")
