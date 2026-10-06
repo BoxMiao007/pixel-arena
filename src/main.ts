@@ -14,6 +14,7 @@ import {
   runOnestop as runOnestopLadder,
   buildLadder,
   defaultSelection,
+  initOnestopCatalog,
   LOSSY_FORMATS,
   QUALITIES,
   LOSSLESS_FORMATS,
@@ -539,6 +540,14 @@ async function boot(): Promise<void> {
     if (versionEl) versionEl.textContent = `核心库 v${version}`;
   } catch (err) {
     if (versionEl) versionEl.textContent = `IPC 调用失败: ${String(err)}`;
+  }
+  // T21 接线点：一站式目录（格式清单 + 默认质量档）改由核心库取点驱动，
+  // 必须先于首次渲染拉取，并按目录重设默认全开的勾选状态
+  try {
+    await initOnestopCatalog();
+    onestopSelection = defaultSelection();
+  } catch (err) {
+    setStatus(`加载编码阶梯目录失败: ${String(err)}`, true);
   }
   try {
     ws = await invoke<Workspace>('workspace_load');

@@ -43,8 +43,9 @@ export function resolveCandidatePath(
   return round.candidates[0]?.path ?? null;
 }
 
-// T09 接线：模式并集——'overlay' 叠加 / 'diff' 差异图 / 'blink' 闪烁切换；T08 多视图 multiview2/3 并入
-type ViewerMode = 'split' | 'slider' | 'multiview2' | 'multiview3' | 'overlay' | 'diff' | 'blink';
+// T20 重组：模式入口收敛为六个——分屏（自动 N 栏）/滑动/网格（自动排布）/叠加/差异/闪烁；
+// T08 的 multiview2/multiview3 双入口合并为单 'grid'（行列由 gridLayout 按数量自动排布）
+type ViewerMode = 'split' | 'slider' | 'grid' | 'overlay' | 'diff' | 'blink';
 
 /** 缩放≥100% 后关闭平滑，按最近邻显示原始像素（像素级查看） */
 const NEAREST_ZOOM = 1;
@@ -56,12 +57,11 @@ let state: {
   mode: ViewerMode;
   /** 滑动对比的分割线位置：占画布宽度的比例 0~1 */
   divider: number;
-  /** 当前在右栏/右侧显示的跑分图 */
+  /** 当前在右栏/右侧显示的跑分图（滑动/叠加/差异/闪烁的单槽；分屏已改自动 N 栏不用此槽） */
   candidatePath: string | null;
-  /** 多视图每格显式选图（T08；T19 起按网格档位隔离）：2=2×2、3=3×3 各自一份，
-   *  ''=显式留空，数组缺省位=走默认布局；换轮重置。
-   *  T20 合并两档为单网格后此记录可退化为单份（过渡说明见 shared/notes/T19.md） */
-  cellPaths: Partial<Record<2 | 3, (string | null)[]>>;
+  /** 网格每格显式选图（单一网格，T19 的按档位隔离随 2×2/3×3 合并退化为单数组）：
+   *  ''=显式留空，数组缺省位=走默认布局；换轮重置 */
+  cellPaths: (string | null)[];
   /** 共享视口；null = 待适配（图片就绪后按窗格尺寸 fit） */
   viewport: ViewportState | null;
 } | null = null;
@@ -129,7 +129,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       mode: 'split',
       divider: 0.5,
       candidatePath: round.candidates[0]?.path ?? null,
-      cellPaths: {},
+      cellPaths: [],
       viewport: null,
     };
   }
@@ -152,13 +152,11 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   modes.role = 'group';
   modes.ariaLabel = '对比模式';
 
-  // T09 接线：模式按钮统一注册（改循环以便各票做并集追加）；T08 的 multiview2/3 在此并入，
-  // 切模式行为与 T08 手写按钮一致（同模式不重挂、重新 fit），另加离开闪烁模式先停表
+  // T20 重组：六个模式入口（原 2×2/3×3 网格合并为「网格」，行列自动排布）
   const MODES: Array<{ id: ViewerMode; label: string }> = [
     { id: 'split', label: '左右分屏' },
     { id: 'slider', label: '滑动对比' },
-    { id: 'multiview2', label: '2×2 网格' },
-    { id: 'multiview3', label: '3×3 网格' },
+    { id: 'grid', label: '网格' },
     { id: 'overlay', label: '叠加对比' },
     { id: 'diff', label: '差异图' },
     { id: 'blink', label: '闪烁切换' },
@@ -228,7 +226,12 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     bar.append(buildT09Controls(state.mode, onChange));
   }
 
-  bar.append(candLabel, hint);
+  // T20 重组：分屏已改自动 N 栏（原图最左 + 各跑分图一栏，无需选图），
+  // 单槽「跑分图」下拉只属于滑动/叠加/差异/闪烁四个模式
+  if (state.mode !== 'split') {
+    bar.append(candLabel);
+  }
+  bar.append(hint);
 
   // ----- 画布区 -----
   const area = document.createElement('div');
@@ -236,8 +239,9 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   container.replaceChildren(bar, area);
 
   let refCanvas: HTMLCanvasElement | null = null;
-  let candCanvas: HTMLCanvasElement | null = null; // 分屏模式的右栏画布
   let sliderCanvas: HTMLCanvasElement | null = null;
+  // T20 重组：分屏自动 N 栏——第 0 栏原图、其余各一栏跑分图，同一卡片内无缝拼接
+  const splitPanes: Array<{ canvas: HTMLCanvasElement; path: string; role: string }> = [];
   // T09 接线：叠加/差异/闪烁共用的单画布，以及随内容变化的角标（闪烁时显示当前是哪张）
   let stageCanvas: HTMLCanvasElement | null = null;
   let stageTag: HTMLSpanElement | null = null;
@@ -245,29 +249,41 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   let diffComputing = false;
   let dividerEl: HTMLDivElement | null = null;
 
-  if (state.mode === 'multiview2' || state.mode === 'multiview3') {
-    // ---- T08 接线点：多视图整体交给 multiview 模块渲染 ----
+  if (state.mode === 'grid') {
+    // ---- 多视图整体交给 multiview 模块渲染（T08 立项；T20 起行列自动排布） ----
     // 共享本查看器的 state（viewport + cellPaths）与解码缓存 ensureImage，
     // 因此格子间同步、切模式保留状态、图片不重复解码都与现有模式一致。
     area.className = 'viewer-area grid';
-    mountMultiview(area, round, state, state.mode === 'multiview3' ? 3 : 2, ensureImage);
+    mountMultiview(area, round, state, ensureImage);
   } else if (state.mode === 'split') {
-    const left = document.createElement('div');
-    left.className = 'viewer-pane';
-    const right = document.createElement('div');
-    right.className = 'viewer-pane';
+    // ---- T20 重组：分屏自动 N 栏 ----
+    // 原图固定最左，每张已选跑分图各加一栏（N 张 = N+1 栏）；同一张卡片内无缝拼接，
+    // 全部栏读同一份 state.viewport 实现同步缩放平移；栏多时 flex 各自收窄。
+    area.className = 'viewer-area split';
+    const card = document.createElement('div');
+    card.className = 'viewer-split-card';
+    const refPane = document.createElement('div');
+    refPane.className = 'viewer-pane';
     refCanvas = document.createElement('canvas');
-    candCanvas = document.createElement('canvas');
     const refTag = document.createElement('span');
     refTag.className = 'viewer-tag';
     refTag.textContent = '原图';
-    const candTag = document.createElement('span');
-    candTag.className = 'viewer-tag';
-    candTag.textContent = '跑分图';
-    left.append(refCanvas, refTag);
-    right.append(candCanvas, candTag);
-    area.className = 'viewer-area split';
-    area.append(left, right);
+    refPane.append(refCanvas, refTag);
+    card.append(refPane);
+    splitPanes.push({ canvas: refCanvas, path: round.referencePath, role: '原图' });
+    for (const candidate of round.candidates) {
+      const pane = document.createElement('div');
+      pane.className = 'viewer-pane';
+      const canvas = document.createElement('canvas');
+      const tag = document.createElement('span');
+      tag.className = 'viewer-tag';
+      tag.textContent = fileName(candidate.path);
+      tag.title = candidate.path;
+      pane.append(canvas, tag);
+      card.append(pane);
+      splitPanes.push({ canvas, path: candidate.path, role: '跑分图' });
+    }
+    area.append(card);
   } else if (state.mode === 'slider') {
     const slider = document.createElement('div');
     slider.className = 'viewer-slider';
@@ -364,9 +380,12 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       scheduleDraw();
     });
   }
-  // 多视图模式下画布归 multiview 模块管，这里只给分屏/滑动模式接交互
-  if (refCanvas) attachPanZoom(refCanvas);
-  if (candCanvas) attachPanZoom(candCanvas);
+  // 多视图模式下画布归 multiview 模块管；分屏 N 栏逐栏接交互，其余模式接在 refCanvas
+  if (splitPanes.length > 0) {
+    for (const pane of splitPanes) attachPanZoom(pane.canvas);
+  } else if (refCanvas) {
+    attachPanZoom(refCanvas);
+  }
 
   // ----- 分割线拖动 -----
   if (dividerEl && sliderCanvas) {
@@ -478,22 +497,31 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     const st = state;
     if (!st || !area.isConnected) return;
     // T19 修复：每次绘制按最新 candidatePath 重新解析跑分图条目——换图立即生效，
-    // 分屏/滑动/叠加/差异/闪烁五种单槽模式共用此条目，不再留挂载时的旧绑定。
+    // 滑动/叠加/差异/闪烁四种单槽模式共用此条目（分屏 T20 起改自动 N 栏，不走单槽）。
     // 差异图缓存 key 本就含 candidatePath（viewer.ts diff 分支），随之自动失效重算。
-    const candEntry = st.candidatePath ? ensureImage(st.candidatePath, scheduleDraw) : null;
+    const candEntry = st.mode !== 'split' && st.candidatePath
+      ? ensureImage(st.candidatePath, scheduleDraw)
+      : null;
     if (st.mode === 'split') {
-      if (!refCanvas || !candCanvas) return; // 多视图模式下没有这两块画布
-      const ctxA = prepare(refCanvas);
-      const ctxB = candCanvas ? prepare(candCanvas) : null;
-      if (!ctxA || !ctxB) return;
-      ensureFitted(ctxA.size, refEntry.status === 'ok' ? refEntry : candEntry);
-      // 两栏同尺寸，共用一次 fit；背景色让图片边界可辨
-      for (const c of [ctxA.ctx, ctxB.ctx]) {
-        c.fillStyle = '#2b2b2b';
-        c.fillRect(0, 0, ctxA.size.width, ctxA.size.height);
+      // ---- T20 重组：自动 N 栏——全部栏同一视口，逐栏解析并绘制 ----
+      if (splitPanes.length === 0) return;
+      const preparedPanes = splitPanes.map((pane) => prepare(pane.canvas));
+      const first = preparedPanes[0];
+      if (!first) return;
+      // 原图未就绪时用第一栏跑分图兜底 fit（沿用 T07「优先原图、否则候选」行为）
+      const firstCandEntry = splitPanes.length > 1
+        ? ensureImage(splitPanes[1].path, scheduleDraw)
+        : null;
+      ensureFitted(first.size, refEntry.status === 'ok' ? refEntry : firstCandEntry);
+      for (let i = 0; i < splitPanes.length; i++) {
+        const prepared = preparedPanes[i];
+        if (!prepared) continue;
+        prepared.ctx.fillStyle = '#2b2b2b';
+        prepared.ctx.fillRect(0, 0, prepared.size.width, prepared.size.height);
+        // 每帧按路径现解析条目（T19 纪律：条目解析永远跟随最新槽位，不闭包绑定）
+        const entry = i === 0 ? refEntry : ensureImage(splitPanes[i].path, scheduleDraw);
+        drawPane(prepared.ctx, prepared.size, entry, splitPanes[i].role, splitPanes[i].path);
       }
-      drawPane(ctxA.ctx, ctxA.size, refEntry, '原图', round.referencePath);
-      drawPane(ctxB.ctx, ctxB.size, candEntry, '跑分图', st.candidatePath ?? '');
     } else if (sliderCanvas) {
       const prepared = prepare(sliderCanvas);
       if (!prepared) return;

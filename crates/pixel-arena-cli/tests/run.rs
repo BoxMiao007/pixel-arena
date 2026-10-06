@@ -712,3 +712,230 @@ fn run_png对照组_html报告_自包含_格式质量列齐全_退出码0() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("正在生成 PNG（1/1）"), "生成进度走 stderr：{stderr}");
 }
+
+// ---------- T21：基准质量（质量优先自动取点）与目标大小（大小优先搜索） ----------
+
+/// 用本地镜像服务真实 cjpeg 跑一轮 run（ mozjpeg 工件仅 170KB，秒级），
+/// 返回 (退出码, stdout, stderr)。工件目录缺失时返回 None（调用方跳过）。
+fn run_with_real_cjpeg(extra_args: &[&str]) -> Option<(Option<i32>, String, String)> {
+    let mirror_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../pixel-arena-shared/encoders");
+    let Ok(mirror_root) = mirror_root.canonicalize() else {
+        eprintln!("跳过：未找到 pixel-arena-shared/encoders 工件目录");
+        return None;
+    };
+    let base = serve_dir(&mirror_root);
+    let tools = tempfile::tempdir().unwrap();
+    let reference = sample("photo-ref.png");
+    let output = Command::cargo_bin("pixel-arena-cli")
+        .unwrap()
+        .args(["run", "--reference", reference.to_str().unwrap()])
+        .args(extra_args)
+        .args(["--tools-dir", tools.path().to_str().unwrap()])
+        .env("PIXEL_ARENA_ENCODER_MIRROR", &base)
+        .env_remove("HTTPS_PROXY")
+        .env_remove("https_proxy")
+        .env_remove("ALL_PROXY")
+        .env_remove("all_proxy")
+        .output()
+        .unwrap();
+    Some((
+        output.status.code(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    ))
+}
+
+fn quality_columns(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').nth(3).unwrap())
+        .collect()
+}
+
+#[test]
+fn run_基准质量75_jpeg自动取点_复现默认阶梯60_75_90() {
+    let Some((code, stdout, stderr)) = run_with_real_cjpeg(&[
+        "--formats",
+        "jpeg",
+        "--lossless",
+        "--baseline-quality",
+        "75",
+    ]) else {
+        return;
+    };
+    assert_eq!(code, Some(0), "stderr：{stderr}");
+    assert_eq!(
+        quality_columns(&stdout),
+        ["60", "75", "90"],
+        "基准 75 的取点应与现行默认阶梯完全一致：{stdout}"
+    );
+}
+
+#[test]
+fn run_基准质量90_jpeg自动取点_75_90_100_贴上界夹紧() {
+    let Some((code, stdout, stderr)) = run_with_real_cjpeg(&[
+        "--formats",
+        "jpeg",
+        "--lossless",
+        "--baseline-quality",
+        "90",
+    ]) else {
+        return;
+    };
+    assert_eq!(code, Some(0), "stderr：{stderr}");
+    assert_eq!(
+        quality_columns(&stdout),
+        ["75", "90", "100"],
+        "基准 90 在 jpeg 范围 1–100 内应取 75/90/100：{stdout}"
+    );
+}
+
+#[test]
+fn run_基准质量越界_退出码1_中文报错() {
+    let output = Command::cargo_bin("pixel-arena-cli")
+        .unwrap()
+        .args([
+            "run",
+            "--reference",
+            sample("photo-ref.png").to_str().unwrap(),
+            "--baseline-quality",
+            "101",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("基准质量 101 无效，有效范围 0–100"),
+        "stderr：{stderr}"
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn run_目标大小可达_jpeg命中加邻近补点_note列留空() {
+    // 先用 --qualities 50 拿一档产物大小当目标：q50 的产物大小必然落在
+    // q1–q100 的可达范围内，保证第二轮「目标可达」
+    let Some((code, first, stderr)) =
+        run_with_real_cjpeg(&["--formats", "jpeg", "--lossless", "--qualities", "50"])
+    else {
+        return;
+    };
+    assert_eq!(code, Some(0), "stderr：{stderr}");
+    let candidate_bytes: u64 = first
+        .lines()
+        .nth(1)
+        .unwrap()
+        .split(',')
+        .nth(10)
+        .unwrap()
+        .parse()
+        .expect("candidate_bytes 应是整数");
+    let target_kb = candidate_bytes.div_ceil(1024).max(1);
+
+    let target_kb_text = target_kb.to_string();
+    let Some((code, stdout, stderr)) = run_with_real_cjpeg(&[
+        "--formats",
+        "jpeg",
+        "--lossless",
+        "--target-size",
+        &target_kb_text,
+    ]) else {
+        return;
+    };
+    assert_eq!(code, Some(0), "stderr：{stderr}");
+
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.len() >= 4, "命中点 + 邻近补点应 ≥3 行：{stdout}");
+    // 大小优先模式的 CSV 带尾随 note 列；可达时全部留空
+    assert!(
+        lines[0].ends_with(",note"),
+        "大小优先模式表头应有 note 列：{stdout}"
+    );
+    for line in &lines[1..] {
+        let fields: Vec<&str> = line.split(',').collect();
+        assert_eq!(fields.len(), 13, "13 列（含 note）：{line}");
+        assert_eq!(fields[12], "", "可达行 note 应留空：{line}");
+        assert!(
+            fields[10].parse::<u64>().unwrap() > 0,
+            "产物大小应为正：{line}"
+        );
+    }
+}
+
+#[test]
+fn run_目标大小0_过小不可达_回退最小质量点并标注() {
+    let Some((code, stdout, stderr)) = run_with_real_cjpeg(&[
+        "--formats",
+        "jpeg",
+        "--lossless",
+        "--target-size",
+        "0",
+    ]) else {
+        return;
+    };
+    assert_eq!(code, Some(0), "回退最接近点仍是可用结果：stderr：{stderr}");
+    assert_eq!(
+        quality_columns(&stdout),
+        ["1", "16", "31"],
+        "目标 0 字节不可达，应回退最小质量点 q1 并补邻近点：{stdout}"
+    );
+    for line in stdout.lines().skip(1) {
+        let note = line.split(',').nth(12).expect("note 列：{line}");
+        assert!(note.contains("不可达") && note.contains("过小"), "note：{line}");
+    }
+    assert!(stderr.contains("不可达"), "stderr 应提示标注：{stderr}");
+}
+
+#[test]
+fn run_目标大小过大_回退最高质量点并标注() {
+    let Some((code, stdout, stderr)) = run_with_real_cjpeg(&[
+        "--formats",
+        "jpeg",
+        "--lossless",
+        "--target-size",
+        "104857600",
+    ]) else {
+        return;
+    };
+    assert_eq!(code, Some(0), "stderr：{stderr}");
+    assert_eq!(
+        quality_columns(&stdout),
+        ["70", "85", "100"],
+        "目标 100GB 不可达，应回退最高质量点 q100 并补邻近点：{stdout}"
+    );
+    for line in stdout.lines().skip(1) {
+        let note = line.split(',').nth(12).expect("note 列：{line}");
+        assert!(note.contains("不可达") && note.contains("过大"), "note：{line}");
+    }
+}
+
+#[test]
+fn run_互斥参数同用_退出码2_用法错误() {
+    let reference = sample("photo-ref.png").to_str().unwrap().to_string();
+    let cases: [(&[&str], &str); 3] = [
+        (
+            &["--qualities", "75", "--baseline-quality", "75"],
+            "--qualities 与 --baseline-quality",
+        ),
+        (
+            &["--baseline-quality", "75", "--target-size", "200"],
+            "--baseline-quality 与 --target-size",
+        ),
+        (
+            &["--target-size", "200", "--qualities", "75"],
+            "--target-size 与 --qualities",
+        ),
+    ];
+    for (conflict_args, what) in cases {
+        let output = Command::cargo_bin("pixel-arena-cli")
+            .unwrap()
+            .args(["run", "--reference", &reference])
+            .args(conflict_args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{what} 互斥应为用法错误");
+    }
+}

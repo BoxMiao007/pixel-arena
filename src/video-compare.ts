@@ -1,5 +1,5 @@
-// 视频逐帧同步对比（T15）：两路视频共享同一时间点定格，缩放平移复用 viewport 模块的
-// 「视口状态」（与图片查看器同一套换算，分屏/滑动/2×2 三种模式共享一份状态）。
+// 视频逐帧同步对比（T15 立项）：多路视频共享同一时间点定格，缩放平移复用 viewport 模块的
+// 「视口状态」（与图片查看器同一套换算；T20 起分屏自动 N 栏、网格自动排布，共享一份状态）。
 // 视频元素常驻隐藏池、静音、永远暂停态，画面只随 seek 变化，用 canvas drawImage 画进窗格；
 // 任一路 seek 后等全部 seeked 事件齐了再统一重绘，保证两路同帧。
 // 时间与帧的换算（帧时长、钳制、时间戳）是纯函数，由 src/video-compare.test.ts 守护。
@@ -14,7 +14,7 @@ import {
   type Size,
   type ViewportState,
 } from './viewport';
-import { resolveCellImage } from './multiview';
+import { resolveCellImage, gridLayout } from './multiview';
 import { fileName, truncateFileName } from './util';
 
 /** video.ts 传进来的上下文：本轮的视频源与状态栏输出 */
@@ -33,7 +33,9 @@ interface VideoMeta {
   durationSecs: number;
 }
 
-type CompareMode = 'split' | 'slider' | 'multiview2';
+// T20 重组：与图片查看器同一套六模式口径的子集——分屏（自动 N 栏）/滑动/网格（自动排布）；
+// 原 multiview2（2×2）双入口合并为单 'grid'
+type CompareMode = 'split' | 'slider' | 'grid';
 
 /** 缩放≥100% 后关闭平滑，按最近邻显示原始像素（与图片查看器的像素级查看一致） */
 const NEAREST_ZOOM = 1;
@@ -89,8 +91,7 @@ export function formatTimestamp(t: number): string {
 }
 
 /** 多视图第 index 格的选路：显式选择仍有效则用之（''=显式留空），否则回落默认布局。
- *  复用 multiview 的 resolveCellImage：把左路当「参考」，其余源当「候选」。
- *  视频侧只有 2×2 一种网格，本侧 cellPaths 保持扁平数组，经 tier 2 桶适配新签名（T19）。 */
+ *  复用 multiview 的 resolveCellImage：把左路当「参考」，其余源当「候选」。 */
 export function resolveCellVideo(
   index: number,
   cellPaths: (string | null)[] | null,
@@ -98,8 +99,7 @@ export function resolveCellVideo(
   sources: string[],
 ): string | null {
   return resolveCellImage(
-    { viewport: null, cellPaths: cellPaths ? { 2: cellPaths } : {} },
-    2,
+    { viewport: null, cellPaths: cellPaths ?? [] },
     index,
     {
       referencePath: leftPath,
@@ -335,7 +335,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
   const MODES: Array<{ id: CompareMode; label: string }> = [
     { id: 'split', label: '分屏' },
     { id: 'slider', label: '滑动' },
-    { id: 'multiview2', label: '2×2 网格' },
+    { id: 'grid', label: '网格' },
   ];
   const modeButtons = new Map<CompareMode, HTMLButtonElement>();
   for (const { id, label } of MODES) {
@@ -359,8 +359,8 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
 
   let leftSelect: HTMLSelectElement | null = null;
   let rightSelect: HTMLSelectElement | null = null;
-  if (state.mode !== 'multiview2') {
-    // 分屏/滑动：左右两路下拉（多视图用每格自己的下拉，见下）
+  if (state.mode === 'slider') {
+    // 滑动模式：左右两路下拉（分屏 T20 起自动 N 栏固定原视频最左，网格用每格自己的下拉）
     const buildSourceSelect = (value: string | null): HTMLSelectElement => {
       const select = document.createElement('select');
       for (const path of sources) {
@@ -399,17 +399,29 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
 
   interface Pane {
     canvas: HTMLCanvasElement;
+    /** 分屏模式每栏固定的源路径（滑动/网格逐帧现解析，不设） */
+    path?: string;
   }
   const panes: Pane[] = [];
   let dividerEl: HTMLDivElement | null = null;
 
-  if (state.mode === 'multiview2') {
+  /** 分屏的栏列表：原视频（无则第一源）固定最左，其余源按顺序各一栏（自动 N 栏，T20） */
+  const splitPathList = (): string[] => {
+    const base = ctx.referencePath ?? sources[0];
+    if (!base) return [];
+    return [base, ...sources.filter((p) => p !== base)];
+  };
+
+  if (state.mode === 'grid') {
+    // ---- T20 重组：网格自动排布——行列按源总数经 gridLayout 计算（原固定 2×2 退役） ----
+    const { rows, cols } = gridLayout(sources.length);
+    const count = rows * cols;
     area.className = 'viewer-area grid';
     const grid = document.createElement('div');
     grid.className = 'viewer-grid';
-    grid.style.gridTemplateColumns = 'repeat(2, 1fr)';
-    grid.style.gridTemplateRows = 'repeat(2, 1fr)';
-    for (let i = 0; i < 4; i++) {
+    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    for (let i = 0; i < count; i++) {
       const pane = document.createElement('div');
       pane.className = 'viewer-pane';
       const canvas = document.createElement('canvas');
@@ -432,9 +444,9 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
         : '';
       select.addEventListener('change', () => {
         if (!state) return;
-        // 首次手动改选才落状态
-        if (!state.cellPaths || state.cellPaths.length < 4) {
-          state.cellPaths = Array.from({ length: 4 }, (_, k) => state!.cellPaths?.[k] ?? null);
+        // 首次手动改选才落状态；数组按当前格数扩长（缺省位=默认布局）
+        if (!state.cellPaths || state.cellPaths.length < count) {
+          state.cellPaths = Array.from({ length: count }, (_, k) => state!.cellPaths?.[k] ?? null);
         }
         state.cellPaths[i] = select.value; // '' = 显式留空
         refreshVideos();
@@ -446,23 +458,23 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
     }
     area.append(grid);
   } else if (state.mode === 'split') {
+    // ---- T20 重组：分屏自动 N 栏——原视频最左 + 每段跑分视频一栏，同一卡片内无缝拼接 ----
     area.className = 'viewer-area split';
-    const left = document.createElement('div');
-    left.className = 'viewer-pane';
-    const right = document.createElement('div');
-    right.className = 'viewer-pane';
-    const leftCanvas = document.createElement('canvas');
-    const rightCanvas = document.createElement('canvas');
-    const leftTag = document.createElement('span');
-    leftTag.className = 'viewer-tag';
-    leftTag.textContent = '左路';
-    const rightTag = document.createElement('span');
-    rightTag.className = 'viewer-tag';
-    rightTag.textContent = '右路';
-    left.append(leftCanvas, leftTag);
-    right.append(rightCanvas, rightTag);
-    area.append(left, right);
-    panes.push({ canvas: leftCanvas }, { canvas: rightCanvas });
+    const card = document.createElement('div');
+    card.className = 'viewer-split-card';
+    splitPathList().forEach((path, i) => {
+      const pane = document.createElement('div');
+      pane.className = 'viewer-pane';
+      const canvas = document.createElement('canvas');
+      const tag = document.createElement('span');
+      tag.className = 'viewer-tag';
+      tag.textContent = i === 0 && ctx.referencePath ? '原视频' : fileName(path);
+      tag.title = path;
+      pane.append(canvas, tag);
+      card.append(pane);
+      panes.push({ canvas, path });
+    });
+    area.append(card);
   } else {
     area.className = 'viewer-area';
     const slider = document.createElement('div');
@@ -549,10 +561,14 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
   function displayedPaths(): string[] {
     const st = state;
     if (!st) return [];
-    if (st.mode === 'multiview2') {
+    if (st.mode === 'split') {
+      // 自动 N 栏：各栏固定源（挂载时按「原视频最左 + 其余源」生成）
+      return panes.map((p) => p.path).filter((p): p is string => p !== undefined);
+    }
+    if (st.mode === 'grid') {
       const out: string[] = [];
       if (!st.leftPath) return out;
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < panes.length; i++) {
         const path = resolveCellVideo(i, st.cellPaths, st.leftPath, sources);
         if (path && !out.includes(path)) out.push(path);
       }
@@ -765,16 +781,14 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
     if (!st || !area.isConnected) return;
     ensureFitted();
     if (st.mode === 'split') {
-      const [leftPane, rightPane] = panes;
-      const a = prepare(leftPane.canvas);
-      const b = prepare(rightPane.canvas);
-      if (!a || !b) return;
-      for (const p of [a, b]) {
-        p.ctx.fillStyle = '#2b2b2b';
-        p.ctx.fillRect(0, 0, p.size.width, p.size.height);
+      // 自动 N 栏（T20）：逐栏画各自的固定源，全部栏共享同一视口与时间点
+      for (const pane of panes) {
+        const prepared = prepare(pane.canvas);
+        if (!prepared) continue;
+        prepared.ctx.fillStyle = '#2b2b2b';
+        prepared.ctx.fillRect(0, 0, prepared.size.width, prepared.size.height);
+        drawVideo(prepared.ctx, prepared.size, pane.path ?? null);
       }
-      drawVideo(a.ctx, a.size, st.leftPath);
-      drawVideo(b.ctx, b.size, st.rightPath);
     } else if (st.mode === 'slider') {
       const prepared = prepare(panes[0].canvas);
       if (!prepared) return;
