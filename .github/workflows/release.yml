@@ -1,0 +1,132 @@
+# 三端打包发布（T16，决策 0014）：tag 推送（v*）时构建 Windows / Linux / macOS
+# 安装产物并上传为 workflow artifacts；同时把仓库内锚定的编码器工件上传到
+# GitHub Release encoders-v1（一站式模式首次使用时从该 Release 下载，见决策 0009）。
+#
+# 初期不签名（验收口径）：Windows 安装包会触发 SmartScreen 提示、macOS 需右键打开
+# 绕过 Gatekeeper，已知限制写在 README。
+#
+# 产物清单：
+# - Windows：NSIS 安装包 + MSI 安装包 + 便携 exe（target/release/pixel-arena.exe，
+#   双击可用，WebView2 依赖 Win10/11 自带）
+# - Linux：deb + AppImage
+# - macOS：dmg + .app（目录，upload-artifact 自动打包成 zip）
+#
+# 注：编码器/ffmpeg 不捆绑进安装包（安装包保持约 15MB），三端均为首次使用时按
+# 决策 0009/0010/0012 的「下载 → sha256 校验 → 解包」机制取工具。
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # encoders-release job 需要创建/上传 Release
+
+jobs:
+  # ---------- 三端安装产物 ----------
+  build:
+    strategy:
+      fail-fast: false # 一端失败不让其他端的产物作废
+      matrix:
+        include:
+          - os: windows-latest
+            bundles: "nsis,msi"
+          - os: ubuntu-latest
+            bundles: "deb,appimage"
+          - os: macos-latest
+            bundles: "dmg,app"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      # Tauri v2 官方文档列出的 Ubuntu 构建依赖（webkit2gtk-4.1 等）
+      - name: 安装 Linux 系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: 安装前端依赖
+        run: npm install
+
+      # beforeBuildCommand（tsc + vite build）由 tauri CLI 自动执行
+      - name: 构建安装产物
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+
+      - name: 上传 Windows 产物
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel-arena-windows
+          path: |
+            src-tauri/target/release/pixel-arena.exe
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: 上传 Linux 产物
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel-arena-linux
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+      - name: 上传 macOS 产物
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel-arena-macos
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: error
+
+  # ---------- 编码器工件上传 Release encoders-v1 ----------
+  # 一站式模式首次使用时从本 Release 下载编码器（决策 0009）。工件入库
+  # assets/encoders/（sha256 与 crates/pixel-arena-core/src/encode.rs 的清单锚定一致），
+  # 这里原样上传，保证「安装包里的清单哈希 = Release 资产哈希」，无回填环节。
+  # libwebp/libjxl/ffmpeg 的条目直连官方版本化 URL，不经本 Release。
+  encoders-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 资产缺失时上传 encoders-v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd assets/encoders
+          # 期望资产 = 本目录全部文件（文件名即清单锚定的下载名）
+          missing=0
+          for f in *; do
+            if ! gh release view encoders-v1 --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx "$f"; then
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "encoders-v1 资产齐全，跳过上传"
+            exit 0
+          fi
+          gh release view encoders-v1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create encoders-v1 --repo "$GITHUB_REPOSITORY" \
+              --title "编码器工件 v1（决策 0009/0012 清单）" \
+              --notes "一站式模式首次使用时下载的编码器工件。sha256 清单锚定在代码仓库 crates/pixel-arena-core/src/encode.rs，升级须换 URL + 哈希一起改。"
+          for f in *; do
+            sha256sum "$f"
+            gh release upload encoders-v1 "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done

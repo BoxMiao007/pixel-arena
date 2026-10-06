@@ -7,4 +7,17 @@
 Thumbs.db
 desktop.ini
 
+# Rust 构建产物（Cargo 工作区 target 在仓库根）
+/target/
+
+# 前端依赖与构建产物
+node_modules/
+/dist/
+
+# Tauri 构建时生成的 schema 与平台文件
+/src-tauri/gen/schemas/
+
 # 技术栈相关条目:待技术栈确定后按生态补齐
+
+# 本地 dev 覆盖（并行开发时改 devUrl 端口用）
+src-tauri/tauri.conf.dev.json

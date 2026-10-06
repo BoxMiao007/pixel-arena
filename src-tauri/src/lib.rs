@@ -1,0 +1,915 @@
+// Tauri 应用壳：所有应用逻辑都放在 lib.rs，main.rs 只做入口透传（tauri-v2 skill 约定，
+// 保证未来若扩展到移动端时 Tauri 能替换入口点；本仓库当前只做桌面三端）。
+//
+// T05：跑分组与评测轮管理。核心库持全部数据模型与持久化逻辑，本文件只是薄客户端：
+// 每个命令改内存工作区后立即写盘（改动即自动保存），并把最新状态整份返回给前端。
+// T14：视频评测轮（原视频/跑分视频/ffmpeg 跑分）+ ffmpeg 工具下载（见 ffmpeg_setup.rs）。
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use tauri::{ipc::Channel, Manager, State};
+
+use pixel_arena_core::workspace::{Group, GroupKind, Round, Workspace, WorkspaceError};
+
+use crate::settings::Settings;
+
+mod ffmpeg_setup;
+mod settings;
+mod video_probe;
+mod video_server;
+
+/// 全局应用状态：内存中的工作区 + 工作区 JSON 文件路径 + ffmpeg 等外部工具目录。
+/// Arc 让跑分这类耗时命令能把引用带进阻塞线程池（不持锁跨 await）。
+struct AppState {
+    workspace: Arc<Mutex<Workspace>>,
+    path: Arc<PathBuf>,
+    /// 编码器安装目录（应用数据目录 tools/，一站式模式首次使用时自动下载）。
+    tools_dir: Arc<PathBuf>,
+    /// 评测轮工作目录的父目录（应用数据目录 rounds/，一站式产物按 <rounds>/<轮 id>/ 存放）。
+    rounds_dir: Arc<PathBuf>,
+    /// 视频流服务（T15）：Linux 端 WebKitGTK 媒体引擎不走 asset 协议，视频元素从
+    /// 127.0.0.1 回环地址拉流（见 video_server.rs）。
+    video_stream: Arc<video_server::VideoStreamServer>,
+    /// T23 设置中心：内存中的设置 + 设置文件路径（<app_data_dir>/settings.json，
+    /// 与 workspace.json 分离）。设置只在保存时写盘，读盘只发生在启动。
+    settings: Arc<Mutex<Settings>>,
+    settings_path: Arc<PathBuf>,
+}
+
+/// IPC 命令：把核心库版本号交给前端显示。
+#[tauri::command]
+fn core_version() -> String {
+    pixel_arena_core::version().to_string()
+}
+
+/// IPC 命令（T23）：读当前设置。
+#[tauri::command]
+fn settings_load(state: State<'_, AppState>) -> Settings {
+    state.settings.lock().expect("设置锁不应中毒").clone()
+}
+
+/// IPC 命令（T23）：整体保存设置。空串路径先收成 None（清空恢复内置），
+/// 再校验存在性（假路径当场报中文错误、不落盘），成功后返回保存后的设置。
+#[tauri::command]
+fn settings_save(settings: Settings, state: State<'_, AppState>) -> Result<Settings, String> {
+    let settings = settings.normalized();
+    settings.validate()?;
+    settings.save_to_file(&state.settings_path)?;
+    *state.settings.lock().expect("设置锁不应中毒") = settings.clone();
+    Ok(settings)
+}
+
+/// 一站式单档产物（onestop_encode 回传）：产物路径 + 编码参数文本。
+/// 参数文本与 CLI 的进度标签同出核心库 OnestopFormat::encoding_params_text 一处，
+/// 前端纳入本轮时原样写入 encoding_params（结果表「编码参数」列的数据源）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OnestopProduct {
+    path: String,
+    encoding_params: String,
+}
+
+/// 启动时从磁盘恢复工作区。文件不存在（首次启动）回落到空工作区；
+/// 其余加载失败（坏 JSON、版本不支持等）如实上报，界面提示用户。
+/// T23：记录状态关闭时做干净启动——不读 workspace.json、返回空工作区；
+/// 空工作区不会写盘（写盘只发生在改动），上次保存的数据原样保留。
+#[tauri::command]
+fn workspace_load(state: State<AppState>) -> Result<Workspace, String> {
+    let mut ws = state.workspace.lock().expect("工作区锁不应中毒");
+    if !state.settings.lock().expect("设置锁不应中毒").record_state {
+        *ws = Workspace::new();
+        return Ok(ws.clone());
+    }
+    match Workspace::load_from_file(&state.path) {
+        Ok(loaded) => *ws = loaded,
+        Err(WorkspaceError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            *ws = Workspace::new();
+        }
+        Err(err) => return Err(err.to_string()),
+    }
+    Ok(ws.clone())
+}
+
+/// 统一的改动流程：改内存工作区 -> 立即写盘 -> 返回最新工作区。
+/// 任一步失败都不返回半新半旧的状态。
+fn mutate<F>(state: &AppState, change: F) -> Result<Workspace, String>
+where
+    F: FnOnce(&mut Workspace) -> Result<(), WorkspaceError>,
+{
+    let mut ws = state.workspace.lock().expect("工作区锁不应中毒");
+    change(&mut ws).map_err(|err| err.to_string())?;
+    ws.save_to_file(&state.path).map_err(|err| err.to_string())?;
+    Ok(ws.clone())
+}
+
+/// 按 id 只读定位跑分组与评测轮（onestop_encode / round_bdrate / export_round_file
+/// 三处命令共用）：组与轮分开报错，错误文案统一一版中文。
+fn find_round<'a>(
+    ws: &'a Workspace,
+    group_id: &str,
+    round_id: &str,
+) -> Result<(&'a Group, &'a Round), String> {
+    let group = ws
+        .groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .ok_or_else(|| "跑分组不存在或已被关闭".to_string())?;
+    let round = group
+        .rounds
+        .iter()
+        .find(|r| r.id == round_id)
+        .ok_or_else(|| "评测轮不存在或已被删除".to_string())?;
+    Ok((group, round))
+}
+
+/// IPC 命令：新建跑分组（T17 起带类型：kind = "image" | "video"，创建后不可更改，
+/// 组内评测轮的类型随组锁定；workspace_load 的旧文件迁移在核心库 from_json 内完成）。
+/// fb3/issue #28：建组自动附带一个同类型评测轮（核心库 create_group_with_round）。
+#[tauri::command]
+fn group_create(name: String, kind: String, state: State<AppState>) -> Result<Workspace, String> {
+    let kind = GroupKind::parse(&kind).map_err(|err| err.to_string())?;
+    mutate(&state, |ws| ws.create_group_with_round(&name, kind).map(|_| ()))
+}
+
+#[tauri::command]
+fn group_rename(id: String, name: String, state: State<AppState>) -> Result<Workspace, String> {
+    mutate(&state, |ws| ws.rename_group(&id, &name))
+}
+
+#[tauri::command]
+fn group_close(id: String, state: State<AppState>) -> Result<Workspace, String> {
+    mutate(&state, |ws| ws.close_group(&id))
+}
+
+#[tauri::command]
+fn group_activate(id: String, state: State<AppState>) -> Result<Workspace, String> {
+    mutate(&state, |ws| ws.activate_group(&id))
+}
+
+#[tauri::command]
+fn round_create(
+    group_id: String,
+    name: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.create_round(&group_id, &name).map(|_| ())
+    })
+}
+
+#[tauri::command]
+fn round_rename(
+    group_id: String,
+    round_id: String,
+    name: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| ws.rename_round(&group_id, &round_id, &name))
+}
+
+#[tauri::command]
+fn round_delete(
+    group_id: String,
+    round_id: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| ws.delete_round(&group_id, &round_id))
+}
+
+#[tauri::command]
+fn round_activate(
+    group_id: String,
+    round_id: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| ws.activate_round(&group_id, &round_id))
+}
+
+/// IPC 命令：为评测轮选入原图（路径来自 tauri-plugin-dialog 文件对话框）。
+#[tauri::command]
+fn round_set_reference(
+    group_id: String,
+    round_id: String,
+    path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| ws.set_round_reference(&group_id, &round_id, &path))
+}
+
+/// IPC 命令：为评测轮添加若干张跑分图（多选）。
+/// `encoding_params`（可选）：与 paths 一一对应的编码参数文本，仅一站式模式传入；
+/// 外部导入不传（None）——参数用户自备、工具不知晓，界面与报告显示 —。
+#[tauri::command]
+fn round_add_candidates(
+    group_id: String,
+    round_id: String,
+    paths: Vec<String>,
+    encoding_params: Option<Vec<String>>,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let params = encoding_params.map(|values| values.into_iter().map(Some).collect::<Vec<_>>());
+    mutate(&state, |ws| {
+        ws.add_round_candidates_with_params(&group_id, &round_id, &paths, params.as_deref())
+    })
+}
+
+/// 批量跑分的进度事件（T24）：N/M 推给前端状态栏（completed 单调递增到 total）。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScoreProgress {
+    completed: u32,
+    total: u32,
+}
+
+/// 按当前设置的并发度档位换算线程上限（核心库统一换算：floor 核数×比例，
+/// 夹在 [1, 逻辑核数]；默认 half = 只用一半核心留余量）。
+fn score_concurrency_limit(state: &AppState) -> usize {
+    let fraction = state
+        .settings
+        .lock()
+        .expect("设置锁不应中毒")
+        .score_concurrency
+        .fraction();
+    pixel_arena_core::parallel::concurrency_limit(fraction)
+}
+
+/// 把核心库进度回调（已完成数, 总数）转发到 IPC Channel（图片与视频两个整轮
+/// 跑分命令共用，审查修复 C10）。推送失败静默：Channel 随前端重挂等场景可能
+/// 已关闭，进度只是展示，不影响跑分本身。
+fn forward_score_progress(channel: &Channel<ScoreProgress>, completed: usize, total: usize) {
+    let _ = channel.send(ScoreProgress {
+        completed: completed as u32,
+        total: total as u32,
+    });
+}
+
+/// IPC 命令（T24）：对评测轮的全部跑分图整轮并行跑分（一次 IPC 提交整轮）。
+/// 并发度来自设置（默认一半逻辑核），进度经 Channel 推给前端（N/M）；
+/// 单张失败不报错——中文原因由核心库写进行内，界面标「失败」。
+#[tauri::command]
+async fn round_score_candidates(
+    group_id: String,
+    round_id: String,
+    on_progress: Channel<ScoreProgress>,
+    state: State<'_, AppState>,
+) -> Result<Workspace, String> {
+    let max_concurrency = score_concurrency_limit(&state);
+    let workspace = state.workspace.clone();
+    let path = state.path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut ws = workspace.lock().expect("工作区锁不应中毒");
+        ws.score_round_candidates_parallel(&group_id, &round_id, max_concurrency, &|completed,
+                                                                                    total| {
+            forward_score_progress(&on_progress, completed, total);
+        })
+        .map_err(|err| err.to_string())?;
+        ws.save_to_file(&path).map_err(|err| err.to_string())?;
+        Ok(ws.clone())
+    })
+    .await
+    .map_err(|err| format!("跑分任务执行失败: {err}"))?
+}
+
+/// IPC 命令（T18）：从评测轮移除一张跑分图（胶囊上的 × 单独移除）。
+/// 同步命令：只改内存列表并写盘，无耗时计算。
+#[tauri::command]
+fn round_remove_candidate(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.remove_round_candidate(&group_id, &round_id, &candidate_path)
+    })
+}
+
+/// IPC 命令（审查修复 B6/US22）：给一张跑分图设置/清除备注（大小优先不可达标注）。
+/// 备注随评测轮持久化，重启后结果表与导出仍能显示。同步命令，走既有 mutate。
+#[tauri::command]
+fn round_set_candidate_note(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    note: Option<String>,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.set_round_candidate_note(&group_id, &round_id, &candidate_path, note.as_deref())
+    })
+}
+
+/// 一站式勾选目录（T21 单源化）：有损/无损格式清单与默认质量档全部由核心库
+/// 质量优先取点驱动（基准 75 = 现行默认 60/75/90），前端 onestop.ts 启动时拉取，
+/// 不再自持档位常量。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnestopFormatEntry {
+    pub format: String,
+    pub label: String,
+}
+
+/// 一站式勾选目录的载荷（字段名与前端 onestop.ts 的消费一一对应）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnestopCatalog {
+    pub lossy_formats: Vec<OnestopFormatEntry>,
+    pub qualities: Vec<u8>,
+    pub lossless_formats: Vec<OnestopFormatEntry>,
+}
+
+/// 构建一站式勾选目录（pub 供不经 Tauri 运行时端到端测试，沿 export_round_file 先例）。
+pub fn onestop_catalog_impl() -> OnestopCatalog {
+    use pixel_arena_core::encode::OnestopFormat;
+    use pixel_arena_core::ladder::{quality_points, LOSSLESS_FORMATS, LOSSY_FORMATS};
+    let entry = |format: OnestopFormat| OnestopFormatEntry {
+        format: format.as_str().to_string(),
+        label: format.display_name().to_string(),
+    };
+    // 默认质量档 = 各有损格式基准 75 取点的并集（升序去重）。基准 75 下四格式取点
+    // 相同（60/75/90），界面共用一排质量勾选的行为不变；基准不同的取点交给 T22 拉杆。
+    let mut qualities: Vec<u8> = LOSSY_FORMATS
+        .iter()
+        .flat_map(|format| quality_points(75, *format).expect("基准 75 合法"))
+        .collect();
+    qualities.sort_unstable();
+    qualities.dedup();
+    OnestopCatalog {
+        lossy_formats: LOSSY_FORMATS.iter().map(|format| entry(*format)).collect(),
+        qualities,
+        lossless_formats: LOSSLESS_FORMATS
+            .iter()
+            .map(|format| entry(*format))
+            .collect(),
+    }
+}
+
+/// IPC 命令：一站式勾选目录（T21 单源化，数据源见 onestop_catalog_impl；
+/// 审查修复 C8：原名 onestop_default_ladder 名不副实——载荷是格式清单目录，
+/// 不是阶梯，改名 onestop_catalog）。
+#[tauri::command]
+fn onestop_catalog() -> OnestopCatalog {
+    onestop_catalog_impl()
+}
+
+/// 一站式阶梯项（onestop_quality_ladder 回传）：格式 + 质量（无损组为 null）+ 进度显示名。
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LadderItemDto {
+    pub format: String,
+    pub quality: Option<u8>,
+    pub label: String,
+}
+
+/// 构建质量优先编码阶梯（T22）：统一基准 0–100 → 核心库 quality_ladder 取点
+///（每格式 ≥3 点 + 无损对照组，核心库单一实现）。pub 供不经 Tauri 运行时端到端
+/// 测试（沿 onestop_catalog_impl 先例）。
+pub fn onestop_quality_ladder_impl(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
+    pixel_arena_core::ladder::quality_ladder(baseline)
+        .map(|items| {
+            items
+                .into_iter()
+                .map(|item| LadderItemDto {
+                    format: item.format,
+                    quality: item.quality,
+                    label: item.label,
+                })
+                .collect()
+        })
+        .map_err(|err| err.to_string())
+}
+
+/// IPC 命令：质量优先取点（T22）。前端拉杆 change 时调用，重渲染阶梯预览并在
+/// 触发一站式跑分时展开生成清单。纯计算，同步返回。
+#[tauri::command]
+fn onestop_quality_ladder(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
+    onestop_quality_ladder_impl(baseline)
+}
+
+/// 大小优先搜索的一个质量点：质量 + 探测到的实际产物大小（字节）。
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SizePointDto {
+    pub quality: u8,
+    pub bytes: u64,
+}
+
+/// 大小优先单格式搜索结果（onestop_size_search 回传，字段与前端 onestop.ts 消费一致）。
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SizeSearchDto {
+    pub format: String,
+    pub target_bytes: u64,
+    /// 逼近目标选中的质量点（不可达时为最小/最高质量点）。
+    pub hit: SizePointDto,
+    /// 不可达标注（核心库 annotation_note 中文单一来源，与 CLI note 列同源）；可达为 null。
+    pub note: Option<String>,
+    /// 命中点 + 邻近补点（升序 ≥3 点，US23 保 BD-rate 率失真曲线），每点带实测大小。
+    pub points: Vec<SizePointDto>,
+}
+
+/// 大小优先单格式搜索的实现体（pub 供不经 Tauri 运行时测试）。探测编码到暂存目录
+/// 即弃（沿 CLI 大小优先先例），产物落盘仍由前端随后逐档调 onestop_encode 完成。
+/// 编码器覆盖随调用传入：探测与正式产物（onestop_encode）必须出自同一编码器，
+/// 否则「搜出的大小」对不上「真实产物」（审查修复 A1）。
+pub fn onestop_size_search_impl(
+    reference: &str,
+    format: &str,
+    target_bytes: u64,
+    tools_dir: &std::path::Path,
+    overrides: &pixel_arena_core::encode::EncoderOverrides,
+) -> Result<SizeSearchDto, String> {
+    let format = pixel_arena_core::encode::OnestopFormat::parse(format)
+        .map_err(|err| err.to_string())?;
+    // 无损对照组大小固定、不参与搜索（前端不会传，fail-fast 兜底；
+    // 文案与核心库探测缝同出 OnestopFormat::require_lossy 单一来源）
+    format.require_lossy().map_err(|err| err.to_string())?;
+    let scratch = tempfile::tempdir().map_err(|err| format!("无法创建探测暂存目录：{err}"))?;
+    let result = pixel_arena_core::ladder::size_search(format, target_bytes, &mut |quality| {
+        pixel_arena_core::encode::probe_onestop_size(
+            reference,
+            format,
+            quality,
+            scratch.path(),
+            tools_dir,
+            overrides,
+        )
+    })
+    .map_err(|err| err.to_string())?;
+    // 标注文本先取（借用 result），format 的 String 再 move 出来
+    let note = result.annotation_note();
+    let format = result.format.clone();
+    Ok(SizeSearchDto {
+        format,
+        target_bytes: result.target_bytes,
+        hit: SizePointDto {
+            quality: result.hit.quality,
+            bytes: result.hit.bytes,
+        },
+        note,
+        points: result
+            .points
+            .iter()
+            .map(|point| SizePointDto {
+                quality: point.quality,
+                bytes: point.bytes,
+            })
+            .collect(),
+    })
+}
+
+/// IPC 命令：大小优先单格式逼近搜索（T22）。前端对每个勾选的有损格式逐次调用，
+/// 每次调用天然形成进度；探测可能真实编码多次（约 2+log2(99) 次/格式），放阻塞
+/// 线程池执行。前置校验与 onestop_encode 一致：轮必须存在且原图一致。
+#[tauri::command]
+async fn onestop_size_search(
+    group_id: String,
+    round_id: String,
+    reference_path: String,
+    format: String,
+    target_bytes: u64,
+    state: State<'_, AppState>,
+) -> Result<SizeSearchDto, String> {
+    {
+        let ws = state.workspace.lock().expect("工作区锁不应中毒");
+        let (_, round) = find_round(&ws, &group_id, &round_id)?;
+        if round.reference_path.as_deref() != Some(reference_path.as_str()) {
+            return Err("传入的原图与本轮所选原图不一致，请重新触发一站式跑分".to_string());
+        }
+    }
+    let tools_dir = state.tools_dir.clone();
+    // T23：设置中心的编码器覆盖同样作用于大小优先探测——探测与 onestop_encode 的
+    // 正式产物必须出自同一编码器（审查修复 A1）
+    let overrides = to_core_overrides(
+        &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        onestop_size_search_impl(&reference_path, &format, target_bytes, tools_dir.as_path(), &overrides)
+    })
+    .await
+    .map_err(|err| format!("大小优先搜索任务执行失败: {err}"))?
+}
+
+
+/// IPC 命令：一站式模式按（格式, 质量）逐次生成一份跑分产物（T11 完整编码阶梯）。
+///
+/// 格式标识：jpeg / webp / avif / jxl（有损，quality 必填）与 png / webp-lossless /
+/// jxl-lossless（无损对照组，quality 必须为 null）。产物写到应用数据目录
+/// rounds/<轮 id>/；是否纳入本轮由前端在生成成功后调 round_add_candidates 决定
+///（某项失败不影响其他项）。下载/安装编码器与编码都可能耗时（首次使用要联网下载），
+/// 放阻塞线程池执行。
+#[tauri::command]
+async fn onestop_encode(
+    group_id: String,
+    round_id: String,
+    reference_path: String,
+    format: String,
+    quality: Option<u8>,
+    state: State<'_, AppState>,
+) -> Result<OnestopProduct, String> {
+    // 前置校验（持锁只做只读检查）：评测轮必须还在，且传入原图与本轮所选原图一致，
+    // 防止往已删除的轮目录里写产物或给 A 轮产物挂到 B 轮原图名下。
+    {
+        let ws = state.workspace.lock().expect("工作区锁不应中毒");
+        let (_, round) = find_round(&ws, &group_id, &round_id)?;
+        if round.reference_path.as_deref() != Some(reference_path.as_str()) {
+            return Err("传入的原图与本轮所选原图不一致，请重新触发一站式跑分".to_string());
+        }
+    }
+
+    // 编码参数文本与产物路径一起回传（与 CLI 同出核心库 OnestopFormat 一处），
+    // 前端纳入本轮时原样写入 encoding_params。格式串先过核心库解析（fail-fast）。
+    let params = pixel_arena_core::encode::OnestopFormat::parse(&format)
+        .map_err(|err| err.to_string())?
+        .encoding_params_text(quality);
+
+    let rounds_dir = state.rounds_dir.clone();
+    let tools_dir = state.tools_dir.clone();
+    // T23：设置中心的编码器路径覆盖随命令带入（None 项走内置自动安装路径）
+    let overrides = to_core_overrides(
+        &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        pixel_arena_core::encode::encode_onestop(
+            &reference_path,
+            &format,
+            quality,
+            rounds_dir.join(&round_id),
+            tools_dir.as_path(),
+            &overrides,
+        )
+        .map(|product| OnestopProduct {
+            path: product.to_string_lossy().into_owned(),
+            encoding_params: params,
+        })
+        .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("编码任务执行失败: {err}"))?
+}
+
+/// IPC 命令：为评测轮选入原视频（路径来自 tauri-plugin-dialog 文件对话框）。T14。
+#[tauri::command]
+fn round_set_video_reference(
+    group_id: String,
+    round_id: String,
+    path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.set_round_video_reference(&group_id, &round_id, &path)
+    })
+}
+
+/// IPC 命令：为评测轮添加若干段跑分视频（多选）。T14。
+#[tauri::command]
+fn round_add_video_candidates(
+    group_id: String,
+    round_id: String,
+    paths: Vec<String>,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    mutate(&state, |ws| {
+        ws.add_round_video_candidates(&group_id, &round_id, &paths)
+    })
+}
+
+/// IPC 命令（T18）：从评测轮移除一段跑分视频（胶囊上的 × 单独移除）。
+#[tauri::command]
+fn round_remove_video_candidate(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.remove_round_video_candidate(&group_id, &round_id, &candidate_path)
+    })
+}
+
+/// IPC 命令（T24）：对评测轮的全部跑分视频整轮并行跑分（一次 IPC 提交整轮）。
+/// 同时打开的 ffmpeg 进程数受设置的同一并发上限约束（票面要求）；进度经 Channel
+/// 推给前端（N/M）；单段失败不报错——中文原因由核心库写进行内（含耗时）。
+/// 跑分前顺手确保 ffmpeg 就绪（已就绪零开销；正常路径下载进度由前端先调
+/// video_ensure_ffmpeg 展示，这里是兜底）。
+#[tauri::command]
+async fn round_score_video_candidates(
+    group_id: String,
+    round_id: String,
+    on_progress: Channel<ScoreProgress>,
+    state: State<'_, AppState>,
+) -> Result<Workspace, String> {
+    let max_concurrency = score_concurrency_limit(&state);
+    let workspace = state.workspace.clone();
+    let path = state.path.clone();
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let ffmpeg = ffmpeg_setup::ensure_ffmpeg(&tools_dir, &mut |_| {})?;
+        let mut ws = workspace.lock().expect("工作区锁不应中毒");
+        ws.score_round_video_candidates_parallel(
+            &group_id,
+            &round_id,
+            &ffmpeg,
+            max_concurrency,
+            &|completed, total| forward_score_progress(&on_progress, completed, total),
+        )
+        .map_err(|err| err.to_string())?;
+        ws.save_to_file(&path).map_err(|err| err.to_string())?;
+        Ok(ws.clone())
+    })
+    .await
+    .map_err(|err| format!("视频跑分任务执行失败: {err}"))?
+}
+
+/// IPC 命令：确保视频跑分用的 ffmpeg 就绪。首次会下载锁定版本的静态构建（约 40MB，
+/// 一次性），下载/校验/解压进度经 Channel 推给前端显示在状态栏；返回 ffmpeg 路径。
+#[tauri::command]
+async fn video_ensure_ffmpeg(
+    on_progress: Channel<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg_setup::ensure_ffmpeg(&tools_dir, &mut |message| {
+            let _ = on_progress.send(message);
+        })
+        .map(|path| path.display().to_string())
+    })
+    .await
+    .map_err(|err| format!("ffmpeg 准备任务执行失败: {err}"))?
+}
+
+/// IPC 命令（T15）：用 ffprobe 读取视频元信息（宽高/帧率/时长），逐帧对比的时间轴与
+/// ±1 帧步进用。ffprobe 缺失时先走一次工具安装（与 ffmpeg 同一锁定来源，已就绪零开销），
+/// 下载进度经 Channel 推给前端状态栏；探测失败返回中文错误，前端降级不禁查看。
+#[tauri::command]
+async fn video_probe_meta(
+    path: String,
+    on_progress: Channel<String>,
+    state: State<'_, AppState>,
+) -> Result<video_probe::VideoMeta, String> {
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let ffprobe = ffmpeg_setup::ensure_ffprobe(&tools_dir, &mut |message| {
+            let _ = on_progress.send(message);
+        })?;
+        video_probe::probe(&ffprobe, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|err| format!("视频信息读取任务执行失败: {err}"))?
+}
+
+/// IPC 命令（T15）：注册视频文件到回环流服务，返回 <video> 可用的本地 HTTP 地址。
+/// 这里只做登记：文件不存在/不可读由流服务响应 404，视频元素以中文提示兜底（不崩应用）。
+#[tauri::command]
+fn video_stream_url(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.video_stream.register(std::path::Path::new(&path)))
+}
+
+/// IPC 命令（T13）：计算评测轮的 BD-rate 汇总，供结果区汇总表展示。
+/// 与导出报告（round_export）调用核心库同一函数，保证界面与导出一致。
+/// 纯内存计算（分组、拟合、积分），同步返回即可。
+#[tauri::command]
+fn round_bdrate(
+    group_id: String,
+    round_id: String,
+    state: State<AppState>,
+) -> Result<pixel_arena_core::bdrate::BdrateSummary, String> {
+    let ws = state.workspace.lock().expect("工作区锁不应中毒");
+    let (_, round) = find_round(&ws, &group_id, &round_id)?;
+    Ok(pixel_arena_core::bdrate::summarize_round(round))
+}
+
+/// IPC 命令（T13）：把评测轮结果导出为报告文件。kind = "csv" | "html"；
+/// path 来自前端 tauri-plugin-dialog 的保存对话框；generated_at 由前端生成传入，
+/// 报告里只作展示。文件写入失败（路径不可写等）返回中文错误。
+#[tauri::command]
+fn round_export(
+    group_id: String,
+    round_id: String,
+    kind: String,
+    path: String,
+    generated_at: String,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let ws = state.workspace.lock().expect("工作区锁不应中毒");
+    export_round_file(&ws, &group_id, &round_id, &kind, &path, &generated_at)
+}
+
+/// 评测轮报告导出的实现体（T13）：定位组与轮 → 核心库序列化 → 写文件。
+/// 抽成独立函数是为了不经 Tauri 运行时即可端到端测试（tests/export.rs）；
+/// 与 round_bdrate 命令共用核心库同一份数据源，保证导出与界面一致。
+pub fn export_round_file(
+    ws: &Workspace,
+    group_id: &str,
+    round_id: &str,
+    kind: &str,
+    path: &str,
+    generated_at: &str,
+) -> Result<String, String> {
+    let (group, round) = find_round(ws, group_id, round_id)?;
+
+    let content = match kind {
+        "csv" => pixel_arena_core::report::export_csv(&group.name, round, generated_at),
+        "html" => pixel_arena_core::report::export_html(&group.name, round, generated_at),
+        other => return Err(format!("不支持的导出格式: {other}（支持 csv / html）")),
+    };
+    std::fs::write(path, content).map_err(|err| format!("写入导出文件失败: {err}"))?;
+    Ok(path.to_string())
+}
+
+/// T23：设置里的编码器覆盖 → 核心库 EncoderOverrides（一次性编码调用携带，
+/// 不做进程级全局状态；CLI 侧恒为默认值，行为只由命令行参数决定）。
+fn to_core_overrides(over: &settings::EncoderOverrides) -> pixel_arena_core::encode::EncoderOverrides {
+    let to_path = |raw: &Option<String>| raw.as_deref().map(std::path::PathBuf::from);
+    pixel_arena_core::encode::EncoderOverrides {
+        cjpeg: to_path(&over.cjpeg),
+        cwebp: to_path(&over.cwebp),
+        avifenc: to_path(&over.avifenc),
+        cjxl: to_path(&over.cjxl),
+    }
+}
+
+/// T23：把 AVIF 代片解码器（avifdec）的定位注入 PIXEL_ARENA_AVIFDEC 环境变量
+///（decode.rs 按它分派）。设置中心的自定义路径优先；清空时回落内置安装路径。
+/// 启动与每次保存设置后调用；decode 侧逐次读取环境变量，改动即时生效。
+fn apply_avifdec_env(state: &AppState) {
+    let custom = state
+        .settings
+        .lock()
+        .expect("设置锁不应中毒")
+        .encoder_overrides
+        .avifdec
+        .clone();
+    if let Some(path) = custom {
+        std::env::set_var("PIXEL_ARENA_AVIFDEC", path);
+        return;
+    }
+    // 未设置覆盖：保持既有行为——内置安装路径存在时注入（已注入则不动）
+    if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_none() {
+        if let Some(avifdec) = pixel_arena_core::decode::avif_decoder_path(state.tools_dir.as_path()) {
+            std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
+        }
+    }
+}
+
+/// T23：记录状态开启时，按设置恢复主窗口大小（逻辑像素，与 DPI 无关）。
+/// 只恢复宽高不恢复位置（票面范围是「窗口大小」）；关闭时保持配置里的默认尺寸。
+fn restore_window_size(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let (record_state, window_size) = {
+        let settings = state.settings.lock().expect("设置锁不应中毒");
+        (settings.record_state, settings.window)
+    };
+    if !record_state {
+        return;
+    }
+    if let (Some(window), Some(size)) = (app.get_webview_window("main"), window_size) {
+        let _ = window.set_size(tauri::LogicalSize::new(size.width, size.height));
+    }
+}
+
+/// T23：把当前主窗口大小记进设置文件（逻辑像素，与 DPI 无关；仅记录状态开启、
+/// 窗口未最大化时）。读-改-写 settings.json，只动 window 字段，值没变不重写。
+/// 记录时机挂窗口 Resized 事件持续记录而非退出时一次性记录：实测（WSLg/X11）关窗
+/// 会触发致命 X 错误（BadDrawable），GDK 直接终止进程，事件循环收不到任何关闭
+/// 事件（CloseRequested/ExitRequested 均不达）；Resized 事件则始终可达，且顺带
+/// 兜住崩溃退出。Windows/macOS 上关窗事件正常，CloseRequested 兜底写一次终值。
+fn record_window_size(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if !state.settings.lock().expect("设置锁不应中毒").record_state {
+        return;
+    }
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let Ok(physical) = window.inner_size() else {
+        return;
+    };
+    let logical = physical.to_logical::<f64>(scale);
+    // 最小尺寸下限兜底：防止最小化/异常尺寸（配置里 minWidth 800）被记成普通尺寸
+    if logical.width < 100.0 || logical.height < 100.0 {
+        return;
+    }
+    let new_size = Some(settings::WindowSize {
+        width: logical.width,
+        height: logical.height,
+    });
+    let mut settings = state.settings.lock().expect("设置锁不应中毒").clone();
+    if settings.window == new_size {
+        return;
+    }
+    settings.window = new_size;
+    if let Err(err) = settings.save_to_file(&state.settings_path) {
+        // 记窗口大小失败不炸主流程，但要能在 stderr 定位（设置文件不可写等）
+        eprintln!("记录窗口大小到 settings.json 失败：{err}");
+        return;
+    }
+    *state.settings.lock().expect("设置锁不应中毒") = settings;
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .setup(|app| {
+            // 工作区文件与外部工具放应用数据目录：<系统数据目录>/<identifier>/
+            let dir = app
+                .path()
+                .app_data_dir()
+                .expect("无法确定应用数据目录");
+            std::fs::create_dir_all(&dir).expect("无法创建应用数据目录");
+            let tools_dir = dir.join("tools");
+            std::fs::create_dir_all(&tools_dir).expect("无法创建工具目录");
+            // T11：AVIF 产物的解码工具 avifdec 与 avifenc 同工件安装。启动时把确定性
+            // 安装路径注入环境变量（已设置时尊重调用方覆盖），核心库解码入口按它分派
+            //（首次生成 AVIF 时自动安装，之后重启即可直接跑分/显示；进程启动早期一次性
+            // 设置，无并发写环境变量）。
+            if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_none() {
+                if let Some(avifdec) = pixel_arena_core::decode::avif_decoder_path(&tools_dir) {
+                    std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
+                }
+            }
+            // T23：加载设置（坏文件 fail-soft 回默认，见 settings.rs 模块头）。
+            // avifdec 覆盖在 apply_avifdec_env 里处理：设置了自定义路径则盖过上面的注入。
+            let settings = Settings::load_from_file(&dir.join("settings.json"));
+            let video_stream = video_server::VideoStreamServer::spawn()
+                .expect("视频流服务启动失败");
+            app.manage(AppState {
+                workspace: Arc::new(Mutex::new(Workspace::new())),
+                path: Arc::new(dir.join("workspace.json")),
+                tools_dir: Arc::new(tools_dir),
+                rounds_dir: Arc::new(dir.join("rounds")),
+                video_stream: Arc::new(video_stream),
+                settings: Arc::new(Mutex::new(settings.clone())),
+                settings_path: Arc::new(dir.join("settings.json")),
+            });
+            apply_avifdec_env(app.state::<AppState>().inner());
+            // 记录状态开启时恢复上次窗口大小（关闭 = 配置里的默认尺寸）
+            restore_window_size(app.handle());
+            Ok(())
+        })
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            core_version,
+            // T23 设置中心
+            settings_load,
+            settings_save,
+            workspace_load,
+            group_create,
+            group_rename,
+            group_close,
+            group_activate,
+            round_create,
+            round_rename,
+            round_delete,
+            round_activate,
+            round_set_reference,
+            round_add_candidates,
+            round_remove_candidate,
+            // US22：大小优先不可达标注持久化
+            round_set_candidate_note,
+            // T24 整轮并行跑分（并发度来自设置中心）
+            round_score_candidates,
+            onestop_encode,
+            // T21 单源化：一站式勾选目录（格式清单与默认质量档同出核心库取点）
+            onestop_catalog,
+            // T22：质量优先取点与大小优先逼近搜索
+            onestop_quality_ladder,
+            onestop_size_search,
+            // T14 视频评测轮
+            round_set_video_reference,
+            round_add_video_candidates,
+            round_remove_video_candidate,
+            round_score_video_candidates,
+            video_ensure_ffmpeg,
+            // T15 视频逐帧对比（ffprobe 元信息 + 回环流服务）
+            video_probe_meta,
+            video_stream_url,
+            // T13 BD-rate 汇总与报告导出
+            round_bdrate,
+            round_export,
+        ])
+        .build(tauri::generate_context!())
+        .expect("Tauri 应用启动失败")
+        .run(|app, event| {
+            // T23：窗口大小随变化持续记回设置（记录状态开启时），下次启动恢复。
+            // 挂 Resized 而非关闭类事件的实测依据见 record_window_size 的注释；
+            // CloseRequested 兜底在关窗事件正常 platforms（Windows/macOS）写终值。
+            if let tauri::RunEvent::WindowEvent { event, .. } = event {
+                match event {
+                    tauri::WindowEvent::Resized(_) => record_window_size(app),
+                    tauri::WindowEvent::CloseRequested { .. } => record_window_size(app),
+                    _ => {}
+                }
+            }
+        });
+}

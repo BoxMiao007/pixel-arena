@@ -1,0 +1,45 @@
+[package]
+name = "pixel-arena-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "像素竞技场核心库：解码、指标、编码编排（GUI 与 CLI 共用）"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+# 感知指标（社区维护的 Rust 移植，选型依据见 docs/decisions.md 0007）：
+# Butteraugli——libjxl C++ 原版的纯 Rust 移植，自带 C++ 对照回归表
+butteraugli = "0.9.3"
+# SSIMULACRA2——rust-av 组织维护的移植，与 C++ 原版同源公式
+ssimulacra2 = "0.5.1"
+# butteraugli 的输入类型（Img<RGB8>）
+imgref = "1"
+rgb = "0.8"
+# 编码器分发（T10，方案见 docs/decisions.md 0009）：首次使用下载 + sha256 校验 + tar.gz 解包
+# ureq 默认 feature 走 rustls（自带根证书，无系统依赖），适合三端打包
+ureq = "2"
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
+# zip 解包（T16，决策 0014）：Windows 的 libwebp/libjxl 官方工件只有 zip 格式；
+# 关掉默认 feature 只留 deflate 读，避免拉入加密等无关依赖树
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+# 编码时写 PPM 中间临时文件
+tempfile = "3.27.0"
+# JPEG XL 产物的进程内解码（T11，方案见 docs/decisions.md 0012）：纯 Rust，三端无外部依赖
+jxl-oxide = "0.12"
+
+[dev-dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+toml = { version = "1.1.6", features = ["serde"] }
+# 编码器安装测试要在测试内构造 tar.gz 与算哈希
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
+# 测试内构造 zip 工件（默认 feature 无妨，仅测试构建用）
+zip = "2.4.2"
+# 桩编码器测试要验证喂给 avifenc 的是真 PNG
+image = { version = "0.25.10", default-features = false, features = ["png"] }

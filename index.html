@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>像素竞技场</title>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="titlebar">
+        <h1>像素竞技场</h1>
+        <span id="core-version" class="muted">正在读取核心库版本…</span>
+        <span id="status" class="status" role="status"></span>
+        <!-- T23：设置中心入口（记录状态 / 导出目录 / 主题 / 编码器高级项） -->
+        <button id="open-settings" class="add-btn settings-btn" title="打开设置">设置</button>
+      </header>
+
+      <nav class="tabbar" aria-label="跑分组标签页">
+        <div id="tabs" class="tabs"></div>
+        <!-- fb3（issue #28）：单一「新建跑分组」入口，点击展开类型下拉，选中即直接建组 -->
+        <div class="new-group-wrap">
+          <button id="add-group" class="add-btn" title="新建跑分组" aria-haspopup="menu" aria-expanded="false">＋ 新建跑分组</button>
+          <div id="new-group-menu" class="group-menu" role="menu" hidden>
+            <button type="button" class="group-menu-item" role="menuitem" data-kind="image">图片跑分组</button>
+            <button type="button" class="group-menu-item" role="menuitem" data-kind="video">视频跑分组</button>
+          </div>
+        </div>
+      </nav>
+
+      <nav class="roundbar" aria-label="评测轮">
+        <span id="roundbar-label" class="roundbar-label">评测轮</span>
+        <div id="rounds" class="rounds"></div>
+        <button id="add-round" class="add-btn" title="新建评测轮">＋ 新建评测轮</button>
+      </nav>
+
+      <section id="content" class="content"></section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

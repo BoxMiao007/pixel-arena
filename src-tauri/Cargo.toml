@@ -1,0 +1,27 @@
+[package]
+name = "pixel-arena"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "像素竞技场桌面应用（Tauri 壳）"
+
+[lib]
+name = "pixel_arena_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# protocol-asset：asset protocol 让 WebView 直接读本地图片（对比查看器加载原图/跑分图）
+tauri = { version = "2", features = ["protocol-asset"] }
+pixel-arena-core = { path = "../crates/pixel-arena-core" }
+tauri-plugin-dialog = "2.8.1"
+# video_probe_meta（T15）的 VideoMeta 直接跨 IPC 返回，需要 serde derive 序列化
+serde = { version = "1", features = ["derive"] }
+# T23 设置文件（settings.json）的读写
+serde_json = "1"
+# onestop_size_search（T22）大小优先探测编码的暂存目录——lib.rs 运行时使用，
+# 必须放 [dependencies]（曾两度被挪去 [dev-dependencies]，见 T22/T23 笔记与审查修复 A2）；
+# settings.rs 单测（T23）随 [dependencies] 同样可见
+tempfile = "3"

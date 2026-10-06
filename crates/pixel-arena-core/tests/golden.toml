@@ -1,0 +1,76 @@
+# 黄金基准：固定样例图的指标数值锚点，防止指标实现悄悄漂移。
+# 数值来自本仓库实现入库时的实测（%.17e 全精度），测试按容差比对。
+# 样例图由 scripts/generate_golden_samples.sh 生成，重造样例必须同步更新本文件。
+#
+# 容差依据（notes/T02.md、notes/T04.md 有完整论证）：
+#   ssim        ±1e-9   —— 实现纯四则运算，跨平台位级稳定
+#   psnr        ±1e-6   —— 唯一的超越函数 log10 在不同 libm 间可差最后几位
+#   ms_ssim     ±1e-9   —— 纯四则 + 幂运算，与 numpy 定义性参照逐位对齐
+#                          （scripts/msssim_reference.py），幂的跨平台 libm 差异
+#                          在 1e-15 相对量级，1e-9 足够覆盖
+#   butteraugli 相对 0.1% —— 与该 crate 自带 C++ 对照回归的容差同标准
+#                          （其观测 FMA 噪声约 0.002%），绝对下限 1e-3 兜底
+#                          近零分数（相同图为 0）
+#   ssimulacra2 ±0.25   —— 与该 crate 官方测试同款绝对容差（其作者注明跨平台/
+#                          跨运行的浮点与线程求和顺序差异），同机实测逐位稳定
+# 容差故意收紧：指标算法一旦变化（哪怕是数字顺序），就应该显式重算并更新这里。
+
+[[samples]]
+name = "纯色（零方差，SSIM 接近 1）"
+reference = "solid-ref.png"
+distorted = "solid-dis.png"
+psnr = 3.60896037821198519e1
+ssim = 9.99526830241064368e-1
+ms_ssim = 9.99888169778805236e-1
+butteraugli = 8.56686878204345703e0
+ssimulacra2 = 9.08048595044212448e1
+
+[[samples]]
+name = "渐变（平滑区带状量化）"
+reference = "gradient-ref.png"
+distorted = "gradient-dis.png"
+psnr = 3.71508596656763430e1
+ssim = 8.74860293689143975e-1
+ms_ssim = 9.74321002876521347e-1
+butteraugli = 4.27144908905029297e0
+ssimulacra2 = 6.96782484191733715e1
+
+[[samples]]
+name = "噪声（两个独立噪声场，零相关下界）"
+reference = "noise-ref.png"
+distorted = "noise-dis.png"
+psnr = 7.80313937058095952e0
+ssim = 5.20169210152877752e-3
+ms_ssim = 9.54527366009162853e-2
+butteraugli = 2.57994499206542969e1
+ssimulacra2 = -1.09834323405785668e2
+
+[[samples]]
+name = "照片（模糊 + 高斯噪声）"
+reference = "photo-ref.png"
+distorted = "photo-dis.png"
+psnr = 2.16397027249395251e1
+ssim = 5.19027486536651872e-1
+ms_ssim = 9.14582819946497261e-1
+butteraugli = 9.35604286193847656e0
+ssimulacra2 = 2.50107964556227813e1
+
+[[samples]]
+name = "照片 JPEG q85（练习 JPEG 解码）"
+reference = "photo-ref.png"
+distorted = "photo-dis.jpg"
+psnr = 4.18562173887277424e1
+ssim = 9.93949644775366181e-1
+ms_ssim = 9.98492336665648295e-1
+butteraugli = 8.50897133350372314e-1
+ssimulacra2 = 8.99876066541856261e1
+
+[[samples]]
+name = "照片 WebP q80（练习 WebP 解码）"
+reference = "photo-ref.png"
+distorted = "photo-dis.webp"
+psnr = 3.63883734331774562e1
+ssim = 9.75839795342672289e-1
+ms_ssim = 9.94817490854953412e-1
+butteraugli = 1.90716290473937988e0
+ssimulacra2 = 8.18994540097345123e1
