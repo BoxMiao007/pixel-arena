@@ -97,7 +97,7 @@ export const BLINK_INTERVAL_MS = 500;
 export interface CompareUiState {
   /** 叠加模式：跑分图叠加不透明度 0~1（默认 50%） */
   opacity: number;
-  /** 差异模式：亮度差阈值（0~255 里的实用区间取 0~100，默认 24） */
+  /** 差异模式：亮度差阈值（0~255 里的实用区间取 0~100，默认 2：画质接近的编码对比也能看出热区） */
   threshold: number;
   /** 闪烁模式：是否自动交替（暂停后仍可手动切换） */
   blinkPlaying: boolean;
@@ -109,7 +109,7 @@ export interface CompareUiState {
 export function defaultCompareUi(): CompareUiState {
   return {
     opacity: 0.5,
-    threshold: 24,
+    threshold: 2, // T25 第 3 项：默认 2（原 24 太钝，压缩画质的细微差异在 0~100 区间里几乎不出热区）
     blinkPlaying: true,
     blinkShowingRef: false,
   };
