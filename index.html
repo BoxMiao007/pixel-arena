@@ -17,12 +17,14 @@
 
       <nav class="tabbar" aria-label="跑分组标签页">
         <div id="tabs" class="tabs"></div>
-        <!-- T17：新建跑分组先选类型（图片/视频），创建后不可更改 -->
-        <select id="new-group-kind" class="group-kind-select" title="选择新建跑分组的类型（创建后不可更改）">
-          <option value="image">图片跑分组</option>
-          <option value="video">视频跑分组</option>
-        </select>
-        <button id="add-group" class="add-btn" title="新建跑分组">＋ 新建跑分组</button>
+        <!-- fb3（issue #28）：单一「新建跑分组」入口，点击展开类型下拉，选中即直接建组 -->
+        <div class="new-group-wrap">
+          <button id="add-group" class="add-btn" title="新建跑分组" aria-haspopup="menu" aria-expanded="false">＋ 新建跑分组</button>
+          <div id="new-group-menu" class="group-menu" role="menu" hidden>
+            <button type="button" class="group-menu-item" role="menuitem" data-kind="image">图片跑分组</button>
+            <button type="button" class="group-menu-item" role="menuitem" data-kind="video">视频跑分组</button>
+          </div>
+        </div>
       </nav>
 
       <nav class="roundbar" aria-label="评测轮">

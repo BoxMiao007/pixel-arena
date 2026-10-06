@@ -29,6 +29,7 @@ import {
   sizeOutcomeLadder,
   defaultSelection,
   initOnestopCatalog,
+  toggleFormat,
   LOSSY_FORMATS,
   LOSSLESS_FORMATS,
   type LadderItem,
@@ -151,7 +152,8 @@ const $rounds = document.querySelector<HTMLDivElement>('#rounds')!;
 const $content = document.querySelector<HTMLElement>('#content')!;
 const $status = document.querySelector<HTMLSpanElement>('#status')!;
 const $addGroup = document.querySelector<HTMLButtonElement>('#add-group')!;
-const $newGroupKind = document.querySelector<HTMLSelectElement>('#new-group-kind')!;
+// fb3（issue #28）：单一「新建跑分组」入口的类型下拉菜单（点开选类型即直接建组）
+const $newGroupMenu = document.querySelector<HTMLDivElement>('#new-group-menu')!;
 const $roundbarLabel = document.querySelector<HTMLSpanElement>('#roundbar-label')!;
 const $addRound = document.querySelector<HTMLButtonElement>('#add-round')!;
 // T23 接线点：标题栏「设置」按钮
@@ -185,12 +187,46 @@ async function apply(action: () => Promise<Workspace>): Promise<void> {
   }
 }
 
-function createGroup(): void {
+function createGroup(kind: GroupKind): void {
   const name = `跑分组 ${ws ? ws.groups.length + 1 : 1}`;
-  // T17：类型随下拉菜单选定（image / video），后端创建后不可更改
-  const kind = $newGroupKind.value as GroupKind;
+  // fb3（issue #28）：类型来自下拉菜单点选的项（image / video），
+  // 后端创建后不可更改，且自动附带一个同类型评测轮（核心库 create_group_with_round）
   void apply(() => invoke('group_create', { name, kind }));
 }
+
+// fb3（issue #28）：「新建跑分组」下拉菜单的开合与点选。
+// 菜单是 DOM 里的真按钮（role=menuitem），选中即建组、无中间确认；
+// 点外部或 Esc 关闭，不建组。
+function closeGroupMenu(): void {
+  $newGroupMenu.hidden = true;
+  $addGroup.setAttribute('aria-expanded', 'false');
+}
+
+function toggleGroupMenu(): void {
+  const open = $newGroupMenu.hidden;
+  $newGroupMenu.hidden = !open;
+  $addGroup.setAttribute('aria-expanded', String(open));
+}
+
+$addGroup.addEventListener('click', (e) => {
+  e.stopPropagation(); // 别触发下面的「点外部关闭」监听
+  toggleGroupMenu();
+});
+
+for (const item of $newGroupMenu.querySelectorAll<HTMLButtonElement>('.group-menu-item')) {
+  item.addEventListener('click', () => {
+    closeGroupMenu();
+    createGroup(item.dataset.kind === 'video' ? 'video' : 'image');
+  });
+}
+
+document.addEventListener('click', (e) => {
+  if (!$newGroupMenu.hidden && !$newGroupMenu.contains(e.target as Node)) closeGroupMenu();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$newGroupMenu.hidden) closeGroupMenu();
+});
 
 function createRound(): void {
   const group = activeGroup();
@@ -555,53 +591,53 @@ function buildOnestopControls(): HTMLDivElement {
     box.append(hint);
   }
 
-  // 格式胶囊（多选）：点击切换选择，选中态 pill-on 高亮
-  box.append(
-    buildPillList(
-      LOSSY_FORMATS.map((f) => {
-        const selected = onestopSelection.lossyFormats.includes(f.format);
-        return {
-          label: f.label,
-          title: selected ? `点击移除 ${f.label}` : `点击选择 ${f.label}`,
-          onClick: () => {
-            onestopSelection.lossyFormats = selected
-              ? onestopSelection.lossyFormats.filter((x) => x !== f.format)
-              : [...onestopSelection.lossyFormats, f.format];
-            render();
-          },
-          disabled: scoring,
-          extraClass: selected ? 'pill-on' : undefined,
-        };
-      }),
-      '格式：',
-      '一站式有损格式选择',
-    ),
-  );
-
-  // 无损对照组胶囊：默认在列，点击或 × 移除；移除后可再点回来（US24）
-  box.append(
-    buildPillList(
-      LOSSLESS_FORMATS.map((f) => {
-        const selected = onestopSelection.losslessFormats.includes(f.format);
-        const toggle = () => {
-          onestopSelection.losslessFormats = selected
-            ? onestopSelection.losslessFormats.filter((x) => x !== f.format)
-            : [...onestopSelection.losslessFormats, f.format];
+  // 格式 + 无损组胶囊（fb3/issue #28 第 3、4 项）：合并到同一行 .pill-list——
+  // flex wrap 自动「放得下一行、放不下才换行」；有损格式点击切换选中（原行为）；
+  // 无损组不再有 × 移除，点胶囊本体即可切换选中/取消（选中态 pill-on 高亮）。
+  const formatList = buildPillList(
+    LOSSY_FORMATS.map((f) => {
+      const selected = onestopSelection.lossyFormats.includes(f.format);
+      return {
+        label: f.label,
+        title: selected ? `点击移除 ${f.label}` : `点击选择 ${f.label}`,
+        onClick: () => {
+          onestopSelection.lossyFormats = toggleFormat(
+            onestopSelection.lossyFormats,
+            f.format,
+          );
           render();
-        };
-        return {
-          label: f.label,
-          title: selected ? `点击移除 ${f.label}（无损对照组）` : `点击选择 ${f.label}（无损对照组）`,
-          onClick: toggle,
-          onRemove: selected ? toggle : undefined,
-          disabled: scoring,
-          extraClass: selected ? 'pill-on' : undefined,
-        };
-      }),
-      '无损组：',
-      '一站式无损对照组选择',
-    ),
+        },
+        disabled: scoring,
+        extraClass: selected ? 'pill-on' : undefined,
+      };
+    }),
+    '格式：',
+    '一站式格式与无损组选择',
   );
+  // 无损组接在同一行里：第二个前置灰字 + 无损胶囊（点击本体切换，无 ×）
+  const losslessLead = document.createElement('span');
+  losslessLead.className = 'pill-lead muted pill-lead-gap';
+  losslessLead.textContent = '无损组：';
+  formatList.append(losslessLead);
+  for (const f of LOSSLESS_FORMATS) {
+    const selected = onestopSelection.losslessFormats.includes(f.format);
+    formatList.append(
+      buildPill({
+        label: f.label,
+        title: selected ? `点击取消 ${f.label}（无损对照组）` : `点击选择 ${f.label}（无损对照组）`,
+        onClick: () => {
+          onestopSelection.losslessFormats = toggleFormat(
+            onestopSelection.losslessFormats,
+            f.format,
+          );
+          render();
+        },
+        disabled: scoring,
+        extraClass: selected ? 'pill-on' : undefined,
+      }),
+    );
+  }
+  box.append(formatList);
 
   return box;
 }
@@ -1337,7 +1373,7 @@ function startRename(
   input.addEventListener('blur', () => finish(true));
 }
 
-$addGroup.addEventListener('click', createGroup);
+// fb3：$addGroup 的点击处理已上移到「新建跑分组」下拉菜单接线处（toggleGroupMenu）。
 $addRound.addEventListener('click', createRound);
 
 // T23：设置面板（挂在 body 的覆盖层，不受内容区整页重渲染影响）

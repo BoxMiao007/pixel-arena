@@ -12,6 +12,7 @@ import {
   initOnestopCatalog,
   losslessLadder,
   sizeOutcomeLadder,
+  toggleFormat,
   LOSSLESS_FORMATS,
   LOSSY_FORMATS,
   searchSizeFormat,
@@ -168,5 +169,24 @@ describe('onestop 目录与阶梯（T22）', () => {
       ]);
       expect(outcome.note).toContain('不可达');
     });
+  });
+});
+
+// fb3（issue #28 第 4 项）：格式/无损组胶囊的选中切换抽成纯函数，
+// 有损与无损共用同一份切换语义（选中 ↔ 取消），无损组不再走 × 移除。
+describe('toggleFormat（fb3 选中态切换）', () => {
+  it('已选中 → 移除（不改变原数组与相对顺序）', () => {
+    const selected = ['png', 'webp-lossless', 'jxl-lossless'];
+    expect(toggleFormat(selected, 'webp-lossless')).toEqual(['png', 'jxl-lossless']);
+    expect(selected).toEqual(['png', 'webp-lossless', 'jxl-lossless']);
+  });
+
+  it('未选中 → 追加到末尾（移除后点回的路径）', () => {
+    expect(toggleFormat(['png', 'jxl-lossless'], 'webp-lossless')).toEqual([
+      'png',
+      'jxl-lossless',
+      'webp-lossless',
+    ]);
+    expect(toggleFormat([], 'png')).toEqual(['png']);
   });
 });
