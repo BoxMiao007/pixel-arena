@@ -248,6 +248,72 @@ body {
   color: var(--muted);
 }
 
+/* ---------- 已选文件胶囊（T18；T22 的格式/质量胶囊复用同一套样式） ---------- */
+
+.pill-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.pill-list .pill-lead {
+  font-size: 0.85rem;
+  margin-right: 0.1rem;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.15rem 0.4rem 0.15rem 0.7rem;
+  border: 1px solid #2a2d33;
+  border-radius: 999px;
+  background: #1d2127;
+  font-size: 0.85rem;
+  user-select: none;
+  white-space: nowrap;
+}
+
+/* 单选胶囊（原图/原视频）：点击替换，蓝色描边提示可点 */
+.pill.clickable {
+  cursor: pointer;
+  border-color: #4a6b9a;
+}
+
+.pill.clickable:hover {
+  border-color: #8ab4f8;
+}
+
+.pill.pill-disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pill-label {
+  min-width: 0;
+}
+
+.pill-remove {
+  border: none;
+  background: transparent;
+  color: #9aa0a6;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.05rem 0.3rem;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.pill-remove:hover:not(:disabled) {
+  color: #f28b82;
+}
+
+.pill-remove:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* ---------- 一站式跑分（T10） ---------- */
 
 /* 绿色描边区别于手动「开始跑分」：一站式自动生成 + 自动跑分 */
@@ -433,7 +499,23 @@ body {
 
 .viewer-area.split {
   display: flex;
-  gap: 0.5rem;
+}
+
+/* T20 分屏自动 N 栏：同一张卡片内无缝拼接——边框与圆角只属于卡片本身，
+   栏间无间隙无分隔线；每栏 flex:1 平分宽度，栏多时自动变窄 */
+.viewer-split-card {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #2a2d33;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #2b2b2b;
+}
+
+.viewer-split-card .viewer-pane {
+  border: none;
+  border-radius: 0;
 }
 
 .viewer-pane {

@@ -9,6 +9,8 @@ description = "像素竞技场命令行入口：一行命令批量跑分（score
 pixel-arena-core = { path = "../pixel-arena-core" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
+# 大小优先搜索的探测产物暂存目录（T21）
+tempfile = "3"
 
 [dev-dependencies]
 assert_cmd = "2"

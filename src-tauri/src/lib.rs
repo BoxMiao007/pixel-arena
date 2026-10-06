@@ -237,6 +237,71 @@ async fn round_score_candidate(
     .map_err(|err| format!("跑分任务执行失败: {err}"))?
 }
 
+/// IPC 命令（T18）：从评测轮移除一张跑分图（胶囊上的 × 单独移除）。
+/// 同步命令：只改内存列表并写盘，无耗时计算。
+#[tauri::command]
+fn round_remove_candidate(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.remove_round_candidate(&group_id, &round_id, &candidate_path)
+    })
+}
+
+/// 一站式勾选目录（T21 单源化）：有损/无损格式清单与默认质量档全部由核心库
+/// 质量优先取点驱动（基准 75 = 现行默认 60/75/90），前端 onestop.ts 启动时拉取，
+/// 不再自持档位常量。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnestopFormatEntry {
+    pub format: String,
+    pub label: String,
+}
+
+/// 一站式勾选目录的载荷（字段名与前端 onestop.ts 的消费一一对应）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnestopCatalog {
+    pub lossy_formats: Vec<OnestopFormatEntry>,
+    pub qualities: Vec<u8>,
+    pub lossless_formats: Vec<OnestopFormatEntry>,
+}
+
+/// 构建一站式勾选目录（pub 供不经 Tauri 运行时端到端测试，沿 export_round_file 先例）。
+pub fn onestop_default_catalog() -> OnestopCatalog {
+    use pixel_arena_core::encode::OnestopFormat;
+    use pixel_arena_core::ladder::{quality_points, LOSSLESS_FORMATS, LOSSY_FORMATS};
+    let entry = |format: OnestopFormat| OnestopFormatEntry {
+        format: format.as_str().to_string(),
+        label: format.display_name().to_string(),
+    };
+    // 默认质量档 = 各有损格式基准 75 取点的并集（升序去重）。基准 75 下四格式取点
+    // 相同（60/75/90），界面共用一排质量勾选的行为不变；基准不同的取点交给 T22 拉杆。
+    let mut qualities: Vec<u8> = LOSSY_FORMATS
+        .iter()
+        .flat_map(|format| quality_points(75, *format).expect("基准 75 合法"))
+        .collect();
+    qualities.sort_unstable();
+    qualities.dedup();
+    OnestopCatalog {
+        lossy_formats: LOSSY_FORMATS.iter().map(|format| entry(*format)).collect(),
+        qualities,
+        lossless_formats: LOSSLESS_FORMATS
+            .iter()
+            .map(|format| entry(*format))
+            .collect(),
+    }
+}
+
+/// IPC 命令：一站式勾选目录（T21 单源化，数据源见 onestop_default_catalog）。
+#[tauri::command]
+fn onestop_default_ladder() -> OnestopCatalog {
+    onestop_default_catalog()
+}
+
 /// IPC 命令：一站式模式按（格式, 质量）逐次生成一份跑分产物（T11 完整编码阶梯）。
 ///
 /// 格式标识：jpeg / webp / avif / jxl（有损，quality 必填）与 png / webp-lossless /
@@ -318,6 +383,19 @@ fn round_add_video_candidates(
     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
     mutate(&state, |ws| {
         ws.add_round_video_candidates(&group_id, &round_id, &paths)
+    })
+}
+
+/// IPC 命令（T18）：从评测轮移除一段跑分视频（胶囊上的 × 单独移除）。
+#[tauri::command]
+fn round_remove_video_candidate(
+    group_id: String,
+    round_id: String,
+    candidate_path: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        ws.remove_round_video_candidate(&group_id, &round_id, &candidate_path)
     })
 }
 
@@ -587,11 +665,15 @@ pub fn run() {
             round_activate,
             round_set_reference,
             round_add_candidates,
+            round_remove_candidate,
             round_score_candidate,
             onestop_encode,
+            // T21 单源化：一站式勾选目录（格式清单与默认质量档同出核心库取点）
+            onestop_default_ladder,
             // T14 视频评测轮
             round_set_video_reference,
             round_add_video_candidates,
+            round_remove_video_candidate,
             round_score_video_candidate,
             video_ensure_ffmpeg,
             // T15 视频逐帧对比（ffprobe 元信息 + 回环流服务）

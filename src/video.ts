@@ -4,7 +4,8 @@
 
 import { invoke, Channel } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { fileName } from './util';
+import { fileName, truncateFileName } from './util';
+import { buildPill, buildPillList } from './pills'; // T18 接线点：已选文件胶囊
 import { mountVideoCompare } from './video-compare'; // T15 接线点：视频逐帧同步对比
 
 // 与核心库 workspace.rs 的 CandidateVideo（camelCase）一一对应
@@ -44,7 +45,7 @@ export interface VideoBlockCtx {
   scoreOne(candidatePath: string): Promise<void>;
   /** 共享跑分标志的读写（main.ts 持有 scoring/scoringPath 两个模块级变量）。 */
   setScoring(active: boolean, path: string | null): void;
-  setStatus(text: string, isError?: boolean): void;
+  setStatus(text: string, isError?: boolean, title?: string): void;
   /** 触发整页重渲染（改本模块的排序状态后用）。 */
   rerender(): void;
   /** T23：文件对话框默认位置（记录状态开启时为最近目录，否则 undefined）。 */
@@ -131,12 +132,22 @@ export function mountVideoBlock(host: HTMLElement, ctx: VideoBlockCtx): void {
   pickReferenceBtn.disabled = ctx.scoring;
   pickReferenceBtn.addEventListener('click', () => void pickVideoReference(ctx));
 
-  const referenceLabel = document.createElement('span');
-  referenceLabel.className = 'reference-label';
-  referenceLabel.textContent = round.videoReferencePath
-    ? `原视频：${fileName(round.videoReferencePath)}`
-    : '尚未选择原视频';
-  referenceLabel.title = round.videoReferencePath ?? '';
+  // T18 胶囊：原视频为单选胶囊，点击弹对话框替换（round_set_video_reference 既有覆盖语义）
+  let referenceSlot: HTMLElement;
+  if (round.videoReferencePath) {
+    referenceSlot = buildPill({
+      label: truncateFileName(fileName(round.videoReferencePath)),
+      title: round.videoReferencePath,
+      onClick: () => void pickVideoReference(ctx),
+      disabled: ctx.scoring,
+      extraClass: 'pill-reference',
+    });
+  } else {
+    const none = document.createElement('span');
+    none.className = 'reference-label';
+    none.textContent = '尚未选择原视频';
+    referenceSlot = none;
+  }
 
   const addCandidatesBtn = document.createElement('button');
   addCandidatesBtn.className = 'add-btn';
@@ -155,8 +166,25 @@ export function mountVideoBlock(host: HTMLElement, ctx: VideoBlockCtx): void {
   scoreBtn.disabled = ctx.scoring || !ready;
   scoreBtn.addEventListener('click', () => void startVideoScoring(ctx));
 
-  toolbar.append(pickReferenceBtn, referenceLabel, addCandidatesBtn, scoreBtn);
+  toolbar.append(pickReferenceBtn, referenceSlot, addCandidatesBtn, scoreBtn);
   box.append(toolbar);
+
+  // T18 胶囊：已选跑分视频逐颗列出，× 单独移除（round_remove_video_candidate）；
+  // 移除经 IPC 落库后整页重渲染，结果表与逐帧对比随之只少这一段
+  if (round.videoCandidates.length > 0) {
+    box.append(
+      buildPillList(
+        round.videoCandidates.map((c) => ({
+          label: truncateFileName(fileName(c.path)),
+          title: c.path,
+          onRemove: () => removeVideoCandidate(ctx, c.path),
+          disabled: ctx.scoring,
+        })),
+        '已选跑分视频：',
+        '已选跑分视频列表',
+      ),
+    );
+  }
 
   if (round.videoCandidates.length > 0) {
     box.append(buildVideoTable(ctx));
@@ -184,6 +212,18 @@ export function mountVideoBlock(host: HTMLElement, ctx: VideoBlockCtx): void {
 }
 
 // ---------- 选视频与跑分 ----------
+
+/** T18：从评测轮移除一段跑分视频（胶囊 ×）。经 IPC 落库后整页重渲染。 */
+function removeVideoCandidate(ctx: VideoBlockCtx, candidatePath: string): void {
+  if (ctx.scoring) return;
+  void ctx.apply(() =>
+    invoke<WorkspaceLike>('round_remove_video_candidate', {
+      groupId: ctx.groupId,
+      roundId: ctx.round.id,
+      candidatePath,
+    }),
+  );
+}
 
 /** 弹系统文件对话框选原视频。取消选择则不动工作区。 */
 async function pickVideoReference(ctx: VideoBlockCtx): Promise<void> {
@@ -242,7 +282,12 @@ async function startVideoScoring(ctx: VideoBlockCtx): Promise<void> {
 
     for (let i = 0; i < queue.length; i++) {
       ctx.setScoring(true, queue[i]);
-      ctx.setStatus(`视频跑分中 ${i + 1}/${queue.length}：${fileName(queue[i])}`);
+      // T18：状态栏文件名统一截断，悬浮看全名
+      ctx.setStatus(
+        `视频跑分中 ${i + 1}/${queue.length}：${truncateFileName(fileName(queue[i]))}`,
+        false,
+        fileName(queue[i]),
+      );
       await ctx.scoreOne(queue[i]);
     }
     ctx.setStatus(`视频跑分完成，共 ${queue.length} 段`);
@@ -329,7 +374,8 @@ function buildVideoTable(ctx: VideoBlockCtx): HTMLTableElement {
 
     const name = document.createElement('td');
     name.className = 'cell-name';
-    name.textContent = fileName(candidate.path);
+    // T18：名称列统一中间截断，悬浮 title 看全路径
+    name.textContent = truncateFileName(fileName(candidate.path));
     name.title = candidate.path;
 
     const fileSize = document.createElement('td');

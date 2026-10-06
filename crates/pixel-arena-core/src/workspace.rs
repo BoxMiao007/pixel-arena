@@ -441,6 +441,30 @@ impl Workspace {
         Ok(())
     }
 
+    // ---------- T18：单文件移除（图片 / 视频各一个入口，语义一一对应） ----------
+
+    /// 从评测轮移除一张跑分图（单文件精准剔除，替代只能整轮删除的限制）。
+    ///
+    /// 只摘掉这一行：其余跑分图的跑分结果、体积比与原图都不动（指标都是相对
+    /// 原图算的，与别的跑分图无关）。跑分图必须在本轮列表里，从未选入的路径
+    /// 报 `CandidateNotFound`；错误先于任何内存变更抛出。
+    pub fn remove_round_candidate(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        candidate_path: &str,
+    ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Image)?;
+        let round = self.round_mut(group_id, round_id)?;
+        let index = round
+            .candidates
+            .iter()
+            .position(|c| c.path == candidate_path.trim())
+            .ok_or_else(|| WorkspaceError::CandidateNotFound(candidate_path.to_string()))?;
+        round.candidates.remove(index);
+        Ok(())
+    }
+
     // ---------- T14：视频评测轮（原视频 / 跑分视频 / VMAF-PSNR-SSIM） ----------
     // 语义与图片侧三个方法一一对应；跑分需要调用方传入含 libvmaf 滤镜的 ffmpeg 路径。
 
@@ -559,6 +583,26 @@ impl Workspace {
             }
         }
         candidate.elapsed_ms = Some(elapsed_ms);
+        Ok(())
+    }
+
+    /// 从评测轮移除一段跑分视频（T18，语义与 [`Workspace::remove_round_candidate`]
+    /// 一一对应）。只摘掉这一行，其余跑分视频的数据与原视频不动；从未选入的
+    /// 路径报 `VideoCandidateNotFound`，错误先于任何内存变更抛出。
+    pub fn remove_round_video_candidate(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        candidate_path: &str,
+    ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Video)?;
+        let round = self.round_mut(group_id, round_id)?;
+        let index = round
+            .video_candidates
+            .iter()
+            .position(|c| c.path == candidate_path.trim())
+            .ok_or_else(|| WorkspaceError::VideoCandidateNotFound(candidate_path.to_string()))?;
+        round.video_candidates.remove(index);
         Ok(())
     }
 
@@ -1708,6 +1752,165 @@ mod tests {
         let error = candidate.error.as_deref().expect("失败行应有原因");
         assert!(error.contains("ffmpeg"), "原因应可定位: {error}");
         assert!(candidate.elapsed_ms.is_some(), "失败也应记录已耗时");
+    }
+
+    // ---------- T18：单文件移除（从评测轮移除单个跑分图/跑分视频） ----------
+
+    #[test]
+    fn remove_round_candidate_removes_only_that_row_and_keeps_others() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
+        ws.add_round_candidates(
+            &g,
+            &r,
+            &[&data("photo-dis.jpg"), &data("photo-dis.webp"), &data("photo-dis.png")],
+        )
+        .unwrap();
+        // 先给一张跑分图跑出结果，验证移除别的文件不影响它
+        ws.score_round_candidate(&g, &r, &data("photo-dis.jpg")).unwrap();
+
+        ws.remove_round_candidate(&g, &r, &data("photo-dis.webp")).unwrap();
+
+        {
+            let round = &ws.groups[0].rounds[0];
+            let paths: Vec<&str> = round.candidates.iter().map(|c| c.path.as_str()).collect();
+            assert_eq!(
+                paths,
+                vec![data("photo-dis.jpg"), data("photo-dis.png")],
+                "被移除的行消失，其余行保持原有顺序"
+            );
+            let kept = &round.candidates[0];
+            assert!(
+                kept.metrics.is_some() && kept.error.is_none(),
+                "其余跑分图的跑分结果不受影响"
+            );
+            assert_eq!(
+                kept.size_ratio,
+                Some(17341.0 / 127123.0),
+                "体积比保持不变"
+            );
+        }
+        // 移除后索引一致：剩余两张仍可正常逐张跑分
+        ws.score_round_candidate(&g, &r, &data("photo-dis.png")).unwrap();
+        assert!(ws.groups[0].rounds[0].candidates[1].metrics.is_some());
+    }
+
+    #[test]
+    fn remove_last_candidate_leaves_empty_round_and_active_round_unchanged() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
+        let r1 = ws.create_round(&g, "轮1").unwrap().id.clone();
+        let r2 = ws.create_round(&g, "轮2").unwrap().id.clone();
+        ws.set_round_reference(&g, &r1, &data("photo-ref.png")).unwrap();
+        ws.add_round_candidates(&g, &r1, &[&data("photo-dis.jpg")]).unwrap();
+        ws.activate_round(&g, &r1).unwrap();
+
+        ws.remove_round_candidate(&g, &r1, &data("photo-dis.jpg")).unwrap();
+
+        let round = &ws.groups[0].rounds[0];
+        assert!(round.candidates.is_empty(), "移除最后一颗后列表为空");
+        assert_eq!(
+            round.reference_path.as_deref(),
+            Some(data("photo-ref.png").as_str()),
+            "原图不受跑分图移除影响"
+        );
+        // 激活轮不受移除影响
+        assert_eq!(ws.groups[0].active_round_id.as_deref(), Some(r1.as_str()));
+        // 空轮仍可用：重新添加与激活另一轮都正常
+        ws.add_round_candidates(&g, &r1, &[&data("photo-dis.webp")]).unwrap();
+        assert_eq!(ws.groups[0].rounds[0].candidates.len(), 1);
+        ws.activate_round(&g, &r2).unwrap();
+        assert_eq!(ws.groups[0].active_round_id.as_deref(), Some(r2.as_str()));
+    }
+
+    #[test]
+    fn remove_round_candidate_reports_missing_targets_clearly() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg")]).unwrap();
+
+        // 跑分图不在本轮列表里（从未选入）→ 明确报错，列表不变
+        assert!(matches!(
+            ws.remove_round_candidate(&g, &r, "/tmp/没选过的图.png"),
+            Err(WorkspaceError::CandidateNotFound(_))
+        ));
+        // 组/轮不存在 → 各自的中文错误
+        assert!(matches!(
+            ws.remove_round_candidate("不存在", &r, &data("photo-dis.jpg")),
+            Err(WorkspaceError::GroupNotFound(_))
+        ));
+        assert!(matches!(
+            ws.remove_round_candidate(&g, "不存在", &data("photo-dis.jpg")),
+            Err(WorkspaceError::RoundNotFound(_))
+        ));
+        // 视频跑分组里移除跑分图被类型锁定拦截（T17 从紧拍板）
+        let gv = ws
+            .create_group("视频组", GroupKind::Video)
+            .unwrap()
+            .id
+            .clone();
+        let rv = ws.create_round(&gv, "轮").unwrap().id.clone();
+        assert!(matches!(
+            ws.remove_round_candidate(&gv, &rv, &data("photo-dis.jpg")),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Video,
+                GroupKind::Image
+            ))
+        ));
+        assert_eq!(ws.groups[0].rounds[0].candidates.len(), 1, "失败路径不改动列表");
+    }
+
+    #[test]
+    fn remove_round_video_candidate_mirrors_image_side() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组", GroupKind::Video).unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.add_round_video_candidates(
+            &g,
+            &r,
+            &[&video_data("video-dis-150k.mp4"), &video_data("video-small-160x120.mp4")],
+        )
+        .unwrap();
+
+        ws.remove_round_video_candidate(&g, &r, &video_data("video-dis-150k.mp4"))
+            .unwrap();
+        let paths: Vec<&str> = ws.groups[0].rounds[0]
+            .video_candidates
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect();
+        assert_eq!(paths, vec![video_data("video-small-160x120.mp4")]);
+
+        // 最后一颗移掉后列表为空、激活轮不变；重新添加仍正常
+        ws.remove_round_video_candidate(&g, &r, &video_data("video-small-160x120.mp4"))
+            .unwrap();
+        assert!(ws.groups[0].rounds[0].video_candidates.is_empty());
+        assert_eq!(ws.groups[0].active_round_id.as_deref(), Some(r.as_str()));
+        ws.add_round_video_candidates(&g, &r, &[&video_data("video-dis-150k.mp4")])
+            .unwrap();
+        assert_eq!(ws.groups[0].rounds[0].video_candidates.len(), 1);
+
+        // 不在列表里 → VideoCandidateNotFound；图片组里移除跑分视频被类型锁定拦截
+        assert!(matches!(
+            ws.remove_round_video_candidate(&g, &r, "/tmp/没选过的.mp4"),
+            Err(WorkspaceError::VideoCandidateNotFound(_))
+        ));
+        let gi = ws
+            .create_group("图片组", GroupKind::Image)
+            .unwrap()
+            .id
+            .clone();
+        let ri = ws.create_round(&gi, "轮").unwrap().id.clone();
+        assert!(matches!(
+            ws.remove_round_video_candidate(&gi, &ri, &video_data("video-dis-150k.mp4")),
+            Err(WorkspaceError::GroupKindMismatch(
+                GroupKind::Image,
+                GroupKind::Video
+            ))
+        ));
     }
 
     #[test]

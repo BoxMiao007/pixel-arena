@@ -585,3 +585,59 @@ fn real_jxl_end_to_end_when_provided() {
     assert!(metrics.psnr > 25.0, "q75 的 PSNR 应在合理区间: {}", metrics.psnr);
     std::fs::remove_dir_all(&out_dir).ok();
 }
+
+// ---------- 大小优先的探测缝（T21）：probe_onestop_size ----------
+
+/// 预置桩 cwebp：复用检查只看「成员文件存在 + sidecar 哈希吻合」，桩被调用时把
+/// 入库的真实 WebP 样例拷成产物（与 CLI run 测试同一桩策略，离线确定性）。
+fn preseed_stub_cwebp(tools: &std::path::Path, fixture_webp: &str) {
+    use sha2::{Digest, Sha256};
+    let dir = tools.join("libwebp").join("1.6.0");
+    std::fs::create_dir_all(&dir).unwrap();
+    let encoder = dir.join("cwebp");
+    // 参数契约（encode_webp_using）：$1=-quiet $2=-q $3=质量 $4=输入 $5=-o $6=产物临时文件
+    std::fs::write(&encoder, format!("#!/bin/sh\ncp '{fixture_webp}' \"$6\"\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&encoder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let digest = format!("{:x}", Sha256::digest(std::fs::read(&encoder).unwrap()));
+    std::fs::write(dir.join("cwebp.sha256"), digest).unwrap();
+}
+
+#[test]
+fn probe_onestop_size_返回产物字节数_复用已装编码器() {
+    let fixture = data("photo-dis.webp");
+    let tools = tempfile::tempdir().unwrap();
+    preseed_stub_cwebp(tools.path(), &fixture);
+    let scratch = tempfile::tempdir().unwrap();
+
+    let bytes = pixel_arena_core::encode::probe_onestop_size(
+        data("photo-ref.png"),
+        pixel_arena_core::encode::OnestopFormat::Webp,
+        75,
+        scratch.path(),
+        tools.path(),
+    )
+    .expect("探测应成功");
+
+    let fixture_bytes = std::fs::metadata(&fixture).unwrap().len();
+    assert_eq!(bytes, fixture_bytes, "探测应回传桩产物（入库样例）的字节数");
+}
+
+#[test]
+fn probe_onestop_size_无损格式不参与搜索_中文报错() {
+    let scratch = tempfile::tempdir().unwrap();
+    let message = pixel_arena_core::encode::probe_onestop_size(
+        data("photo-ref.png"),
+        pixel_arena_core::encode::OnestopFormat::Png,
+        75,
+        scratch.path(),
+        scratch.path(),
+    )
+    .err()
+    .expect("无损格式应拒绝探测")
+    .to_string();
+    assert!(message.contains("无损"), "错误应说明无损格式不参与：{message}");
+}
