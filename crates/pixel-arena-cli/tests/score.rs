@@ -364,6 +364,148 @@ fn score_缺必填参数时退出码2() {
     assert_eq!(output.status.code(), Some(2), "用法错误退出码应为 2（沿用现有约定）");
 }
 
+// ---------- T26：跑分阶段并行（--concurrency，决策 0018 的调度函数接线） ----------
+
+#[test]
+fn score_并发2_输出与并发1逐行一致_进度保持n_of_m() {
+    // run_parallel 结果保序、指标是单图闭式计算：并发度不影响 stdout 数据。
+    // 黄金样例两图锚定逐行一致，顺带钉住并行档的进度提示形态（完成计数单调）。
+    let reference = sample("photo-ref.png");
+    let first = sample("photo-dis.png");
+    let second = sample("photo-dis.jpg");
+    let run_with = |concurrency: &str, format: &str| {
+        Command::cargo_bin("pixel-arena-cli")
+            .unwrap()
+            .args([
+                "score",
+                "--reference",
+                reference.to_str().unwrap(),
+                "--candidates",
+                first.to_str().unwrap(),
+                second.to_str().unwrap(),
+                "--concurrency",
+                concurrency,
+                "--format",
+                format,
+            ])
+            .output()
+            .unwrap()
+    };
+
+    let serial = run_with("1", "csv");
+    assert_eq!(
+        serial.status.code(),
+        Some(0),
+        "stderr：{}",
+        String::from_utf8_lossy(&serial.stderr)
+    );
+    let parallel = run_with("2", "csv");
+    assert_eq!(
+        parallel.status.code(),
+        Some(0),
+        "stderr：{}",
+        String::from_utf8_lossy(&parallel.stderr)
+    );
+    assert_eq!(
+        serial.stdout, parallel.stdout,
+        "并发度不应改变输出数据（保序 + 闭式指标）"
+    );
+
+    // JSON 档同样双跑直证（审查修复：CSV 之外的第二输出形态；HTML 与两者同源 rows 生成）
+    let serial_json = run_with("1", "json");
+    let parallel_json = run_with("2", "json");
+    assert_eq!(
+        serial_json.status.code(),
+        Some(0),
+        "stderr：{}",
+        String::from_utf8_lossy(&serial_json.stderr)
+    );
+    assert_eq!(
+        serial_json.stdout, parallel_json.stdout,
+        "JSON 输出同样不应随并发度变化"
+    );
+
+    let stderr = String::from_utf8(parallel.stderr).unwrap();
+    let first_progress = stderr.find("1/2").expect("进度应包含 1/2");
+    let second_progress = stderr.find("2/2").expect("进度应包含 2/2");
+    assert!(
+        first_progress < second_progress,
+        "完成计数应单调递增：{stderr}"
+    );
+}
+
+#[test]
+fn score_并发参数_零与超大值都钳到合法区间_正常出结果() {
+    // 0 钳到 1、99999 钳到逻辑核数：都按正常并行档跑完，不是用法错误
+    let reference = sample("photo-ref.png");
+    let candidate = sample("photo-dis.png");
+    for concurrency in ["0", "99999"] {
+        let output = Command::cargo_bin("pixel-arena-cli")
+            .unwrap()
+            .args([
+                "score",
+                "--reference",
+                reference.to_str().unwrap(),
+                "--candidates",
+                candidate.to_str().unwrap(),
+                "--concurrency",
+                concurrency,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "--concurrency {concurrency} 应钳制而不是报错，stderr：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            stdout.lines().count(),
+            2,
+            "单张跑分图应输出表头加一行：{stdout}"
+        );
+    }
+}
+
+#[test]
+fn score_并行时坏图在前_退出码1_错误指向坏图_stdout空() {
+    // 串行版遇错即停只报第一张坏图；并行版全跑完统一结算，仍按输入顺序取首个
+    // 错误，stdout 保持「失败时不输出数据」的纯数据约定
+    let dir = tempfile::tempdir().expect("临时目录应能创建");
+    let reference = sample("photo-ref.png");
+    let broken = dir.path().join("损坏的跑分图.png");
+    std::fs::write(&broken, [0x89, b'P', b'N', b'G', 0xFF, 0x00, 0xDE, 0xAD])
+        .expect("测试样例应能写入");
+    let good = sample("photo-dis.png");
+
+    let output = Command::cargo_bin("pixel-arena-cli")
+        .unwrap()
+        .args([
+            "score",
+            "--reference",
+            reference.to_str().unwrap(),
+            "--candidates",
+            broken.to_str().unwrap(),
+            good.to_str().unwrap(),
+            "--concurrency",
+            "2",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("错误：") && stderr.contains("无法解码"),
+        "错误应指向坏图并说明原因：{stderr}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "失败时 stdout 应保持纯数据约定（空）"
+    );
+}
+
 #[test]
 fn score_html_自包含中文报告_含五指标表头与生成时间() {
     let reference = sample("photo-ref.png");

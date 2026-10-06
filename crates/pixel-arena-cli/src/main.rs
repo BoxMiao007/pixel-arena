@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use pixel_arena_core::encode::{encode_onestop, probe_onestop_size, EncoderOverrides, EncoderSource, OnestopFormat};
 use pixel_arena_core::ladder::{quality_ladder, size_search, LadderItem, LOSSLESS_FORMATS, LOSSY_FORMATS};
+use pixel_arena_core::parallel::{concurrency_limit, logical_cores, run_parallel};
 use pixel_arena_core::{score_images, CoreError};
 
 #[derive(Parser)]
@@ -35,6 +36,10 @@ enum Command {
         /// 输出格式，默认 csv（可选 json / html）。
         #[arg(long, value_enum, default_value_t = OutputFormat::Csv)]
         format: OutputFormat,
+
+        /// 并行跑分线程数，默认 = 逻辑核数的一半（与桌面应用默认一致），传入值夹在 [1, 逻辑核数]。
+        #[arg(long, value_name = "N")]
+        concurrency: Option<usize>,
     },
     /// 对一张原图按编码阶梯（决策 0003）自动生成跑分图并跑分，输出指标表。
     Run {
@@ -75,6 +80,10 @@ enum Command {
         /// 编码器安装目录（默认应用数据目录 tools/，与桌面应用共用；首次使用自动下载）。
         #[arg(long, value_name = "DIR")]
         tools_dir: Option<PathBuf>,
+
+        /// 并行跑分线程数，默认 = 逻辑核数的一半（与桌面应用默认一致），传入值夹在 [1, 逻辑核数]。
+        #[arg(long, value_name = "N")]
+        concurrency: Option<usize>,
     },
 }
 
@@ -107,7 +116,8 @@ fn main() -> ExitCode {
             reference,
             candidates,
             format,
-        } => run_score(&reference, &candidates, format),
+            concurrency,
+        } => run_score(&reference, &candidates, format, concurrency),
         Command::Run {
             reference,
             formats,
@@ -118,6 +128,7 @@ fn main() -> ExitCode {
             format,
             out,
             tools_dir,
+            concurrency,
         } => run_run(RunArgs {
             reference,
             formats,
@@ -128,11 +139,26 @@ fn main() -> ExitCode {
             format,
             out,
             tools_dir,
+            concurrency,
         }),
     }
 }
 
-fn run_score(reference: &Path, candidates: &[PathBuf], format: OutputFormat) -> ExitCode {
+/// 并行跑分的线程上限：未传时取半核（决策 0018 的默认档），显式值夹在
+/// [1, 逻辑核数]——夹制而非报错，脚本里按机器规格传大值也能跑。
+fn resolve_concurrency(explicit: Option<usize>) -> usize {
+    match explicit {
+        None => concurrency_limit(0.5),
+        Some(value) => value.clamp(1, logical_cores()),
+    }
+}
+
+fn run_score(
+    reference: &Path,
+    candidates: &[PathBuf],
+    format: OutputFormat,
+    concurrency: Option<usize>,
+) -> ExitCode {
     let reference_bytes = match std::fs::metadata(reference) {
         Ok(metadata) => metadata.len(),
         Err(source) => {
@@ -144,35 +170,43 @@ fn run_score(reference: &Path, candidates: &[PathBuf], format: OutputFormat) -> 
     };
 
     let total = candidates.len();
+    // 并行跑分（决策 0018 的 run_parallel，结果保序）：串行版的「遇错即停」变为
+    // 跑完统一结算，错误仍取输入顺序里的第一张坏图，stdout 保持失败时不输出数据
+    let results = run_parallel(
+        candidates,
+        resolve_concurrency(concurrency),
+        |candidate| {
+            let candidate_bytes = match std::fs::metadata(candidate) {
+                Ok(metadata) => metadata.len(),
+                Err(source) => {
+                    return Err(CoreError::Io {
+                        path: candidate.to_path_buf(),
+                        source,
+                    });
+                }
+            };
+            let metrics = score_images(reference, candidate)?;
+            Ok(ScoreRow {
+                reference: reference.display().to_string(),
+                candidate: candidate.display().to_string(),
+                psnr: metrics.psnr,
+                ssim: metrics.ssim,
+                ms_ssim: metrics.ms_ssim,
+                butteraugli: metrics.butteraugli,
+                ssimulacra2: metrics.ssimulacra2,
+                reference_bytes,
+                candidate_bytes,
+                size_ratio: candidate_bytes as f64 / reference_bytes as f64,
+            })
+        },
+        |done| eprintln!("正在跑分 {done}/{total}…"),
+    );
     let mut rows = Vec::with_capacity(total);
-    for (index, candidate) in candidates.iter().enumerate() {
-        eprintln!("正在跑分 {}/{}：{}", index + 1, total, candidate.display());
-
-        let candidate_bytes = match std::fs::metadata(candidate) {
-            Ok(metadata) => metadata.len(),
-            Err(source) => {
-                return fail(&CoreError::Io {
-                    path: candidate.to_path_buf(),
-                    source,
-                });
-            }
-        };
-        let metrics = match score_images(reference, candidate) {
-            Ok(metrics) => metrics,
+    for result in results {
+        match result {
+            Ok(row) => rows.push(row),
             Err(error) => return fail(&error),
-        };
-        rows.push(ScoreRow {
-            reference: reference.display().to_string(),
-            candidate: candidate.display().to_string(),
-            psnr: metrics.psnr,
-            ssim: metrics.ssim,
-            ms_ssim: metrics.ms_ssim,
-            butteraugli: metrics.butteraugli,
-            ssimulacra2: metrics.ssimulacra2,
-            reference_bytes,
-            candidate_bytes,
-            size_ratio: candidate_bytes as f64 / reference_bytes as f64,
-        });
+        }
     }
 
     match format {
@@ -647,6 +681,7 @@ struct RunArgs {
     format: OutputFormat,
     out: Option<PathBuf>,
     tools_dir: Option<PathBuf>,
+    concurrency: Option<usize>,
 }
 
 /// [`build_run_ladder`] 的返回（阶梯 + 大小优先标注 + 失败标记，不再走三元组）。
@@ -668,6 +703,7 @@ fn run_run(args: RunArgs) -> ExitCode {
         format,
         out,
         tools_dir,
+        concurrency,
     } = args;
     // 原图先于一切校验：最基础的输入错了，后面都不用做
     let reference_bytes = match std::fs::metadata(&reference) {
@@ -780,41 +816,56 @@ fn run_run(args: RunArgs) -> ExitCode {
         }
     }
 
-    // 跑分阶段：始终用产物本身（AVIF/JXL 的 PNG 代片只供查看器显示）
-    let mut rows: Vec<RunRow> = Vec::with_capacity(products.len());
+    // 跑分阶段：始终用产物本身（AVIF/JXL 的 PNG 代片只供查看器显示）。
+    // 并行调度（run_parallel 保序）：单项失败不中断其余，结算按输入顺序打印
+    // 失败行、取首个错误，与串行版语义一致
     let total = products.len();
-    for (index, (_, item_format, quality, note, product)) in products.iter().enumerate() {
-        eprintln!("正在跑分 {}/{}：{}", index + 1, total, product.display());
-        let candidate_bytes = match std::fs::metadata(product) {
-            Ok(metadata) => metadata.len(),
-            Err(source) => {
-                eprintln!("跑分失败：{}：{source}", product.display());
-                any_failed = true;
-                first_error
-                    .get_or_insert_with(|| format!("无法读取产物 {}：{source}", product.display()));
-                continue;
+    let results = run_parallel(
+        &products,
+        resolve_concurrency(concurrency),
+        |(_, item_format, quality, note, product)| {
+            let candidate_bytes = match std::fs::metadata(product) {
+                Ok(metadata) => metadata.len(),
+                Err(source) => {
+                    return Err((
+                        format!("跑分失败：{}：{source}", product.display()),
+                        format!("无法读取产物 {}：{source}", product.display()),
+                    ));
+                }
+            };
+            match score_images(&reference, product) {
+                Ok(metrics) => Ok(RunRow {
+                    reference: reference.display().to_string(),
+                    candidate: product.display().to_string(),
+                    format: item_format.clone(),
+                    quality: *quality,
+                    psnr: metrics.psnr,
+                    ssim: metrics.ssim,
+                    ms_ssim: metrics.ms_ssim,
+                    butteraugli: metrics.butteraugli,
+                    ssimulacra2: metrics.ssimulacra2,
+                    reference_bytes,
+                    candidate_bytes,
+                    size_ratio: candidate_bytes as f64 / reference_bytes as f64,
+                    note: note.clone(),
+                }),
+                Err(error) => Err((
+                    format!("跑分失败：{}：{error}", product.display()),
+                    error.to_string(),
+                )),
             }
-        };
-        match score_images(&reference, product) {
-            Ok(metrics) => rows.push(RunRow {
-                reference: reference.display().to_string(),
-                candidate: product.display().to_string(),
-                format: item_format.clone(),
-                quality: *quality,
-                psnr: metrics.psnr,
-                ssim: metrics.ssim,
-                ms_ssim: metrics.ms_ssim,
-                butteraugli: metrics.butteraugli,
-                ssimulacra2: metrics.ssimulacra2,
-                reference_bytes,
-                candidate_bytes,
-                size_ratio: candidate_bytes as f64 / reference_bytes as f64,
-                note: note.clone(),
-            }),
-            Err(error) => {
-                eprintln!("跑分失败：{}：{error}", product.display());
+        },
+        |done| eprintln!("正在跑分 {done}/{total}…"),
+    );
+
+    let mut rows: Vec<RunRow> = Vec::with_capacity(total);
+    for result in results {
+        match result {
+            Ok(row) => rows.push(row),
+            Err((line, first)) => {
+                eprintln!("{line}");
                 any_failed = true;
-                first_error.get_or_insert_with(|| error.to_string());
+                first_error.get_or_insert(first);
             }
         }
     }
@@ -979,4 +1030,29 @@ fn write_run_html(rows: &[RunRow], size_mode: bool) {
             &table
         )
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 并发参数_未传时取半核() {
+        assert_eq!(resolve_concurrency(None), concurrency_limit(0.5));
+    }
+
+    #[test]
+    fn 并发参数_零与超界都钳到区间端点() {
+        let cores = logical_cores();
+        assert_eq!(resolve_concurrency(Some(0)), 1, "0 钳到 1");
+        assert_eq!(resolve_concurrency(Some(cores + 100)), cores, "超界钳到逻辑核数");
+    }
+
+    #[test]
+    fn 并发参数_区间内原样使用() {
+        let cores = logical_cores();
+        // 2 在核数 ≥2 时原样使用；单核机器上被钳到 1（2.min(cores) 两端都锚定，无条件断言）
+        assert_eq!(resolve_concurrency(Some(2)), 2.min(cores));
+        assert_eq!(resolve_concurrency(Some(1)), 1);
+    }
 }

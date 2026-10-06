@@ -720,9 +720,20 @@ body {
 
 /* 网格行列数由 multiview 按模式内联写入（repeat(2|3, 1fr)），格子随窗口伸缩；
    留白与格子边框沿用分屏的间距与 .viewer-pane 样式；
-   高度自适应窗口（小窗口不溢出，大窗口封顶 560px），上方固定.chrome 约 259px */
+   高度自适应窗口（小窗口不溢出，大窗口封顶 560px），上方固定.chrome 约 259px；
+   自然满高存 --grid-base-h 供放大态复用（审查修复：魔法数单一来源） */
 .viewer-area.grid {
-  height: clamp(240px, calc(100vh - 259px), 560px);
+  --grid-base-h: calc(100vh - 259px);
+  height: clamp(240px, var(--grid-base-h), 560px);
+}
+
+/* T27（issue #32）：网格放大态（显式「放大/还原」按钮，状态按轮键控）。
+   放大 = 高度取「内容区自然满高」与「行数 × 每行最小可用高度」（JS 按行数写入
+   --grid-zoom-h，见 multiview.ts 的 gridZoomHeight）的较大者：矮窗口 + 多图
+   （如 950×525 放 16 张排 6 行）时每格恢复可用高度，超出可视区的行随页面滚动查看；
+   点击切换后视口重新 fit（窗格几何变了，与切模式行为一致，见 buildGridZoomButton） */
+.viewer-area.grid.zoomed {
+  height: max(var(--grid-base-h), var(--grid-zoom-h, 0px));
 }
 
 .viewer-grid {
@@ -855,7 +866,13 @@ body {
 }
 
 .video-compare .viewer-area.grid {
-  height: clamp(220px, calc(100vh - 400px), 420px);
+  --grid-base-h: calc(100vh - 400px);
+  height: clamp(220px, var(--grid-base-h), 420px);
+}
+
+/* T27：视频网格放大态，语义同图片网格（上方 clamp 规则被本规则覆盖） */
+.video-compare .viewer-area.grid.zoomed {
+  height: max(var(--grid-base-h), var(--grid-zoom-h, 0px));
 }
 
 /* 时间轴行：±1 帧按钮 + 同步拖动滑杆 + 时间显示 */

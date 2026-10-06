@@ -23,7 +23,7 @@ import {
   type CompareUiState,
 } from './compare-modes';
 import { fileName, truncateFileName } from './util';
-import { mountMultiview, resolvePaneImage } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
+import { mountMultiview, resolvePaneImage, applyGridZoom, buildGridZoomButton, gridLayout } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts；T27：网格放大按钮同源
 import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 export interface ViewerRound {
@@ -91,6 +91,8 @@ interface ViewerState {
   panePaths: (string | null)[];
   /** 共享视口；null = 待适配（图片就绪后按窗格尺寸 fit） */
   viewport: ViewportState | null;
+  /** 网格放大态（T27，issue #32）：显式「放大/还原」切换，按轮键控，新轮默认未放大 */
+  gridZoomed: boolean;
   /** T09 三种模式的控件状态（T25 第 2 项：每轮一份，切标签互不串扰、切走保留） */
   compareUi: CompareUiState;
 }
@@ -110,6 +112,7 @@ function viewerStateFor(roundId: string): ViewerState {
       cellPaths: [],
       panePaths: [],
       viewport: null,
+      gridZoomed: false,
       compareUi: defaultCompareUi(),
     };
     viewerStates.set(roundId, st);
@@ -261,6 +264,13 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
 
   bar.append(title, modes);
 
+  // T27（issue #32）：网格模式的显式「放大/还原」切换。放大状态按轮键控（决策 0019），
+  // 接线与视频网格共用 multiview 的 buildGridZoomButton（几何切换 + 重新 fit）；
+  // area 在下方才创建，由回调延迟取用
+  if (state.mode === 'grid') {
+    bar.append(buildGridZoomButton(state, () => gridLayout(1 + round.candidates.length).rows, () => area));
+  }
+
   // T09 接线：三种新模式的专属控件（叠加不透明度滑杆 / 差异阈值滑杆 / 闪烁播放按钮），
   // 控件构建在 compare-modes.ts、状态由本轮 state.compareUi 持有；改动后回调整 scheduleDraw
   //（闪烁还要管定时器启停）
@@ -311,6 +321,9 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     // 因此格子间同步、切模式保留状态、图片不重复解码都与现有模式一致。
     area.className = 'viewer-area grid';
     mountMultiview(area, round, state, ensureImage);
+    // T27：放大态按轮状态恢复（area 每次挂载都是新建元素，类与高度变量必须重放，
+    // 否则切轮回来按钮显示「还原」而网格区是默认高度；与视频侧同一模式）
+    applyGridZoom(area, gridLayout(1 + round.candidates.length).rows, state.gridZoomed);
   } else if (state.mode === 'split') {
     // ---- T20 重组：分屏自动 N 栏 ----
     // 原图固定最左，每张已选跑分图各加一栏（N 张 = N+1 栏）；同一张卡片内无缝拼接，

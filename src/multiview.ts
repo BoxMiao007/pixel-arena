@@ -23,6 +23,10 @@ export interface MultiviewState {
   /** 每格显式选图（单一网格，T19 的按档位隔离随 2×2/3×3 合并退化为单数组）：
    *  ''=显式留空，数组缺省位=走默认布局 */
   cellPaths: (string | null)[];
+  /** 网格放大态（T27，issue #32）：矮窗口 + 多图时格子被均分得过矮不可用，
+   *  显式放大后网格区占满/超出内容区可用高度（随页面滚动），再次操作还原。
+   *  按评测轮键控（决策 0019）：切轮保留、新轮默认未放大 */
+  gridZoomed: boolean;
 }
 
 export interface MultiviewRound {
@@ -56,6 +60,65 @@ export function gridLayout(count: number): { rows: number; cols: number } {
   if (n <= 6) return { rows: 2, cols: 3 };
   if (n <= 9) return { rows: 3, cols: 3 };
   return { rows: Math.ceil(n / 3), cols: 3 };
+}
+
+// ---------- 网格放大（T27，issue #32） ----------
+
+/** 放大态下每行保底的最小高度（px）：与正常窗口 3×3 网格的格子高度（约 186px）同档 */
+export const GRID_ZOOM_ROW_MIN_PX = 180;
+
+/** 放大态网格区的高度下限：行数 × 每行最小可用高度。纯函数（单测守护）。
+ *  实际高度由 CSS 取「内容区自然满高」与本值的较大者——矮窗口 + 多图时本值起作用
+ *  （网格超出可视区、随页面滚动看完整行数），少行数/高窗口时自然满高起作用（不缩小网格） */
+export function gridZoomHeight(rows: number): number {
+  return Math.max(1, Math.floor(rows)) * GRID_ZOOM_ROW_MIN_PX;
+}
+
+/** 放大/还原按钮文案（两侧网格共用：图片网格与视频逐帧网格） */
+export function gridZoomLabel(zoomed: boolean): string {
+  return zoomed ? '还原' : '放大';
+}
+
+/** 把网格区切到放大/还原态：zoomed 类 + 按行数算出的高度下限 CSS 变量。
+ *  只改格子几何（CSS 高度）：挂载重放（按状态恢复类与高度）时不应碰视口，
+ *  格子尺寸变化后 ResizeObserver 触发重绘。 */
+export function applyGridZoom(area: HTMLElement, rows: number, zoomed: boolean): void {
+  area.classList.toggle('zoomed', zoomed);
+  if (zoomed) {
+    area.style.setProperty('--grid-zoom-h', `${gridZoomHeight(rows)}px`);
+  } else {
+    area.style.removeProperty('--grid-zoom-h');
+  }
+}
+
+/** 放大按钮需要的查看器状态切片：只声明用到的两个字段（viewer.ts 与
+ *  video-compare.ts 的状态对象都结构兼容，不必强迫视频侧归一 cellPaths 口径） */
+interface GridZoomState {
+  gridZoomed: boolean;
+  viewport: ViewportState | null;
+}
+
+/** 放大/还原按钮的构建与接线（图片网格与视频逐帧网格共用，审查修复：两处逐行
+ *  重复的接线收敛于此）：点击翻转放大态、文案随动、按当前行数切换几何，并把视口
+ *  置 null 走「窗格几何变了重新 fit」的既有路径（与切模式行为一致）——放大后
+ *  立刻满格可用，而不是沿用矮格 fit 出的小比例画面。行数与网格区由回调提供
+ *  （构建按钮时二者尚未挂载）。 */
+export function buildGridZoomButton(
+  shared: GridZoomState,
+  rowsOf: () => number,
+  areaOf: () => HTMLElement,
+): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = gridZoomLabel(shared.gridZoomed);
+  btn.title = '放大/还原网格：放大后网格区占满内容区可用高度，矮窗口多图时每格恢复可用大小';
+  btn.addEventListener('click', () => {
+    shared.gridZoomed = !shared.gridZoomed;
+    btn.textContent = gridZoomLabel(shared.gridZoomed);
+    applyGridZoom(areaOf(), rowsOf(), shared.gridZoomed);
+    shared.viewport = null;
+  });
+  return btn;
 }
 
 /** 第 index 位的默认选图：第 0 位原图，其余按跑分图顺序填入，不够的留空。
@@ -123,6 +186,8 @@ export function mountMultiview(
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
   area.replaceChildren(grid);
+  // T27：放大态按轮状态恢复（重挂载后类名/高度与状态一致；正常窗口默认视图不受影响）
+  applyGridZoom(area, rows, shared.gridZoomed);
 
   interface Cell {
     canvas: HTMLCanvasElement;
