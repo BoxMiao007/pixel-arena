@@ -12,7 +12,7 @@ import {
   type Size,
   type ViewportState,
 } from './viewport';
-import { fileName } from './util';
+import { fileName, truncateFileName } from './util';
 
 /** 网格档位：2=2×2，3=3×3（T20 合并两档为单网格后此维度可退化，见 shared/notes/T19.md） */
 export type GridTier = 2 | 3;
@@ -117,13 +117,14 @@ export function mountMultiview(
     emptyOption.textContent = '（空）';
     const refOption = document.createElement('option');
     refOption.value = round.referencePath;
-    refOption.textContent = `原图：${fileName(round.referencePath)}`;
+    // T18：下拉选项统一中间截断，悬浮 title 看全路径
+    refOption.textContent = `原图：${truncateFileName(fileName(round.referencePath))}`;
     refOption.title = round.referencePath;
     select.append(emptyOption, refOption);
     for (const candidate of round.candidates) {
       const option = document.createElement('option');
       option.value = candidate.path;
-      option.textContent = fileName(candidate.path);
+      option.textContent = truncateFileName(fileName(candidate.path));
       option.title = candidate.path;
       select.append(option);
     }

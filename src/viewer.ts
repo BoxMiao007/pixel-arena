@@ -21,7 +21,7 @@ import {
   startBlink,
   stopBlink,
 } from './compare-modes';
-import { fileName } from './util';
+import { fileName, truncateFileName } from './util';
 import { mountMultiview } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
 
 export interface ViewerRound {
@@ -194,7 +194,8 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   for (const candidate of round.candidates) {
     const option = document.createElement('option');
     option.value = candidate.path;
-    option.textContent = fileName(candidate.path);
+    // T18：下拉选项统一中间截断，悬浮 title 看全路径
+    option.textContent = truncateFileName(fileName(candidate.path));
     option.title = candidate.path;
     candSelect.append(option);
   }

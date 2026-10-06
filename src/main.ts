@@ -6,7 +6,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
-import { fileName } from './util';
+import { fileName, truncateFileName } from './util';
+import { buildPill, buildPillList } from './pills'; // T18 接线点：已选文件胶囊（T22 复用同一套）
 // T11 接线点：一站式跑分升级为完整编码阶梯（格式/质量档/无损组可勾选），
 // 清单与生成循环在 src/onestop.ts，本文件只做勾选 UI、触发与进度显示
 import {
@@ -99,8 +100,10 @@ function activeGroup(): Group | null {
   return ws.groups.find((g) => g.id === ws!.activeGroupId) ?? null;
 }
 
-function setStatus(text: string, isError = false): void {
+function setStatus(text: string, isError = false, title: string = text): void {
   $status.textContent = text;
+  // T18：状态栏放截断后的文件名时，悬浮仍能看到完整内容
+  $status.title = title;
   $status.classList.toggle('status-error', isError);
 }
 
@@ -182,6 +185,20 @@ async function pickCandidates(): Promise<void> {
   );
 }
 
+/** T18：从评测轮移除一张跑分图（胶囊 ×）。经 IPC 落库后整页重渲染，
+ * 结果表与对比查看器随之只少这一行。 */
+function removeCandidate(candidatePath: string): void {
+  const session = activeRound();
+  if (!session || scoring) return;
+  void apply(() =>
+    invoke('round_remove_candidate', {
+      groupId: session.group.id,
+      roundId: session.round.id,
+      candidatePath,
+    }),
+  );
+}
+
 /**
  * 触发跑分：忙标志置好后交给逐张跑分循环（T06）。
  */
@@ -221,7 +238,12 @@ async function scoreAllCandidates(): Promise<void> {
 
   for (let i = 0; i < queue.length; i++) {
     scoringPath = queue[i];
-    setStatus(`跑分中 ${i + 1}/${queue.length}：${fileName(queue[i])}`);
+    // T18：状态栏文件名统一截断，悬浮看全名
+    setStatus(
+      `跑分中 ${i + 1}/${queue.length}：${truncateFileName(fileName(queue[i]))}`,
+      false,
+      fileName(queue[i]),
+    );
     render();
     ws = await invoke('round_score_candidate', {
       groupId: session.group.id,
@@ -681,12 +703,23 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
   pickReferenceBtn.disabled = scoring;
   pickReferenceBtn.addEventListener('click', () => void pickReference());
 
-  const referenceLabel = document.createElement('span');
-  referenceLabel.className = 'reference-label';
-  referenceLabel.textContent = round.referencePath
-    ? `原图：${fileName(round.referencePath)}`
-    : '尚未选择原图';
-  referenceLabel.title = round.referencePath ?? '';
+  // T18 胶囊：原图为单选胶囊，点击弹对话框替换（走 round_set_reference 既有覆盖
+  // 语义：换图后旧跑分结果作废、体积比按新原图重算，核心库已处理）
+  let referenceSlot: HTMLElement;
+  if (round.referencePath) {
+    referenceSlot = buildPill({
+      label: truncateFileName(fileName(round.referencePath)),
+      title: round.referencePath,
+      onClick: () => void pickReference(),
+      disabled: scoring,
+      extraClass: 'pill-reference',
+    });
+  } else {
+    const none = document.createElement('span');
+    none.className = 'reference-label';
+    none.textContent = '尚未选择原图';
+    referenceSlot = none;
+  }
 
   const addCandidatesBtn = document.createElement('button');
   addCandidatesBtn.className = 'add-btn';
@@ -724,13 +757,30 @@ function renderImageGroupContent(session: { group: Group; round: Round }): void 
     round.candidates.length > 0 || (round.videoCandidates?.length ?? 0) > 0;
   toolbar.append(
     pickReferenceBtn,
-    referenceLabel,
+    referenceSlot,
     addCandidatesBtn,
     scoreBtn,
     onestopBtn,
     ...buildExportButtons(exportable),
   );
   $content.append(toolbar);
+
+  // T18 胶囊：已选跑分图逐颗列出，× 单独移除；移除经 IPC 落库后整页重渲染，
+  // 结果表与对比查看器随之只少这一行（其余文件与跑分结果不受影响）
+  if (round.candidates.length > 0) {
+    $content.append(
+      buildPillList(
+        round.candidates.map((c) => ({
+          label: truncateFileName(fileName(c.path)),
+          title: c.path,
+          onRemove: () => removeCandidate(c.path),
+          disabled: scoring,
+        })),
+        '已选跑分图：',
+        '已选跑分图列表',
+      ),
+    );
+  }
   // T11 接线点：格式/质量档/无损组勾选区（有原图才可触发，故仅在已选原图时展示）
   if (round.referencePath) {
     $content.append(buildOnestopOptions());
@@ -917,7 +967,8 @@ function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
 
     const name = document.createElement('td');
     name.className = 'cell-name';
-    name.textContent = fileName(candidate.path);
+    // T18：名称列统一中间截断，悬浮 title 看全路径
+    name.textContent = truncateFileName(fileName(candidate.path));
     name.title = candidate.path;
 
     const fileSize = document.createElement('td');
