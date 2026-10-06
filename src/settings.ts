@@ -3,6 +3,10 @@
 
 export type ThemePref = 'light' | 'dark' | 'system';
 
+/** 跑分并发度档位（T24）：逻辑核数占比，quarter=1/4、half=1/2（默认）、
+ * threequarters=3/4、full=全部；与 src-tauri/src/settings.rs 的 serde 小写落盘一致。 */
+export type ScoreConcurrencyPref = 'quarter' | 'half' | 'threequarters' | 'full';
+
 export interface WindowSize {
   width: number;
   height: number;
@@ -21,6 +25,8 @@ export interface SettingsData {
   formatVersion: number;
   recordState: boolean;
   theme: ThemePref;
+  /** 跑分并发度（T24）：默认 half = 只用一半逻辑核留余量。 */
+  scoreConcurrency: ScoreConcurrencyPref;
   defaultExportDir: string | null;
   recentDir: string | null;
   window: WindowSize | null;

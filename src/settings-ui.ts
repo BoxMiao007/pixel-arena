@@ -5,7 +5,13 @@
 
 import { open } from '@tauri-apps/plugin-dialog';
 import { applyTheme } from './theme';
-import { ENCODER_FIELDS, type EncoderOverrides, type SettingsData, type ThemePref } from './settings';
+import {
+  ENCODER_FIELDS,
+  type EncoderOverrides,
+  type ScoreConcurrencyPref,
+  type SettingsData,
+  type ThemePref,
+} from './settings';
 
 /** 设置面板对外依赖（main.ts 提供）：保存与改后的重渲染。 */
 export interface SettingsUiHost {
@@ -19,6 +25,14 @@ const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
   { value: 'light', label: '浅色' },
   { value: 'dark', label: '深色' },
   { value: 'system', label: '跟随系统' },
+];
+
+/** 跑分并发度四档（T24）：标签按「一半逻辑核」的语义写，默认 1/2。 */
+const SCORE_CONCURRENCY_OPTIONS: { value: ScoreConcurrencyPref; label: string }[] = [
+  { value: 'quarter', label: '1/4 核心' },
+  { value: 'half', label: '1/2 核心' },
+  { value: 'threequarters', label: '3/4 核心' },
+  { value: 'full', label: '全部核心' },
 ];
 
 /** 打开设置面板（每次从当前设置构建，关闭即销毁）。 */
@@ -111,6 +125,29 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
   themeRow.className = 'settings-row';
   themeRow.append(themeLabel, themeSelect);
   general.append(themeRow);
+
+  // 跑分并发度（T24）：生效于图片与视频跑分（视频即同时打开的 ffmpeg 进程数）
+  const concurrencyLabel = document.createElement('span');
+  concurrencyLabel.className = 'settings-label';
+  concurrencyLabel.textContent = '跑分并发度';
+  const concurrencySelect = document.createElement('select');
+  for (const option of SCORE_CONCURRENCY_OPTIONS) {
+    const opt = document.createElement('option');
+    opt.value = option.value;
+    opt.textContent = option.label;
+    concurrencySelect.append(opt);
+  }
+  concurrencySelect.value = settings.scoreConcurrency;
+  concurrencySelect.addEventListener('change', () => {
+    const tier = concurrencySelect.value as ScoreConcurrencyPref;
+    void commit({ ...settings, scoreConcurrency: tier }, () => {
+      concurrencySelect.value = settings.scoreConcurrency;
+    });
+  });
+  const concurrencyRow = document.createElement('div');
+  concurrencyRow.className = 'settings-row';
+  concurrencyRow.append(concurrencyLabel, concurrencySelect);
+  general.append(concurrencyRow);
 
   // 默认导出目录
   const exportLabel = document.createElement('span');

@@ -25,6 +25,31 @@ pub enum Theme {
     System,
 }
 
+/// 跑分并发度档位（T24）：按逻辑核数的比例限制同时计算的跑分任务数
+///（视频跑分即同时打开的 ffmpeg 进程数）。默认 half = 「默认只用一半核心留余量」；
+/// 比例 → 线程数的换算在核心库 parallel::concurrency_limit（floor，夹在 [1, 核数]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScoreConcurrency {
+    Quarter,
+    #[default]
+    Half,
+    ThreeQuarters,
+    Full,
+}
+
+impl ScoreConcurrency {
+    /// 逻辑核数占比（与 parallel::concurrency_limit 的入参对应）。
+    pub fn fraction(self) -> f64 {
+        match self {
+            ScoreConcurrency::Quarter => 0.25,
+            ScoreConcurrency::Half => 0.5,
+            ScoreConcurrency::ThreeQuarters => 0.75,
+            ScoreConcurrency::Full => 1.0,
+        }
+    }
+}
+
 /// 记住的窗口大小（逻辑像素）。只记宽高不记位置：票面范围是「窗口大小」。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +87,9 @@ pub struct Settings {
     pub record_state: bool,
     #[serde(default)]
     pub theme: Theme,
+    /// 跑分并发度（T24）：1/4、1/2、3/4、全部，默认 1/2（只用一半核心留余量）。
+    #[serde(default)]
+    pub score_concurrency: ScoreConcurrency,
     /// CSV/HTML 导出对话框的默认目录；None/空 = 未设置。
     #[serde(default)]
     pub default_export_dir: Option<String>,
@@ -90,6 +118,7 @@ impl Default for Settings {
             format_version: 1,
             record_state: true,
             theme: Theme::default(),
+            score_concurrency: ScoreConcurrency::default(),
             default_export_dir: None,
             recent_dir: None,
             window: None,
@@ -325,5 +354,47 @@ mod tests {
             Theme::System
         );
         assert!(serde_json::from_str::<Theme>("\"蓝\"").is_err());
+    }
+
+    #[test]
+    fn score_concurrency_defaults_to_half_and_parses_four_choices() {
+        // 默认 1/2 = 「默认只用一半核心留余量」（票面要求）
+        assert_eq!(
+            Settings::default().score_concurrency,
+            ScoreConcurrency::Half
+        );
+        assert_eq!(
+            serde_json::from_str::<ScoreConcurrency>("\"quarter\"").unwrap(),
+            ScoreConcurrency::Quarter
+        );
+        assert_eq!(
+            serde_json::from_str::<ScoreConcurrency>("\"threequarters\"").unwrap(),
+            ScoreConcurrency::ThreeQuarters
+        );
+        assert_eq!(
+            serde_json::from_str::<ScoreConcurrency>("\"full\"").unwrap(),
+            ScoreConcurrency::Full
+        );
+        // 未知档位拒绝（反序列化即校验，坏值不静默吞掉）
+        assert!(serde_json::from_str::<ScoreConcurrency>("\"十成\"").is_err());
+    }
+
+    #[test]
+    fn score_concurrency_fraction_matches_tiers() {
+        assert_eq!(ScoreConcurrency::Quarter.fraction(), 0.25);
+        assert_eq!(ScoreConcurrency::Half.fraction(), 0.5);
+        assert_eq!(ScoreConcurrency::ThreeQuarters.fraction(), 0.75);
+        assert_eq!(ScoreConcurrency::Full.fraction(), 1.0);
+    }
+
+    #[test]
+    fn missing_score_concurrency_field_falls_back_to_half() {
+        // 旧 settings.json 没有该字段：serde default 兜底为 half，无需迁移
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            settings.score_concurrency,
+            ScoreConcurrency::Half,
+            "缺字段应兜底为默认档 1/2"
+        );
     }
 }

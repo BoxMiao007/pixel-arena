@@ -37,14 +37,12 @@ export interface VideoBlockCtx {
   round: VideoBlockRound;
   /** 全局跑分标志（图片/视频跑分共用：谁在跑，两边按钮都置灰）。 */
   scoring: boolean;
-  /** 正在跑分的那一对的路径（行内显示「跑分中…」）。 */
-  scoringPath: string | null;
+  /** 本轮正在跑分的路径集合（T24 并行：多段同时在算，命中即行内显示「跑分中…」）。 */
+  scoringPaths: ReadonlySet<string>;
   /** main.ts 的 apply：改动 → IPC → 整份工作区替换 → 重渲染（失败亮状态栏）。 */
   apply(action: () => Promise<WorkspaceLike>): Promise<void>;
-  /** main.ts 的单对跑分：invoke round_score_video_candidate → 替换 ws → render。 */
-  scoreOne(candidatePath: string): Promise<void>;
-  /** 共享跑分标志的读写（main.ts 持有 scoring/scoringPath 两个模块级变量）。 */
-  setScoring(active: boolean, path: string | null): void;
+  /** 共享跑分标志的读写（main.ts 持有 scoring/scoringPaths 两个模块级变量）。 */
+  setScoring(active: boolean, paths: ReadonlySet<string>): void;
   setStatus(text: string, isError?: boolean, title?: string): void;
   /** 触发整页重渲染（改本模块的排序状态后用）。 */
   rerender(): void;
@@ -158,7 +156,7 @@ export function mountVideoBlock(host: HTMLElement, ctx: VideoBlockCtx): void {
 
   const scoreBtn = document.createElement('button');
   scoreBtn.className = 'add-btn score-btn';
-  scoreBtn.textContent = ctx.scoring && ctx.scoringPath !== null ? '视频跑分中…' : '开始视频跑分';
+  scoreBtn.textContent = ctx.scoring && ctx.scoringPaths.size > 0 ? '视频跑分中…' : '开始视频跑分';
   const ready = round.videoReferencePath && round.videoCandidates.length > 0;
   scoreBtn.title = ready
     ? '逐对经 ffmpeg 计算 VMAF/PSNR/SSIM（首次会先下载 ffmpeg，约 40MB，一次性）'
@@ -266,42 +264,47 @@ async function pickVideoCandidates(ctx: VideoBlockCtx): Promise<void> {
 }
 
 /**
- * 触发视频跑分：先一次性确保 ffmpeg 就绪（首次会下载约 40MB，进度显示在状态栏），
- * 然后逐对调用跑分命令，每对回来整份工作区刷新一次——进度与单对失败天然可见。
- * 命令本身出错（如 ffmpeg 下载失败）时中止整个循环。
+ * 触发视频跑分（T24 整轮并行）：先一次性确保 ffmpeg 就绪（首次会下载约 40MB，
+ * 进度显示在状态栏），然后一次 IPC 提交整轮全部跑分视频——后端按设置的并发度
+ * 同时起 ffmpeg 进程（同一上限约束），进度以 N/M 推回状态栏，跑分期间界面不阻塞。
+ * 命令本身出错（如 ffmpeg 下载失败）时中止并亮状态栏。
  */
 async function startVideoScoring(ctx: VideoBlockCtx): Promise<void> {
   const queue = ctx.round.videoCandidates.map((c) => c.path);
-  ctx.setScoring(true, null);
+  if (queue.length === 0) return;
+  ctx.setScoring(true, new Set(queue));
 
   try {
-    const channel = new Channel<string>();
-    channel.onmessage = (message) => ctx.setStatus(message);
+    const readyChannel = new Channel<string>();
+    readyChannel.onmessage = (message) => ctx.setStatus(message);
     ctx.setStatus('正在准备 ffmpeg（首次约 40MB，之后直接复用）…');
-    await invoke<string>('video_ensure_ffmpeg', { onProgress: channel });
+    await invoke<string>('video_ensure_ffmpeg', { onProgress: readyChannel });
 
-    for (let i = 0; i < queue.length; i++) {
-      ctx.setScoring(true, queue[i]);
-      // T18：状态栏文件名统一截断，悬浮看全名
-      ctx.setStatus(
-        `视频跑分中 ${i + 1}/${queue.length}：${truncateFileName(fileName(queue[i]))}`,
-        false,
-        fileName(queue[i]),
-      );
-      await ctx.scoreOne(queue[i]);
-    }
+    const progressChannel = new Channel<{ completed: number; total: number }>();
+    progressChannel.onmessage = (progress) => {
+      ctx.setStatus(`视频跑分中 ${progress.completed}/${progress.total}`);
+    };
+    ctx.setStatus(`视频跑分中 0/${queue.length}`);
+    ctx.rerender();
+    await ctx.apply(() =>
+      invoke<WorkspaceLike>('round_score_video_candidates', {
+        groupId: ctx.groupId,
+        roundId: ctx.round.id,
+        onProgress: progressChannel,
+      }),
+    );
     ctx.setStatus(`视频跑分完成，共 ${queue.length} 段`);
   } catch (err) {
     ctx.setStatus(`出错: ${String(err)}`, true);
   } finally {
-    ctx.setScoring(false, null);
+    ctx.setScoring(false, new Set());
   }
 }
 
 // ---------- 结果表 ----------
 
 function buildVideoTable(ctx: VideoBlockCtx): HTMLTableElement {
-  const { round, scoring, scoringPath } = ctx;
+  const { round, scoring, scoringPaths } = ctx;
   const candidates = round.videoCandidates;
   const table = document.createElement('table');
   table.className = 'result-table';
@@ -404,7 +407,7 @@ function buildVideoTable(ctx: VideoBlockCtx): HTMLTableElement {
       status.textContent = `失败：${candidate.error}`;
       status.classList.add('status-fail');
       status.title = candidate.error;
-    } else if (scoringPath === candidate.path) {
+    } else if (scoringPaths.has(candidate.path)) {
       status.textContent = '跑分中…';
       status.classList.add('status-running');
     } else if (candidate.metrics === null) {
