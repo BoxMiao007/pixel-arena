@@ -99,7 +99,7 @@ export interface CompareUiState {
   opacity: number;
   /** 差异模式：亮度差阈值（0~255 里的实用区间取 0~100，默认 2：画质接近的编码对比也能看出热区） */
   threshold: number;
-  /** 闪烁模式：是否自动交替（暂停后仍可手动切换） */
+  /** 闪烁模式：是否自动交替；暂停 = 静止显示原图（看对比图靠画布长按，无手动切换按钮） */
   blinkPlaying: boolean;
   /** 闪烁模式：当前显示的是不是原图 */
   blinkShowingRef: boolean;

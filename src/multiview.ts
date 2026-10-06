@@ -84,12 +84,14 @@ export function resolvePaneImage(
   return defaultPaneImage(index, round);
 }
 
-/** 第 index 格的默认选图：默认布局（第 1 格原图，其余按跑分图顺序填入，不够的留空） */
+/** 第 index 格的默认选图（薄封装，实现在 defaultPaneImage）。
+ *  保留「格」口径签名：视频侧 resolveCellVideo 与既有调用方/测试都用它，改签名会扩散到无关模块。 */
 export function defaultCellImage(index: number, round: MultiviewRound): string | null {
   return defaultPaneImage(index, round);
 }
 
-/** 每格最终显示的图：显式选择仍有效则用之（''=显式留空），否则回落到默认布局 */
+/** 每格最终显示的图：显式选择仍有效则用之（''=显式留空），否则回落到默认布局。
+ *  同上是为视频侧 resolveCellVideo 与既有调用方/测试保留的薄封装（实现见 resolvePaneImage）。 */
 export function resolveCellImage(
   shared: MultiviewState,
   index: number,

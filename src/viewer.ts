@@ -206,6 +206,9 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   };
   const switchMode = (mode: ViewerMode): void => {
     if (state.mode === mode) return;
+    // 审查修复：离开闪烁模式把显示面归位原图——否则「播放中停在跑分图就切走」会把这面存进
+    // 本轮状态，下次进模式静止显示跑分图，与「进模式静止显示原图」的语义相反
+    if (state.mode === 'blink') state.compareUi.blinkShowingRef = true;
     stopBlink(); // 离开闪烁模式先停表；若正切进闪烁模式，挂载尾部会重启
     state.mode = mode;
     state.viewport = null; // 切模式后窗格几何变了，重新 fit（沿用 T07 行为）
@@ -265,8 +268,14 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
     const onChange =
       state.mode === 'blink'
         ? (): void => {
-            if (state.compareUi.blinkPlaying) startBlink(onBlinkFlip);
-            else stopBlink();
+            if (state.compareUi.blinkPlaying) {
+              startBlink(onBlinkFlip);
+            } else {
+              stopBlink();
+              // 审查修复：暂停 = 静止显示原图。不归位的话「播放中暂停在跑分图 → 切走 → 切回」
+              // 会静止在跑分图，长按不变、松手反跳原图，方向与需求相反
+              state.compareUi.blinkShowingRef = true;
+            }
             scheduleDraw();
           }
         : (): void => scheduleDraw();

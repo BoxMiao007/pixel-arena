@@ -145,10 +145,9 @@ interface OnestopUiState {
 
 /** 一站式默认基准（拉杆初始值；启动时预取该基准的质量阶梯） */
 const DEFAULT_ONESTOP_BASELINE = 75;
-/** 大小优先默认目标 200KB */
 const DEFAULT_SIZE_TARGET_BYTES = 200 * 1024;
 
-/** 新评测轮的一站式默认值：质量优先、基准 75、200KB、KB、默认全选 */
+/** 新评测轮的一站式默认值 */
 function defaultOnestopUi(): OnestopUiState {
   return {
     mode: 'quality',
