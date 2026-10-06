@@ -59,6 +59,14 @@ export function defaultSelection(): OnestopSelection {
   };
 }
 
+/** fb3（issue #28 第 4 项）：格式胶囊的选中切换（选中 ↔ 取消），有损与无损共用。
+ * 返回新数组（移除时保持剩余项相对顺序，追加时排到末尾），不改入参。 */
+export function toggleFormat(formats: string[], format: string): string[] {
+  return formats.includes(format)
+    ? formats.filter((f) => f !== format)
+    : [...formats, format];
+}
+
 /** 一个待生成的阶梯项 */
 export interface LadderItem {
   format: string;

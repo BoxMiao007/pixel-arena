@@ -804,6 +804,20 @@ impl Workspace {
         Ok(group.rounds.last().expect("刚 push 过，必有元素"))
     }
 
+    /// 新建跑分组并自动附带首个评测轮（fb3/issue #28：省掉用户手动新建一步）。
+    /// 自动轮命名「评测轮 1」并设为激活轮；轮类型随组锁定（T17 组级约束），
+    /// 故自动轮的类型必然与组匹配。返回 (组 id, 轮 id)。
+    pub fn create_group_with_round(
+        &mut self,
+        name: &str,
+        kind: GroupKind,
+    ) -> Result<(String, String), WorkspaceError> {
+        let group = self.create_group(name, kind)?;
+        let group_id = group.id.clone();
+        let round = self.create_round(&group_id, "评测轮 1")?;
+        Ok((group_id, round.id.clone()))
+    }
+
     /// 重命名评测轮。名称首尾空白会被去除。
     pub fn rename_round(
         &mut self,
@@ -982,6 +996,66 @@ mod tests {
         let restored = Workspace::from_json(&json).unwrap();
         assert_eq!(restored.groups[0].kind, GroupKind::Image);
         assert_eq!(restored.groups[1].kind, GroupKind::Video);
+    }
+
+    // ---------- fb3（issue #28）：新建跑分组自动创建同类型评测轮 ----------
+
+    #[test]
+    fn create_group_with_round_creates_active_named_round() {
+        let mut ws = Workspace::new();
+        let (g, r) = ws
+            .create_group_with_round("人像测试", GroupKind::Image)
+            .unwrap();
+        assert_eq!(ws.groups.len(), 1);
+        assert_eq!(ws.groups[0].id, g);
+        // 自动建轮：恰一个、命名「评测轮 1」且为激活轮
+        assert_eq!(ws.groups[0].rounds.len(), 1);
+        assert_eq!(ws.groups[0].rounds[0].name, "评测轮 1");
+        assert_eq!(ws.groups[0].rounds[0].id, r);
+        assert_eq!(
+            ws.groups[0].active_round_id.as_deref(),
+            Some(r.as_str())
+        );
+        assert_eq!(ws.active_group_id.as_deref(), Some(g.as_str()));
+    }
+
+    #[test]
+    fn create_group_with_round_is_type_matched() {
+        // 轮类型随组锁定（T17 组级约束）：图片组的自动轮能进行图片评测操作、
+        // 视频操作被类型锁定拒绝；视频组镜像。由此自动轮的类型必然与组匹配。
+        let mut ws = Workspace::new();
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("a.png");
+        let vid = dir.path().join("a.mp4");
+        std::fs::write(&img, b"placeholder").unwrap();
+        std::fs::write(&vid, b"placeholder").unwrap();
+
+        let (gi, ri) = ws
+            .create_group_with_round("图片组", GroupKind::Image)
+            .unwrap();
+        ws.set_round_reference(&gi, &ri, img.to_str().unwrap())
+            .unwrap();
+        assert!(matches!(
+            ws.set_round_video_reference(&gi, &ri, vid.to_str().unwrap()),
+            Err(WorkspaceError::GroupKindMismatch(_, _))
+        ));
+
+        let (gv, rv) = ws
+            .create_group_with_round("视频组", GroupKind::Video)
+            .unwrap();
+        ws.set_round_video_reference(&gv, &rv, vid.to_str().unwrap())
+            .unwrap();
+        assert!(matches!(
+            ws.set_round_reference(&gv, &rv, img.to_str().unwrap()),
+            Err(WorkspaceError::GroupKindMismatch(_, _))
+        ));
+    }
+
+    #[test]
+    fn create_group_with_round_blank_name_still_rejected() {
+        let mut ws = Workspace::new();
+        assert!(ws.create_group_with_round("   ", GroupKind::Image).is_err());
+        assert!(ws.groups.is_empty());
     }
 
     #[test]

@@ -150,14 +150,49 @@ body {
   white-space: nowrap;
 }
 
-/* 新建跑分组的类型下拉（T17）：与相邻按钮同外观 */
-.group-kind-select {
-  padding: 0.3rem 0.4rem;
+/* fb3（issue #28）：单一「新建跑分组」入口的类型下拉菜单（T17 的常驻类型下拉已并入）。
+   外层 relative 定位菜单锚点；菜单绝对定位于按钮下方，外观与面板同风格 */
+.new-group-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.group-menu {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 8rem;
+  padding: 0.25rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* display:flex 会盖过 hidden 属性的 UA 样式（display:none），必须显式收回，
+   否则菜单常开（GUI 冒烟实测踩过） */
+.group-menu[hidden] {
+  display: none;
+}
+
+.group-menu-item {
+  border: none;
+  background: transparent;
   color: var(--text);
+  font: inherit;
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
   white-space: nowrap;
+}
+
+.group-menu-item:hover {
+  background: var(--active-bg);
+  color: var(--active-text);
 }
 
 .add-btn:hover:not(:disabled) {
@@ -260,6 +295,11 @@ body {
 .pill-list .pill-lead {
   font-size: 0.85rem;
   margin-right: 0.1rem;
+}
+
+/* 同一行里的第二组前置说明（fb3：格式与无损组合并一行，「无损组：」前留段间距） */
+.pill-lead-gap {
+  margin-left: 0.75rem;
 }
 
 .pill {
@@ -687,7 +727,9 @@ body {
 
 .viewer-grid {
   display: grid;
-  gap: 0.5rem;
+  /* fb3（issue #28 第 5 项）：格距收紧（0.5rem→0.2rem），每格随之变大；
+     保留少量缝隙维持呼吸感，格子边框圆角不变 */
+  gap: 0.2rem;
   width: 100%;
   height: 100%;
 }
