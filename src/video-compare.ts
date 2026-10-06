@@ -14,7 +14,7 @@ import {
   type Size,
   type ViewportState,
 } from './viewport';
-import { resolveCellImage, gridLayout } from './multiview';
+import { resolveCellImage, gridLayout, applyGridZoom, gridZoomLabel } from './multiview'; // T27：网格放大与图片网格共用同一套实现
 import { fileName, truncateFileName } from './util';
 import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
@@ -100,7 +100,7 @@ export function resolveCellVideo(
   sources: string[],
 ): string | null {
   return resolveCellImage(
-    { viewport: null, cellPaths: cellPaths ?? [] },
+    { viewport: null, cellPaths: cellPaths ?? [], gridZoomed: false },
     index,
     {
       referencePath: leftPath,
@@ -120,6 +120,8 @@ interface VideoState {
   cellPaths: (string | null)[] | null;
   divider: number;
   viewport: ViewportState | null;
+  /** 网格放大态（T27，issue #32）：与图片网格同语义，显式「放大/还原」，按轮键控，默认未放大 */
+  gridZoomed: boolean;
   /** 两路共享的当前时间点（秒） */
   time: number;
 }
@@ -142,6 +144,7 @@ function videoStateFor(roundId: string): VideoState {
       cellPaths: null,
       divider: 0.5,
       viewport: null,
+      gridZoomed: false,
       time: 0,
     };
     videoStates.set(roundId, st);
@@ -373,6 +376,21 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
 
   bar.append(modes);
 
+  // T27（issue #32）：网格模式的显式「放大/还原」切换，与图片网格同一套状态语义与 CSS
+  //（放大状态按轮键控，切换只改格子几何不重置视口；area 在下方创建，点击时必已挂载）
+  if (state.mode === 'grid') {
+    const zoomBtn = document.createElement('button');
+    zoomBtn.type = 'button';
+    zoomBtn.textContent = gridZoomLabel(state.gridZoomed);
+    zoomBtn.title = '放大/还原网格：放大后网格区占满内容区可用高度，矮窗口多路时每格恢复可用大小';
+    zoomBtn.addEventListener('click', () => {
+      state.gridZoomed = !state.gridZoomed;
+      zoomBtn.textContent = gridZoomLabel(state.gridZoomed);
+      applyGridZoom(area, gridLayout(sources.length).rows, state.gridZoomed);
+    });
+    bar.append(zoomBtn);
+  }
+
   let leftSelect: HTMLSelectElement | null = null;
   let rightSelect: HTMLSelectElement | null = null;
   if (state.mode === 'slider') {
@@ -472,6 +490,8 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
       panes.push({ canvas });
     }
     area.append(grid);
+    // T27：放大态按轮状态恢复（重挂载后类名/高度与状态一致）
+    applyGridZoom(area, rows, state.gridZoomed);
   } else if (state.mode === 'split') {
     // ---- T20 重组：分屏自动 N 栏——原视频最左 + 每段跑分视频一栏，同一卡片内无缝拼接 ----
     area.className = 'viewer-area split';

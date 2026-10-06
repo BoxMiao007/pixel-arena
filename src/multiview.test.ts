@@ -9,6 +9,8 @@ import {
   defaultCellImage,
   defaultPaneImage,
   gridLayout,
+  gridZoomHeight,
+  gridZoomLabel,
   resolveCellImage,
   resolvePaneImage,
   type MultiviewState,
@@ -19,10 +21,11 @@ const round = {
   candidates: [{ path: '/demo/a.jpg' }, { path: '/demo/b.webp' }],
 };
 
-/** 构造多视图状态切片（只关心 cellPaths） */
+/** 构造多视图状态切片（只关心 cellPaths；放大态默认未放大） */
 const shared = (cellPaths: MultiviewState['cellPaths']): MultiviewState => ({
   viewport: null,
   cellPaths,
+  gridZoomed: false,
 });
 
 describe('gridLayout（行列按图片总数自动排布，票面映射）', () => {
@@ -148,5 +151,26 @@ describe('resolvePaneImage / defaultPaneImage（分屏栏与网格格共用的�
     expect(resolvePaneImage(paths, 1, round)).toBe('/demo/b.webp'); // 显式位
     expect(resolvePaneImage(paths, 2, round)).toBe('/demo/b.webp'); // 缺省位 → 默认布局（第 2 张跑分图）
     expect(resolvePaneImage(paths, 3, round)).toBeNull(); // 越界
+  });
+});
+
+// T27（issue #32）：网格放大——矮窗口 + 多图（如 950×525 放 16 张排 6 行）时格子被均分得过矮，
+// 放大态按行数保底每行最小可用高度，实际高度由 CSS 取「内容区满高」与本值的较大者
+describe('网格放大（gridZoomHeight / gridZoomLabel）', () => {
+  it('放大态高度下限 = 行数 × 180px（每行最小可用高度）', () => {
+    expect(gridZoomHeight(6)).toBe(1080); // 16 张图 → 6 行（票面场景）
+    expect(gridZoomHeight(3)).toBe(540); // 9 张图 → 3 行
+    expect(gridZoomHeight(1)).toBe(180); // 单格
+  });
+
+  it('非法行数按至少 1 行计（向下取整），不产生 0 高度', () => {
+    expect(gridZoomHeight(0)).toBe(180);
+    expect(gridZoomHeight(-2)).toBe(180);
+    expect(gridZoomHeight(3.6)).toBe(540); // floor(3.6) = 3
+  });
+
+  it('按钮文案：未放大显示「放大」，放大后显示「还原」', () => {
+    expect(gridZoomLabel(false)).toBe('放大');
+    expect(gridZoomLabel(true)).toBe('还原');
   });
 });
