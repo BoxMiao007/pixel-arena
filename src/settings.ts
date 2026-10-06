@@ -65,3 +65,14 @@ export function openDefaultPath(
   if (!settings.recordState) return undefined;
   return settings.recentDir ?? undefined;
 }
+
+/** 选了文件之后要不要记最近目录（US27，审查修复 B7）：与恢复共用同一道记录状态
+ * 门控——开关关闭时不再写最近目录（干净启动 = 既不读也不写），返回 null 表示
+ * 本次不记录；开启时返回把 recentDir 更新为所选文件父目录后的新设置（其余设置
+ * 项原样保留）。路径没有父目录（根路径/裸文件名）同样不记录。 */
+export function nextRecentDir(settings: SettingsData, path: string): SettingsData | null {
+  if (!settings.recordState) return null;
+  const dir = parentDir(path);
+  if (!dir) return null;
+  return { ...settings, recentDir: dir };
+}

@@ -13,7 +13,7 @@ import { applyTheme } from './theme';
 import {
   exportDefaultPath,
   openDefaultPath,
-  parentDir,
+  nextRecentDir,
   type SettingsData,
 } from './settings';
 import { openSettingsPanel } from './settings-ui';
@@ -104,12 +104,12 @@ function defaultOpenPath(): string | undefined {
   return settings ? openDefaultPath(settings) : undefined;
 }
 
-/** 记录最近使用目录（T23）：用户成功选了文件后调用。记录始终进行，
- * 恢复与否由记录状态开关决定；保存失败不炸主流程，console.warn 留上下文可定位。 */
+/** 记录最近使用目录（T23）：用户成功选了文件后调用。恢复与写入共用记录状态
+ * 门控（US27：关 = 不恢复也不写）；保存失败不炸主流程，console.warn 留上下文可定位。 */
 function notePickedPath(path: string): void {
-  const dir = parentDir(path);
-  if (!settings || !dir) return;
-  const next: SettingsData = { ...settings, recentDir: dir };
+  if (!settings) return;
+  const next = nextRecentDir(settings, path);
+  if (!next) return;
   void saveSettings(next).catch((err) => {
     console.warn('记录最近使用的目录失败（不影响主流程）:', err);
   });
