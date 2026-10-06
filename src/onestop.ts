@@ -12,24 +12,38 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Workspace } from './main';
 
-/** 有损格式与界面显示名（顺序即生成顺序）。显示名源头为核心库
- * OnestopFormat::display_name（跨语言无法直接复用），新增格式需两处同步。 */
-export const LOSSY_FORMATS = [
-  { format: 'jpeg', label: 'JPEG' },
-  { format: 'webp', label: 'WebP' },
-  { format: 'avif', label: 'AVIF' },
-  { format: 'jxl', label: 'JPEG XL' },
-] as const;
+/** 格式条目：规范格式串 + 界面显示名（显示名源头为核心库 OnestopFormat::display_name） */
+export interface FormatEntry {
+  format: string;
+  label: string;
+}
 
-/** 有损质量档 */
-export const QUALITIES = [60, 75, 90] as const;
+/** 有损格式清单（顺序即生成顺序）。T21 单源化：启动时由 initOnestopCatalog
+ * 从核心库取点目录（onestop_default_ladder 命令）拉取，本文件不再自持档位常量。 */
+export let LOSSY_FORMATS: FormatEntry[] = [];
 
-/** 无损对照组与界面显示名（核心库保证像素逐位一致）。显示名源头同上。 */
-export const LOSSLESS_FORMATS = [
-  { format: 'png', label: 'PNG' },
-  { format: 'webp-lossless', label: '无损 WebP' },
-  { format: 'jxl-lossless', label: '无损 JXL' },
-] as const;
+/** 默认质量档 = 核心库质量优先取点（基准 75）的各格式并集（现行默认 60/75/90） */
+export let QUALITIES: number[] = [];
+
+/** 无损对照组清单（核心库保证像素逐位一致），来源同上 */
+export let LOSSLESS_FORMATS: FormatEntry[] = [];
+
+/** 一站式勾选目录（onestop_default_ladder 的载荷） */
+interface OnestopCatalog {
+  lossyFormats: FormatEntry[];
+  qualities: number[];
+  losslessFormats: FormatEntry[];
+}
+
+/** 从后端拉取一站式目录：格式清单 + 默认质量档，源头为核心库质量优先取点。
+ * 必须在首次渲染勾选区之前调用（main.ts 的 boot 里最先 await），失败时目录为空、
+ * 状态栏报错，界面其余部分照常可用。 */
+export async function initOnestopCatalog(): Promise<void> {
+  const catalog = await invoke<OnestopCatalog>('onestop_default_ladder');
+  LOSSY_FORMATS = catalog.lossyFormats;
+  QUALITIES = catalog.qualities;
+  LOSSLESS_FORMATS = catalog.losslessFormats;
+}
 
 /** 一站式勾选状态（界面会话态，重启归零；默认全开 = 决策 0003 的默认阶梯） */
 export interface OnestopSelection {
