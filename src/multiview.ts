@@ -13,6 +13,7 @@ import {
   type ViewportState,
 } from './viewport';
 import { fileName } from './util';
+import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 /** 网格档位：2=2×2，3=3×3（T20 合并两档为单网格后此维度可退化，见 shared/notes/T19.md） */
 export type GridTier = 2 | 3;
@@ -253,7 +254,7 @@ export function mountMultiview(
     if (!prepared) return;
     const { ctx, size } = prepared;
     // 背景色与 viewer.ts 一致，让图片边界可辨
-    ctx.fillStyle = '#2b2b2b';
+    ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
     ctx.fillRect(0, 0, size.width, size.height);
     const { path, entry } = cellImages[i];
     if (!entry || entry.status === 'loading') {

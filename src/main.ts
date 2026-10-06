@@ -7,6 +7,15 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
 import { fileName } from './util';
+// T23 接线点：设置中心（面板 UI + 数据形状 + 主题应用）
+import { applyTheme } from './theme';
+import {
+  exportDefaultPath,
+  openDefaultPath,
+  parentDir,
+  type SettingsData,
+} from './settings';
+import { openSettingsPanel } from './settings-ui';
 // T11 接线点：一站式跑分升级为完整编码阶梯（格式/质量档/无损组可勾选），
 // 清单与生成循环在 src/onestop.ts，本文件只做勾选 UI、触发与进度显示
 import {
@@ -71,6 +80,29 @@ export interface Workspace {
 
 let ws: Workspace | null = null;
 
+// T23 接线点：设置（boot 时加载；所有改动经 saveSettings 整体保存到设置文件）
+let settings: SettingsData | null = null;
+
+/** 设置整体保存：后端做空串归一与存在性校验，返回归一后的设置。 */
+async function saveSettings(next: SettingsData): Promise<SettingsData> {
+  settings = await invoke<SettingsData>('settings_save', { settings: next });
+  return settings;
+}
+
+/** 打开对话框的默认位置：记录状态开启时恢复最近目录（T23）。 */
+function defaultOpenPath(): string | undefined {
+  return settings ? openDefaultPath(settings) : undefined;
+}
+
+/** 记录最近使用目录（T23）：用户成功选了文件后调用。记录始终进行，
+ * 恢复与否由记录状态开关决定；保存失败静默（不影响主流程）。 */
+function notePickedPath(path: string): void {
+  const dir = parentDir(path);
+  if (!settings || !dir) return;
+  const next: SettingsData = { ...settings, recentDir: dir };
+  void saveSettings(next).catch(() => {}); // 最近目录记不成也无碍，下次再记
+}
+
 // ---------- 跑分与排序的界面状态（不持久化，重启归零） ----------
 
 // 跑分进行中：三个操作按钮置灰，逐张完成后整份工作区刷新
@@ -93,6 +125,8 @@ const $addGroup = document.querySelector<HTMLButtonElement>('#add-group')!;
 const $newGroupKind = document.querySelector<HTMLSelectElement>('#new-group-kind')!;
 const $roundbarLabel = document.querySelector<HTMLSpanElement>('#roundbar-label')!;
 const $addRound = document.querySelector<HTMLButtonElement>('#add-round')!;
+// T23 接线点：标题栏「设置」按钮
+const $openSettings = document.querySelector<HTMLButtonElement>('#open-settings')!;
 
 function activeGroup(): Group | null {
   if (!ws || !ws.activeGroupId) return null;
@@ -154,8 +188,14 @@ function activeRound(): { group: Group; round: Round } | null {
 async function pickReference(): Promise<void> {
   const session = activeRound();
   if (!session || scoring) return;
-  const selected = await open({ title: '选择原图', multiple: false, filters: [IMAGE_FILTER] });
+  const selected = await open({
+    title: '选择原图',
+    multiple: false,
+    filters: [IMAGE_FILTER],
+    defaultPath: defaultOpenPath(), // T23：最近目录（记录状态开启时）
+  });
   if (typeof selected !== 'string') return; // 用户取消
+  notePickedPath(selected);
   await apply(() =>
     invoke('round_set_reference', {
       groupId: session.group.id,
@@ -173,10 +213,12 @@ async function pickCandidates(): Promise<void> {
     title: '添加跑分图（可多选）',
     multiple: true,
     filters: [IMAGE_FILTER],
+    defaultPath: defaultOpenPath(), // T23：最近目录（记录状态开启时）
   });
   if (selected === null) return; // 用户取消
   const paths = Array.isArray(selected) ? selected : [selected];
   if (paths.length === 0) return;
+  notePickedPath(paths[0]);
   await apply(() =>
     invoke('round_add_candidates', { groupId: session.group.id, roundId: session.round.id, paths }),
   );
@@ -487,7 +529,8 @@ async function exportRound(kind: 'csv' | 'html'): Promise<void> {
   if (!session) return;
   const path = await save({
     title: kind === 'csv' ? '导出 CSV' : '导出 HTML 报告',
-    defaultPath: `${exportBaseName(session.round)}.${kind}`,
+    // T23：设置过默认导出目录则定位到该目录，否则用纯文件名
+    defaultPath: exportDefaultPath(settings?.defaultExportDir, `${exportBaseName(session.round)}.${kind}`),
     filters: [
       kind === 'csv'
         ? { name: 'CSV（逗号分隔）', extensions: ['csv'] }
@@ -517,6 +560,20 @@ async function boot(): Promise<void> {
     if (versionEl) versionEl.textContent = `核心库 v${version}`;
   } catch (err) {
     if (versionEl) versionEl.textContent = `IPC 调用失败: ${String(err)}`;
+  }
+  // T23：先加载设置并应用主题（工作区渲染前，避免界面闪一次旧主题）
+  try {
+    settings = await invoke<SettingsData>('settings_load');
+    applyTheme(settings.theme);
+    // 跟随系统：系统深浅变化时若正处于「跟随系统」，即时重解析并重渲染画布
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (settings?.theme === 'system') {
+        applyTheme('system');
+        render();
+      }
+    });
+  } catch (err) {
+    setStatus(`加载设置失败: ${String(err)}`, true);
   }
   try {
     ws = await invoke<Workspace>('workspace_load');
@@ -803,6 +860,9 @@ function renderVideoGroupContent(session: { group: Group; round: Round }): void 
     scoringPath,
     apply,
     scoreOne: scoreVideoOne,
+    // T23：视频选择对话框同样接入最近目录（记录状态开启时恢复，选完记录）
+    openDefaultPath: defaultOpenPath,
+    notePicked: notePickedPath,
     setScoring: (active, path) => {
       scoring = active;
       scoringPath = path;
@@ -1015,5 +1075,15 @@ function startRename(
 
 $addGroup.addEventListener('click', createGroup);
 $addRound.addEventListener('click', createRound);
+
+// T23：设置面板（挂在 body 的覆盖层，不受内容区整页重渲染影响）
+$openSettings.addEventListener('click', () => {
+  if (!settings) return;
+  openSettingsPanel(settings, {
+    save: saveSettings,
+    // 主题变化需要重渲染：画布底色等从 CSS 变量/新挂载立即生效
+    onApplied: () => render(),
+  });
+});
 
 void boot();

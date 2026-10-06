@@ -16,6 +16,7 @@ import {
 } from './viewport';
 import { resolveCellImage } from './multiview';
 import { fileName } from './util';
+import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 /** video.ts 传进来的上下文：本轮的视频源与状态栏输出 */
 export interface VideoCompareCtx {
@@ -769,7 +770,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
       const b = prepare(rightPane.canvas);
       if (!a || !b) return;
       for (const p of [a, b]) {
-        p.ctx.fillStyle = '#2b2b2b';
+        p.ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
         p.ctx.fillRect(0, 0, p.size.width, p.size.height);
       }
       drawVideo(a.ctx, a.size, st.leftPath);
@@ -778,7 +779,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
       const prepared = prepare(panes[0].canvas);
       if (!prepared) return;
       const { ctx, size } = prepared;
-      ctx.fillStyle = '#2b2b2b';
+      ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
       ctx.fillRect(0, 0, size.width, size.height);
       // 右侧整幅画右路，再裁出左半幅画左路——两侧共享同一视口与同一时间点
       drawVideo(ctx, size, st.rightPath);
@@ -793,7 +794,7 @@ export function mountVideoCompare(host: HTMLElement, ctx: VideoCompareCtx): void
       for (let i = 0; i < panes.length; i++) {
         const prepared = prepare(panes[i].canvas);
         if (!prepared) continue;
-        prepared.ctx.fillStyle = '#2b2b2b';
+        prepared.ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
         prepared.ctx.fillRect(0, 0, prepared.size.width, prepared.size.height);
         const path = st.leftPath
           ? resolveCellVideo(i, st.cellPaths, st.leftPath, sources)
