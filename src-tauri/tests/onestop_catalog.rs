@@ -1,13 +1,13 @@
 // 一站式勾选目录（T21 单源化）的端到端测试：不经 Tauri 运行时，直接调
-// pixel_arena_lib::onestop_default_catalog（与 IPC 命令同一实现体）。
+// pixel_arena_lib::onestop_catalog_impl（与 IPC 命令同一实现体）。
 // 钉住 GUI 勾选区清单与默认档位：与核心库质量优先取点一致（基准 75 = 现行默认
 // 60/75/90），即「数据源切到核心库、界面行为不变」的外部行为锚点。
 
-use pixel_arena_lib::{onestop_default_catalog, onestop_quality_ladder_impl, onestop_size_search_impl};
+use pixel_arena_lib::{onestop_catalog_impl, onestop_quality_ladder_impl, onestop_size_search_impl};
 
 #[test]
 fn onestop_catalog_基准75_清单与默认档位与现行默认阶梯一致() {
-    let catalog = onestop_default_catalog();
+    let catalog = onestop_catalog_impl();
 
     let lossy: Vec<(&str, &str)> = catalog
         .lossy_formats

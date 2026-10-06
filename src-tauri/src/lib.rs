@@ -313,7 +313,7 @@ pub struct OnestopCatalog {
 }
 
 /// 构建一站式勾选目录（pub 供不经 Tauri 运行时端到端测试，沿 export_round_file 先例）。
-pub fn onestop_default_catalog() -> OnestopCatalog {
+pub fn onestop_catalog_impl() -> OnestopCatalog {
     use pixel_arena_core::encode::OnestopFormat;
     use pixel_arena_core::ladder::{quality_points, LOSSLESS_FORMATS, LOSSY_FORMATS};
     let entry = |format: OnestopFormat| OnestopFormatEntry {
@@ -338,10 +338,12 @@ pub fn onestop_default_catalog() -> OnestopCatalog {
     }
 }
 
-/// IPC 命令：一站式勾选目录（T21 单源化，数据源见 onestop_default_catalog）。
+/// IPC 命令：一站式勾选目录（T21 单源化，数据源见 onestop_catalog_impl；
+/// 审查修复 C8：原名 onestop_default_ladder 名不副实——载荷是格式清单目录，
+/// 不是阶梯，改名 onestop_catalog）。
 #[tauri::command]
-fn onestop_default_ladder() -> OnestopCatalog {
-    onestop_default_catalog()
+fn onestop_catalog() -> OnestopCatalog {
+    onestop_catalog_impl()
 }
 
 /// 一站式阶梯项（onestop_quality_ladder 回传）：格式 + 质量（无损组为 null）+ 进度显示名。
@@ -355,7 +357,7 @@ pub struct LadderItemDto {
 
 /// 构建质量优先编码阶梯（T22）：统一基准 0–100 → 核心库 quality_ladder 取点
 ///（每格式 ≥3 点 + 无损对照组，核心库单一实现）。pub 供不经 Tauri 运行时端到端
-/// 测试（沿 onestop_default_catalog 先例）。
+/// 测试（沿 onestop_catalog_impl 先例）。
 pub fn onestop_quality_ladder_impl(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
     pixel_arena_core::ladder::quality_ladder(baseline)
         .map(|items| {
@@ -885,7 +887,7 @@ pub fn run() {
             round_score_candidates,
             onestop_encode,
             // T21 单源化：一站式勾选目录（格式清单与默认质量档同出核心库取点）
-            onestop_default_ladder,
+            onestop_catalog,
             // T22：质量优先取点与大小优先逼近搜索
             onestop_quality_ladder,
             onestop_size_search,

@@ -23,13 +23,13 @@ export interface FormatEntry {
 }
 
 /** 有损格式清单（顺序即生成顺序）。T21 单源化：启动时由 initOnestopCatalog
- * 从核心库取点目录（onestop_default_ladder 命令）拉取，本文件不自持档位常量。 */
+ * 从核心库取点目录（onestop_catalog 命令）拉取，本文件不自持档位常量。 */
 export let LOSSY_FORMATS: FormatEntry[] = [];
 
 /** 无损对照组清单（核心库保证像素逐位一致），来源同上 */
 export let LOSSLESS_FORMATS: FormatEntry[] = [];
 
-/** 一站式勾选目录（onestop_default_ladder 的载荷；T22 起质量档不再由目录给出，
+/** 一站式勾选目录（onestop_catalog 的载荷；T22 起质量档不再由目录给出，
  * 由拉杆基准经 onestop_quality_ladder 取点） */
 interface OnestopCatalog {
   lossyFormats: FormatEntry[];
@@ -39,7 +39,7 @@ interface OnestopCatalog {
 /** 从后端拉取一站式目录：有损/无损格式清单。必须在首次渲染勾选区之前调用
  * （main.ts 的 boot 里最先 await），失败时目录为空、状态栏报错，界面其余部分照常可用。 */
 export async function initOnestopCatalog(): Promise<void> {
-  const catalog = await invoke<OnestopCatalog>('onestop_default_ladder');
+  const catalog = await invoke<OnestopCatalog>('onestop_catalog');
   LOSSY_FORMATS = catalog.lossyFormats;
   LOSSLESS_FORMATS = catalog.losslessFormats;
 }

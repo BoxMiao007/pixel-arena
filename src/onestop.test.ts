@@ -71,7 +71,7 @@ describe('onestop 目录与阶梯（T22）', () => {
     invokeMock.mockResolvedValue(catalog);
     await initOnestopCatalog();
 
-    expect(invokeMock).toHaveBeenCalledWith('onestop_default_ladder');
+    expect(invokeMock).toHaveBeenCalledWith('onestop_catalog');
     expect(LOSSY_FORMATS.map((f) => f.format)).toEqual(['jpeg', 'webp', 'avif', 'jxl']);
     expect(LOSSLESS_FORMATS.map((f) => f.format)).toEqual(['png', 'webp-lossless', 'jxl-lossless']);
 
