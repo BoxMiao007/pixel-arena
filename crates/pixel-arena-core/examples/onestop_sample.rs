@@ -7,7 +7,7 @@
 //   格式：jpeg / webp / avif / jxl / png / webp-lossless / jxl-lossless
 // 离线测试分发机制（镜像覆盖下载主机，工件同名）：
 //   PIXEL_ARENA_ENCODER_MIRROR=http://127.0.0.1:8010 cargo run ...
-use pixel_arena_core::encode::encode_onestop;
+use pixel_arena_core::encode::{encode_onestop, EncoderOverrides};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -35,7 +35,7 @@ fn main() {
         }
     }
 
-    match encode_onestop(source, &format, quality, &out_dir, &tools_dir) {
+    match encode_onestop(source, &format, quality, &out_dir, &tools_dir, &EncoderOverrides::default()) {
         Ok(product) => println!("{}", product.display()),
         Err(err) => {
             eprintln!("{err}");

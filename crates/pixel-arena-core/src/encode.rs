@@ -41,6 +41,22 @@ pub struct EncoderSource {
     pub member: String,
 }
 
+/// 编码器可执行文件路径覆盖（T23 设置中心）：某项为 Some 时一站式编码跳过内置
+/// 自动安装、直接用该路径。GUI 从设置文件构造；CLI 用默认值（全空，行为不变）。
+/// avifdec（AVIF 产物代片解码）不在此列：解码侧定位走 PIXEL_ARENA_AVIFDEC
+/// 环境变量注入的既有机制，由 GUI 壳负责。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EncoderOverrides {
+    /// MozJPEG cjpeg（JPEG 有损）。
+    pub cjpeg: Option<PathBuf>,
+    /// libwebp cwebp（WebP 有损/无损）。
+    pub cwebp: Option<PathBuf>,
+    /// libavif avifenc（AVIF 有损/无损）。
+    pub avifenc: Option<PathBuf>,
+    /// libjxl cjxl（JPEG XL 有损/无损）。
+    pub cjxl: Option<PathBuf>,
+}
+
 /// 一站式支持的编码格式（与前端 src/onestop.ts 的格式清单一一对应）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnestopFormat {
@@ -236,6 +252,7 @@ pub fn encode_onestop(
     quality: Option<u8>,
     output_dir: impl AsRef<Path>,
     tools_dir: impl AsRef<Path>,
+    overrides: &EncoderOverrides,
 ) -> Result<PathBuf, CoreError> {
     let format = OnestopFormat::parse(format)?;
     // 无损组的像素必须逐位一致，质量参数无意义；有损组的质量在启动编码器前 fail-fast 校验
@@ -257,20 +274,28 @@ pub fn encode_onestop(
 
     let product = match format {
         OnestopFormat::Jpeg => {
-            let encoder = install_encoder(&mozjpeg_source()?, tools_dir)?;
+            let encoder = resolve_encoder(overrides.cjpeg.as_deref(), "cjpeg", || {
+                install_encoder(&mozjpeg_source()?, tools_dir)
+            })?;
             encode_jpeg_using(encoder, source, quality.expect("上方已校验"), output_dir)
         }
         OnestopFormat::Webp | OnestopFormat::WebpLossless => {
-            let encoder = install_encoder(&webp_source()?, tools_dir)?;
+            let encoder = resolve_encoder(overrides.cwebp.as_deref(), "cwebp", || {
+                install_encoder(&webp_source()?, tools_dir)
+            })?;
             encode_webp_using(encoder, source, quality, output_dir)
         }
         OnestopFormat::Avif => {
-            // libavif 工件一次下载解出 avifenc 与 avifdec（后者供产物解码/代片用）
-            let installed = install_encoder_members(&avif_source()?, tools_dir, &["avifenc", "avifdec"])?;
-            encode_avif_using(&installed[0], source, quality, output_dir)
+            let encoder = resolve_encoder(overrides.avifenc.as_deref(), "avifenc", || {
+                // libavif 工件一次下载解出 avifenc 与 avifdec（后者供产物解码/代片用）
+                Ok(install_encoder_members(&avif_source()?, tools_dir, &["avifenc", "avifdec"])?.remove(0))
+            })?;
+            encode_avif_using(&encoder, source, quality, output_dir)
         }
         OnestopFormat::Jxl | OnestopFormat::JxlLossless => {
-            let encoder = install_encoder(&jxl_source()?, tools_dir)?;
+            let encoder = resolve_encoder(overrides.cjxl.as_deref(), "cjxl", || {
+                install_encoder(&jxl_source()?, tools_dir)
+            })?;
             encode_jxl_using(encoder, source, quality, output_dir)
         }
         OnestopFormat::Png => encode_png_product(source, output_dir),
@@ -628,6 +653,33 @@ fn validate_quality(quality: u8) -> Result<(), CoreError> {
     Ok(())
 }
 
+// ---------- 编码器路径覆盖（T23 设置中心） ----------
+
+/// 解析一次编码所用的编码器可执行文件：设置中心覆盖优先，其次内置自动安装路径。
+/// 覆盖路径必须指向已存在的文件——假路径在启动编码器前 fail-fast，报错点名工具、
+/// 路径与处理办法，用户能直接定位到设置中心去改。
+fn resolve_encoder(
+    over: Option<&Path>,
+    tool: &str,
+    builtin: impl FnOnce() -> Result<PathBuf, CoreError>,
+) -> Result<PathBuf, CoreError> {
+    match over {
+        None => builtin(),
+        Some(path) => {
+            if !path.is_file() {
+                return Err(CoreError::Encode {
+                    message: format!(
+                        "编码器 {tool} 使用了设置中心指定的自定义路径，但该文件不存在：{}。\
+                         请在设置中心更正或清空该路径（清空后恢复内置编码器）",
+                        path.display()
+                    ),
+                });
+            }
+            Ok(path.to_path_buf())
+        }
+    }
+}
+
 // ---------- 编码器安装（下载 → sha256 → 解包 → 复用） ----------
 
 /// 确保来源清单指向的编码器已安装在 `<tools_dir>/<编码器名>/<版本>/<member>` 并返回其路径。
@@ -906,5 +958,98 @@ mod tests {
             OnestopFormat::parse("jxl-lossless").unwrap().encoding_params_text(None),
             "JPEG XL 无损"
         );
+    }
+
+    // ---------- 编码器路径覆盖（T23）----------
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name)
+    }
+
+    #[test]
+    fn resolve_encoder_without_override_falls_back_to_builtin() {
+        let path =
+            resolve_encoder(None, "cjpeg", || Ok(PathBuf::from("/内置/cjpeg"))).expect("无覆盖应走内置路径");
+        assert_eq!(path, PathBuf::from("/内置/cjpeg"));
+    }
+
+    #[test]
+    fn resolve_encoder_with_existing_override_uses_it() {
+        let dir = std::env::temp_dir().join(format!("pixel-arena-t23-ov-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let custom = dir.join("my-cjpeg");
+        std::fs::write(&custom, b"stub").unwrap();
+        let path = resolve_encoder(Some(&custom), "cjpeg", || Ok(PathBuf::from("/内置/cjpeg")))
+            .expect("存在的覆盖路径应被采用");
+        assert_eq!(path, custom);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_encoder_with_missing_override_reports_locatable_error() {
+        let fake = Path::new("/不存在/fake-cjpeg");
+        let message = resolve_encoder(Some(fake), "cjpeg", || Ok(PathBuf::from("/内置/cjpeg")))
+            .err()
+            .expect("假覆盖路径应报错")
+            .to_string();
+        assert!(message.contains("cjpeg"), "错误应点名编码器: {message}");
+        assert!(
+            message.contains("/不存在/fake-cjpeg"),
+            "错误应包含自定义路径本身: {message}"
+        );
+        assert!(message.contains("设置"), "错误应提示去设置中心处理: {message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn onestop_jpeg_uses_overridden_encoder_without_installing_builtin() {
+        // 覆盖生效的端到端：自定义桩 cjpeg 被真正执行；tools_dir 为空目录，全程不联网
+        let dir = std::env::temp_dir().join(format!("pixel-arena-t23-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("my-cjpeg.sh");
+        std::fs::write(&stub, "#!/bin/sh\necho FAKEOVERRIDE > \"$4\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let out_dir = dir.join("out");
+        let product = encode_onestop(
+            fixture("photo-ref.png"),
+            "jpeg",
+            Some(75),
+            &out_dir,
+            dir.join("tools"),
+            &EncoderOverrides {
+                cjpeg: Some(stub),
+                ..Default::default()
+            },
+        )
+        .expect("覆盖的编码器应被使用");
+        assert_eq!(std::fs::read(&product).unwrap(), b"FAKEOVERRIDE\n");
+        assert!(
+            !dir.join("tools/mozjpeg").exists(),
+            "覆盖生效时内置编码器不应被安装"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn onestop_jpeg_with_missing_override_fails_before_installing_builtin() {
+        // 假覆盖路径在编码入口 fail-fast，错误可定位；不触发内置编码器下载
+        let message = encode_onestop(
+            fixture("photo-ref.png"),
+            "jpeg",
+            Some(75),
+            std::env::temp_dir(),
+            std::env::temp_dir(),
+            &EncoderOverrides {
+                cjpeg: Some(PathBuf::from("/不存在/fake-cjpeg")),
+                ..Default::default()
+            },
+        )
+        .err()
+        .expect("假覆盖路径应报错")
+        .to_string();
+        assert!(message.contains("fake-cjpeg"), "错误应包含自定义路径: {message}");
+        assert!(message.contains("设置中心"), "错误应指向设置中心: {message}");
     }
 }

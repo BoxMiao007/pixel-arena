@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use pixel_arena_core::encode::{encode_onestop, EncoderSource};
+use pixel_arena_core::encode::{encode_onestop, EncoderOverrides, EncoderSource};
 use pixel_arena_core::{score_images, CoreError};
 
 #[derive(Parser)]
@@ -611,7 +611,15 @@ fn run_run(
             }
         }
         eprintln!("正在生成 {}（{}/{}）", item.label, index + 1, ladder.len());
-        match encode_onestop(reference, &item.format, item.quality, &output_dir, &tools_dir) {
+        // CLI 行为只由命令行参数决定，不读 GUI 设置：编码器覆盖恒为空（T23）
+        match encode_onestop(
+            reference,
+            &item.format,
+            item.quality,
+            &output_dir,
+            &tools_dir,
+            &EncoderOverrides::default(),
+        ) {
             Ok(product) => products.push((
                 item.label.clone(),
                 item.format.clone(),

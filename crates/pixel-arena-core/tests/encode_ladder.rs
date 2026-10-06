@@ -8,7 +8,7 @@
 
 use pixel_arena_core::encode::{
     encode_avif_using, encode_jxl_using, encode_onestop, encode_webp_using, install_encoder_members,
-    EncoderSource,
+    EncoderOverrides, EncoderSource,
 };
 
 fn data(name: &str) -> String {
@@ -37,6 +37,7 @@ fn unknown_format_reports_chinese_error() {
         Some(75),
         std::env::temp_dir(),
         std::env::temp_dir(),
+        &EncoderOverrides::default(),
     )
     .err()
     .expect("未知格式应报错")
@@ -50,7 +51,14 @@ fn png_product_roundtrips_losslessly_without_external_encoder() {
     // PNG 无损对照组：进程内 image crate 编码，不依赖任何外部二进制（tools_dir 随便填）
     let dir = std::env::temp_dir().join(format!("pixel-arena-t11-png-{}", std::process::id()));
     let out_dir = dir.join("out");
-    let product = encode_onestop(data("photo-ref.png"), "png", None, &out_dir, &dir)
+    let product = encode_onestop(
+            data("photo-ref.png"),
+            "png",
+            None,
+            &out_dir,
+            &dir,
+            &EncoderOverrides::default(),
+        )
         .expect("PNG 产物应生成成功");
     assert!(
         product.to_string_lossy().ends_with("photo-ref-png.png"),
@@ -70,6 +78,7 @@ fn png_product_rejects_quality_fail_fast() {
         Some(75),
         std::env::temp_dir(),
         std::env::temp_dir(),
+        &EncoderOverrides::default(),
     )
     .err()
     .expect("PNG 不接受质量参数")
@@ -87,6 +96,7 @@ fn lossless_group_rejects_quality_fail_fast() {
             Some(75),
             std::env::temp_dir(),
             std::env::temp_dir(),
+            &EncoderOverrides::default(),
         )
         .err()
         .expect("无损格式不应接受质量参数")
@@ -106,6 +116,7 @@ fn lossy_quality_out_of_range_fails_fast() {
                 Some(bad),
                 std::env::temp_dir(),
                 std::env::temp_dir(),
+                &EncoderOverrides::default(),
             )
             .err()
             .expect("越界质量应报错")
