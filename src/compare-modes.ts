@@ -110,8 +110,10 @@ export function defaultCompareUi(): CompareUiState {
   return {
     opacity: 0.5,
     threshold: 2, // T25 第 3 项：默认 2（原 24 太钝，压缩画质的细微差异在 0~100 区间里几乎不出热区）
-    blinkPlaying: true,
-    blinkShowingRef: false,
+    // T25 第 4 项：闪烁默认暂停并静止显示原图——否则长按看对比图会被自动交替淹没，
+    // 「松开恢复原图」也不成立；要看自动交替点「播放」
+    blinkPlaying: false,
+    blinkShowingRef: true,
   };
 }
 
@@ -190,7 +192,8 @@ export function buildT09Controls(
     return box;
   }
 
-  // blink：自动交替（500ms）+ 手动切换。播放中点「暂停」停表；暂停时可手动翻面
+  // blink：只剩「播放/暂停」一个按钮（T25 第 4 项删掉「手动切换」）——默认暂停静止显示原图，
+  // 看对比图的交互改为在画布上长按（viewer.ts 的 attachBlinkLongPress），不占按钮位
   const playBtn = document.createElement('button');
   playBtn.type = 'button';
   playBtn.textContent = ui.blinkPlaying ? '暂停' : '播放';
@@ -201,15 +204,6 @@ export function buildT09Controls(
     onChange();
   });
 
-  const flipBtn = document.createElement('button');
-  flipBtn.type = 'button';
-  flipBtn.textContent = '手动切换';
-  flipBtn.title = '立刻翻到另一张';
-  flipBtn.addEventListener('click', () => {
-    ui.blinkShowingRef = !ui.blinkShowingRef;
-    onChange();
-  });
-
-  box.append(playBtn, flipBtn);
+  box.append(playBtn);
   return box;
 }

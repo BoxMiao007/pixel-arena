@@ -251,11 +251,14 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
 
   const hint = document.createElement('span');
   hint.className = 'viewer-hint';
-  hint.textContent = '滚轮缩放 · 拖拽平移 · 双击复位';
+  // T25 第 4 项：闪烁模式提示补「长按看对比图」（该模式的手动对比交互，不新增按钮）
+  hint.textContent = state.mode === 'blink'
+    ? '滚轮缩放 · 拖拽平移 · 双击复位 · 长按看对比图'
+    : '滚轮缩放 · 拖拽平移 · 双击复位';
 
   bar.append(title, modes);
 
-  // T09 接线：三种新模式的专属控件（叠加不透明度滑杆 / 差异阈值滑杆 / 闪烁播放与手动切换），
+  // T09 接线：三种新模式的专属控件（叠加不透明度滑杆 / 差异阈值滑杆 / 闪烁播放按钮），
   // 控件构建在 compare-modes.ts、状态由本轮 state.compareUi 持有；改动后回调整 scheduleDraw
   //（闪烁还要管定时器启停）
   if (state.mode === 'overlay' || state.mode === 'diff' || state.mode === 'blink') {
@@ -443,6 +446,53 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
   } else if (refCanvas) {
     attachPanZoom(refCanvas);
   }
+
+  // ----- T25 第 4 项：闪烁模式的「长按看对比图」-----
+  // 画布按下 400ms 无位移 → 一直显示跑分图（覆盖自动播放状态），角标随之显示「跑分图」；
+  // 松开或指针取消 → 回原图。与拖拽平移兼容：位移超过 5px 即取消长按判定（拖动时不闪出
+  // 对比图），长按触发后继续拖动仍平移（平移路径不受影响）。
+  const LONG_PRESS_MS = 400;
+  const LONG_PRESS_CANCEL_PX = 5;
+  /** 长按期间是否强制显示跑分图（瞬时交互态，不进状态容器：松手即失效） */
+  let longPressComparing = false;
+  function attachBlinkLongPress(canvas: HTMLCanvasElement): void {
+    let timer = 0;
+    let originX = 0;
+    let originY = 0;
+    const cancelTimer = (): void => {
+      if (timer) {
+        window.clearTimeout(timer);
+        timer = 0;
+      }
+    };
+    const release = (): void => {
+      cancelTimer();
+      if (!longPressComparing) return;
+      longPressComparing = false;
+      state.compareUi.blinkShowingRef = true; // 松开恢复原图
+      scheduleDraw();
+    };
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      cancelTimer();
+      originX = e.clientX;
+      originY = e.clientY;
+      timer = window.setTimeout(() => {
+        timer = 0;
+        longPressComparing = true;
+        scheduleDraw();
+      }, LONG_PRESS_MS);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!timer) return;
+      // 「位移」按离按下原点的距离判定：静止长按的微小抖动不误取消，真拖动（>5px）正常取消
+      if (Math.hypot(e.clientX - originX, e.clientY - originY) > LONG_PRESS_CANCEL_PX) cancelTimer();
+    });
+    // 指针抬起/取消都要收回对比图（指针可能移出画布，事件仍经 pointer capture 回到本画布）
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+  }
+  if (state.mode === 'blink' && stageCanvas) attachBlinkLongPress(stageCanvas);
 
   // ----- 分割线拖动 -----
   if (dividerEl && sliderCanvas) {
@@ -666,8 +716,9 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
           if (stageTag) stageTag.textContent = '差异图';
         }
       } else {
-        // 闪烁切换：按固定间隔在原图/跑分图之间翻面（定时器启停见 compare-modes.ts 接线）
-        const showRef = st.compareUi.blinkShowingRef;
+        // 闪烁切换：按固定间隔在原图/跑分图之间翻面（定时器启停见 compare-modes.ts 接线）；
+        // T25 第 4 项：长按期间强制显示跑分图（覆盖自动播放），松手回原图
+        const showRef = longPressComparing ? false : st.compareUi.blinkShowingRef;
         const entry = showRef ? refEntry : candEntry;
         const role = showRef ? '原图' : '跑分图';
         if (entry && entry.status === 'ok' && entry.img !== undefined) {
