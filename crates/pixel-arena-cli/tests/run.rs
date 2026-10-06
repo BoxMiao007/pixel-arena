@@ -570,6 +570,87 @@ fn run_镜像无工件下载失败_退出码1_中文报错_stdout空() {
     assert!(output.stdout.is_empty(), "全部失败时 stdout 应为空");
 }
 
+// ---------- T26：跑分阶段并行（--concurrency） ----------
+
+#[test]
+fn run_并发参数_png组_并发2与并发1输出逐行一致() {
+    // PNG 无损组离线可跑全链路：image crate 编码确定性保证同一 --out 两次产物逐位
+    // 一致，并发度不同 stdout 必须完全一致（run_parallel 保序 + 闭式指标）
+    let reference = sample("photo-ref.png");
+    let out = tempfile::tempdir().unwrap();
+    let run_with = |concurrency: &str| {
+        Command::cargo_bin("pixel-arena-cli")
+            .unwrap()
+            .args([
+                "run",
+                "--reference",
+                reference.to_str().unwrap(),
+                "--formats",
+                "--lossless",
+                "png",
+                "--out",
+                out.path().to_str().unwrap(),
+                "--concurrency",
+                concurrency,
+            ])
+            .output()
+            .unwrap()
+    };
+
+    let serial = run_with("1");
+    assert_eq!(
+        serial.status.code(),
+        Some(0),
+        "stderr：{}",
+        String::from_utf8_lossy(&serial.stderr)
+    );
+    let parallel = run_with("2");
+    assert_eq!(
+        parallel.status.code(),
+        Some(0),
+        "stderr：{}",
+        String::from_utf8_lossy(&parallel.stderr)
+    );
+    assert_eq!(serial.stdout, parallel.stdout, "并发度不应改变 run 的输出数据");
+
+    let stderr = String::from_utf8(parallel.stderr).unwrap();
+    assert!(
+        stderr.contains("正在跑分 1/1"),
+        "并行跑分的进度仍应是 N/M 形式：{stderr}"
+    );
+}
+
+#[test]
+fn run_并发0_钳到1_png组正常出结果() {
+    let reference = sample("photo-ref.png");
+    let output = Command::cargo_bin("pixel-arena-cli")
+        .unwrap()
+        .args([
+            "run",
+            "--reference",
+            reference.to_str().unwrap(),
+            "--formats",
+            "--lossless",
+            "png",
+            "--concurrency",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "--concurrency 0 应钳到 1 而不是报错，stderr：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().count(),
+        2,
+        "无损 PNG 一档应输出表头加一行：{stdout}"
+    );
+}
+
 // ---------- 默认阶梯：本机已装真实编码器时全 15 项（未装自动跳过） ----------
 
 #[test]
