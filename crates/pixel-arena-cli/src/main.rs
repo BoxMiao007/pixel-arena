@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use pixel_arena_core::encode::{encode_onestop, probe_onestop_size, EncoderSource, OnestopFormat};
+use pixel_arena_core::encode::{encode_onestop, probe_onestop_size, EncoderOverrides, EncoderSource, OnestopFormat};
 use pixel_arena_core::ladder::{quality_ladder, size_search, LadderItem, LOSSLESS_FORMATS, LOSSY_FORMATS};
 use pixel_arena_core::{score_images, CoreError};
 
@@ -720,7 +720,15 @@ fn run_run(
         // 编码器首次使用预告：成员文件缺失即会触发下载（每个编码器只提示一次）
         announce_encoder_download(&item.format, &tools_dir, &mut announced);
         eprintln!("正在生成 {}（{}/{}）", item.label, index + 1, ladder.len());
-        match encode_onestop(reference, &item.format, item.quality, &output_dir, &tools_dir) {
+        // CLI 行为只由命令行参数决定，不读 GUI 设置：编码器覆盖恒为空（T23）
+        match encode_onestop(
+            reference,
+            &item.format,
+            item.quality,
+            &output_dir,
+            &tools_dir,
+            &EncoderOverrides::default(),
+        ) {
             Ok(product) => products.push((
                 item.label.clone(),
                 item.format.clone(),

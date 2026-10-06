@@ -14,6 +14,7 @@ import {
   type ViewportState,
 } from './viewport';
 import { fileName, truncateFileName } from './util';
+import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 /** 多视图用到的查看器界面状态切片（viewer.ts 的 state 结构兼容即可，按引用共享可写） */
 export interface MultiviewState {
@@ -257,7 +258,7 @@ export function mountMultiview(
     if (!prepared) return;
     const { ctx, size } = prepared;
     // 背景色与 viewer.ts 一致，让图片边界可辨
-    ctx.fillStyle = '#2b2b2b';
+    ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
     ctx.fillRect(0, 0, size.width, size.height);
     const { path, entry } = cellImages[i];
     if (!entry || entry.status === 'loading') {

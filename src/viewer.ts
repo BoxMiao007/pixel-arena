@@ -23,6 +23,7 @@ import {
 } from './compare-modes';
 import { fileName, truncateFileName } from './util';
 import { mountMultiview } from './multiview'; // T08 接线点：多视图网格的实现见 src/multiview.ts
+import { canvasBg } from './theme'; // T23 接线点：画布底色随主题
 
 export interface ViewerRound {
   roundId: string;
@@ -516,7 +517,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       for (let i = 0; i < splitPanes.length; i++) {
         const prepared = preparedPanes[i];
         if (!prepared) continue;
-        prepared.ctx.fillStyle = '#2b2b2b';
+        prepared.ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
         prepared.ctx.fillRect(0, 0, prepared.size.width, prepared.size.height);
         // 每帧按路径现解析条目（T19 纪律：条目解析永远跟随最新槽位，不闭包绑定）
         const entry = i === 0 ? refEntry : ensureImage(splitPanes[i].path, scheduleDraw);
@@ -526,7 +527,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       const prepared = prepare(sliderCanvas);
       if (!prepared) return;
       const { ctx, size } = prepared;
-      ctx.fillStyle = '#2b2b2b';
+      ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
       ctx.fillRect(0, 0, size.width, size.height);
       ensureFitted(size, refEntry.status === 'ok' ? refEntry : candEntry);
 
@@ -552,7 +553,7 @@ export function mountViewer(container: HTMLElement, round: ViewerRound): void {
       const prepared = prepare(stageCanvas);
       if (!prepared) return;
       const { ctx, size } = prepared;
-      ctx.fillStyle = '#2b2b2b';
+      ctx.fillStyle = canvasBg(); // 主题同源：读 CSS 变量 --canvas-bg（T23）
       ctx.fillRect(0, 0, size.width, size.height);
       ensureFitted(size, refEntry.status === 'ok' ? refEntry : candEntry);
       const refOk = refEntry.status === 'ok' && refEntry.img !== undefined;
