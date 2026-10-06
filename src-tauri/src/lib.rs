@@ -234,6 +234,16 @@ fn score_concurrency_limit(state: &AppState) -> usize {
     pixel_arena_core::parallel::concurrency_limit(fraction)
 }
 
+/// 把核心库进度回调（已完成数, 总数）转发到 IPC Channel（图片与视频两个整轮
+/// 跑分命令共用，审查修复 C10）。推送失败静默：Channel 随前端重挂等场景可能
+/// 已关闭，进度只是展示，不影响跑分本身。
+fn forward_score_progress(channel: &Channel<ScoreProgress>, completed: usize, total: usize) {
+    let _ = channel.send(ScoreProgress {
+        completed: completed as u32,
+        total: total as u32,
+    });
+}
+
 /// IPC 命令（T24）：对评测轮的全部跑分图整轮并行跑分（一次 IPC 提交整轮）。
 /// 并发度来自设置（默认一半逻辑核），进度经 Channel 推给前端（N/M）；
 /// 单张失败不报错——中文原因由核心库写进行内，界面标「失败」。
@@ -251,10 +261,7 @@ async fn round_score_candidates(
         let mut ws = workspace.lock().expect("工作区锁不应中毒");
         ws.score_round_candidates_parallel(&group_id, &round_id, max_concurrency, &|completed,
                                                                                     total| {
-            let _ = on_progress.send(ScoreProgress {
-                completed: completed as u32,
-                total: total as u32,
-            });
+            forward_score_progress(&on_progress, completed, total);
         })
         .map_err(|err| err.to_string())?;
         ws.save_to_file(&path).map_err(|err| err.to_string())?;
@@ -606,12 +613,7 @@ async fn round_score_video_candidates(
             &round_id,
             &ffmpeg,
             max_concurrency,
-            &|completed, total| {
-                let _ = on_progress.send(ScoreProgress {
-                    completed: completed as u32,
-                    total: total as u32,
-                });
-            },
+            &|completed, total| forward_score_progress(&on_progress, completed, total),
         )
         .map_err(|err| err.to_string())?;
         ws.save_to_file(&path).map_err(|err| err.to_string())?;
