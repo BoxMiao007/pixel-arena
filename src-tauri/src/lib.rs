@@ -214,22 +214,49 @@ fn round_add_candidates(
     })
 }
 
-/// IPC 命令：对一张跑分图跑分（前端逐张调用，每张回来就更新一行）。
-/// 指标计算可能耗时（大图 SSIM 秒级），放到阻塞线程池执行，不占用异步运行时；
+/// 批量跑分的进度事件（T24）：N/M 推给前端状态栏（completed 单调递增到 total）。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScoreProgress {
+    completed: u32,
+    total: u32,
+}
+
+/// 按当前设置的并发度档位换算线程上限（核心库统一换算：floor 核数×比例，
+/// 夹在 [1, 逻辑核数]；默认 half = 只用一半核心留余量）。
+fn score_concurrency_limit(state: &AppState) -> usize {
+    let fraction = state
+        .settings
+        .lock()
+        .expect("设置锁不应中毒")
+        .score_concurrency
+        .fraction();
+    pixel_arena_core::parallel::concurrency_limit(fraction)
+}
+
+/// IPC 命令（T24）：对评测轮的全部跑分图整轮并行跑分（一次 IPC 提交整轮）。
+/// 并发度来自设置（默认一半逻辑核），进度经 Channel 推给前端（N/M）；
 /// 单张失败不报错——中文原因由核心库写进行内，界面标「失败」。
 #[tauri::command]
-async fn round_score_candidate(
+async fn round_score_candidates(
     group_id: String,
     round_id: String,
-    candidate_path: String,
+    on_progress: Channel<ScoreProgress>,
     state: State<'_, AppState>,
 ) -> Result<Workspace, String> {
+    let max_concurrency = score_concurrency_limit(&state);
     let workspace = state.workspace.clone();
     let path = state.path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut ws = workspace.lock().expect("工作区锁不应中毒");
-        ws.score_round_candidate(&group_id, &round_id, &candidate_path)
-            .map_err(|err| err.to_string())?;
+        ws.score_round_candidates_parallel(&group_id, &round_id, max_concurrency, &|completed,
+                                                                                    total| {
+            let _ = on_progress.send(ScoreProgress {
+                completed: completed as u32,
+                total: total as u32,
+            });
+        })
+        .map_err(|err| err.to_string())?;
         ws.save_to_file(&path).map_err(|err| err.to_string())?;
         Ok(ws.clone())
     })
@@ -399,26 +426,38 @@ fn round_remove_video_candidate(
     })
 }
 
-/// IPC 命令：对一段跑分视频跑分（前端逐对调用，每对回来就更新一行）。
-/// ffmpeg 跑分可能耗时（长视频分钟级），放到阻塞线程池执行，不占用异步运行时；
-/// 单段失败不报错——中文原因由核心库写进行内（含耗时），界面标「失败」。
+/// IPC 命令（T24）：对评测轮的全部跑分视频整轮并行跑分（一次 IPC 提交整轮）。
+/// 同时打开的 ffmpeg 进程数受设置的同一并发上限约束（票面要求）；进度经 Channel
+/// 推给前端（N/M）；单段失败不报错——中文原因由核心库写进行内（含耗时）。
 /// 跑分前顺手确保 ffmpeg 就绪（已就绪零开销；正常路径下载进度由前端先调
 /// video_ensure_ffmpeg 展示，这里是兜底）。
 #[tauri::command]
-async fn round_score_video_candidate(
+async fn round_score_video_candidates(
     group_id: String,
     round_id: String,
-    candidate_path: String,
+    on_progress: Channel<ScoreProgress>,
     state: State<'_, AppState>,
 ) -> Result<Workspace, String> {
+    let max_concurrency = score_concurrency_limit(&state);
     let workspace = state.workspace.clone();
     let path = state.path.clone();
     let tools_dir = state.tools_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let ffmpeg = ffmpeg_setup::ensure_ffmpeg(&tools_dir, &mut |_| {})?;
         let mut ws = workspace.lock().expect("工作区锁不应中毒");
-        ws.score_round_video_candidate(&group_id, &round_id, &candidate_path, &ffmpeg)
-            .map_err(|err| err.to_string())?;
+        ws.score_round_video_candidates_parallel(
+            &group_id,
+            &round_id,
+            &ffmpeg,
+            max_concurrency,
+            &|completed, total| {
+                let _ = on_progress.send(ScoreProgress {
+                    completed: completed as u32,
+                    total: total as u32,
+                });
+            },
+        )
+        .map_err(|err| err.to_string())?;
         ws.save_to_file(&path).map_err(|err| err.to_string())?;
         Ok(ws.clone())
     })
@@ -674,7 +713,8 @@ pub fn run() {
             round_set_reference,
             round_add_candidates,
             round_remove_candidate,
-            round_score_candidate,
+            // T24 整轮并行跑分（并发度来自设置中心）
+            round_score_candidates,
             onestop_encode,
             // T21 单源化：一站式勾选目录（格式清单与默认质量档同出核心库取点）
             onestop_default_ladder,
@@ -682,7 +722,7 @@ pub fn run() {
             round_set_video_reference,
             round_add_video_candidates,
             round_remove_video_candidate,
-            round_score_video_candidate,
+            round_score_video_candidates,
             video_ensure_ffmpeg,
             // T15 视频逐帧对比（ffprobe 元信息 + 回环流服务）
             video_probe_meta,

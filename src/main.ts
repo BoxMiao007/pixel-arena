@@ -2,7 +2,7 @@
 // 前端不持有任何持久化逻辑：每次改动都经 IPC 命令落到核心库并立即写盘，
 // 命令返回最新工作区整份状态，前端照着重渲染即可，不自己算状态。
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, Channel } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
@@ -107,10 +107,10 @@ function notePickedPath(path: string): void {
 
 // ---------- 跑分与排序的界面状态（不持久化，重启归零） ----------
 
-// 跑分进行中：三个操作按钮置灰，逐张完成后整份工作区刷新
+// 跑分进行中：三个操作按钮置灰，整轮完成后整份工作区刷新
 let scoring = false;
-// 正在跑分的那张（行内显示「跑分中…」，跑分进度可见）
-let scoringPath: string | null = null;
+// 本轮正在跑分的跑分图/视频集合（T24 并行：多张同时在算，命中即在行内显示「跑分中…」）
+let scoringPaths: ReadonlySet<string> = new Set();
 // 结果表排序：null 按选入顺序；dir=1 升序 / -1 降序
 let sortState: { key: string; dir: 1 | -1 } | null = null;
 // 排序状态跟随评测轮：切到另一轮就归零
@@ -251,7 +251,7 @@ async function startScoring(): Promise<void> {
   if (session.round.candidates.length === 0) return;
 
   scoring = true;
-  scoringPath = null;
+  scoringPaths = new Set();
   render();
 
   try {
@@ -260,43 +260,41 @@ async function startScoring(): Promise<void> {
     setStatus(`出错: ${String(err)}`, true);
   } finally {
     scoring = false;
-    scoringPath = null;
+    scoringPaths = new Set();
     render();
   }
 }
 
 /**
- * 逐张跑分循环（T06）：前端逐张调用跑分命令，每张回来整份工作区刷新一次——
- * 进度（状态栏「跑分中 i/N」+ 行内「跑分中…」）与单张失败（行内标「失败」）天然可见。
- * 命令本身出错（如评测轮被删）时中止整个循环。
- * 忙标志（scoring）由调用方管理：手动「开始跑分」与一站式跑分（runOnestop）共用本循环。
+ * 整轮并行跑分（T24）：一次 IPC 把整轮跑分图全部提交，后端按设置的并发度
+ * （默认一半逻辑核）同时计算，进度经 Channel 以 N/M 推回状态栏，跑分期间
+ * 界面不阻塞。行内「跑分中…」按本轮全部待跑行显示，单张失败照旧行内标「失败」。
+ * 忙标志（scoring）由调用方管理：手动「开始跑分」与一站式跑分（runOnestop）共用本函数。
  */
 async function scoreAllCandidates(): Promise<void> {
   const session = activeRound();
   if (!session || !session.round.referencePath) return;
   if (session.round.candidates.length === 0) return;
 
-  // 队列快照：跑分期间工作区每张都在被替换，按选入顺序逐张跑
-  const queue = session.round.candidates.map((c) => c.path);
+  // 本轮待跑清单快照：并行期间行内状态按它显示「跑分中…」
+  scoringPaths = new Set(session.round.candidates.map((c) => c.path));
+  const total = scoringPaths.size;
 
-  for (let i = 0; i < queue.length; i++) {
-    scoringPath = queue[i];
-    // T18：状态栏文件名统一截断，悬浮看全名
-    setStatus(
-      `跑分中 ${i + 1}/${queue.length}：${truncateFileName(fileName(queue[i]))}`,
-      false,
-      fileName(queue[i]),
-    );
-    render();
-    ws = await invoke('round_score_candidate', {
-      groupId: session.group.id,
-      roundId: session.round.id,
-      candidatePath: queue[i],
-    });
-    render();
-  }
+  const channel = new Channel<{ completed: number; total: number }>();
+  channel.onmessage = (progress) => {
+    setStatus(`跑分中 ${progress.completed}/${progress.total}`, false);
+  };
+  setStatus(`跑分中 0/${total}`, false);
+  render();
+
+  ws = await invoke('round_score_candidates', {
+    groupId: session.group.id,
+    roundId: session.round.id,
+    onProgress: channel,
+  });
+  render();
   markSaved();
-  setStatus(`跑分完成，共 ${queue.length} 张`);
+  setStatus(`跑分完成，共 ${total} 张`);
 }
 
 // ---------- 一站式跑分（T11 完整编码阶梯，清单实现在 src/onestop.ts） ----------
@@ -316,7 +314,7 @@ async function runOnestop(): Promise<void> {
   }
 
   scoring = true;
-  scoringPath = null;
+  scoringPaths = new Set();
   render();
 
   try {
@@ -344,7 +342,7 @@ async function runOnestop(): Promise<void> {
     setStatus(`出错: ${String(err)}`, true);
   } finally {
     scoring = false;
-    scoringPath = null;
+    scoringPaths = new Set();
     render();
   }
 }
@@ -429,18 +427,6 @@ function viewerPath(path: string): string {
  * T14 接线点：视频跑分单对执行（src/video.ts 的跑分循环逐对调用本函数），
  * 与图片的 startScoring 同一模式：invoke → 替换工作区 → 重渲染。
  */
-async function scoreVideoOne(candidatePath: string): Promise<void> {
-  const session = activeRound();
-  if (!session) return;
-  ws = await invoke('round_score_video_candidate', {
-    groupId: session.group.id,
-    roundId: session.round.id,
-    candidatePath,
-  });
-  render();
-  markSaved();
-}
-
 // ---------- T13 接线点：BD-rate 汇总与报告导出 ----------
 // 汇总与导出都走核心库（bdrate / report 模块）的同一份数据源，保证界面与导出一致。
 
@@ -916,15 +902,14 @@ function renderVideoGroupContent(session: { group: Group; round: Round }): void 
       videoCandidates: round.videoCandidates ?? [],
     },
     scoring,
-    scoringPath,
+    scoringPaths,
     apply,
-    scoreOne: scoreVideoOne,
     // T23：视频选择对话框同样接入最近目录（记录状态开启时恢复，选完记录）
     openDefaultPath: defaultOpenPath,
     notePicked: notePickedPath,
-    setScoring: (active, path) => {
+    setScoring: (active, paths) => {
       scoring = active;
-      scoringPath = path;
+      scoringPaths = paths;
       render();
     },
     setStatus,
@@ -1066,7 +1051,7 @@ function buildResultTable(candidates: CandidateImage[]): HTMLTableElement {
       status.textContent = `失败：${candidate.error}`;
       status.classList.add('status-fail');
       status.title = candidate.error;
-    } else if (scoringPath === candidate.path) {
+    } else if (scoringPaths.has(candidate.path)) {
       status.textContent = '跑分中…';
       status.classList.add('status-running');
     } else if (candidate.metrics === null) {
