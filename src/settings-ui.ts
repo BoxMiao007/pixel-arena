@@ -505,11 +505,16 @@ function renderAbout(info: AboutData): Node[] {
   meta.className = 'settings-about-meta';
   const licenseLabel = document.createElement('span');
   licenseLabel.textContent = `许可证：${info.license}`;
-  const repoLink = document.createElement('a');
-  repoLink.href = info.repoUrl;
-  repoLink.textContent = '仓库主页';
-  repoLink.className = 'settings-link';
-  meta.append(licenseLabel, document.createTextNode(' · '), repoLink);
+  // repoUrl 与库链接同走 isSafeLibraryUrl 白名单（后端常量可信，保持渲染口径一致）
+  if (isSafeLibraryUrl(info.repoUrl)) {
+    const repoLink = document.createElement('a');
+    repoLink.href = info.repoUrl;
+    repoLink.textContent = '仓库主页';
+    repoLink.className = 'settings-link';
+    meta.append(licenseLabel, document.createTextNode(' · '), repoLink);
+  } else {
+    meta.append(licenseLabel, document.createTextNode(' · 仓库主页'));
+  }
   nodes.push(meta);
 
   const libTitle = document.createElement('p');

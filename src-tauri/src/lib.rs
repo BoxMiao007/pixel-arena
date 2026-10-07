@@ -698,7 +698,7 @@ pub fn advanced_video_catalog_impl(
     custom_ffmpeg: Option<&str>,
 ) -> AdvancedVideoCatalog {
     let specs = pixel_arena_core::advanced::video_specs();
-    match ffmpeg_setup::resolve_ffmpeg(tools_dir, custom_ffmpeg, &mut |_| {}) {
+    match ffmpeg_setup::resolve_ffmpeg(tools_dir, custom_ffmpeg) {
         Ok(ffmpeg) => {
             let encoder_names = match std::process::Command::new(&ffmpeg)
                 .arg("-hide_banner")
@@ -856,7 +856,7 @@ async fn round_score_video_candidates(
         .ffmpeg_path
         .clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let ffmpeg = ffmpeg_setup::resolve_ffmpeg(&tools_dir, custom_ffmpeg.as_deref(), &mut |_| {})?;
+        let ffmpeg = ffmpeg_setup::resolve_ffmpeg(&tools_dir, custom_ffmpeg.as_deref())?;
         let mut ws = workspace.lock().expect("工作区锁不应中毒");
         ws.score_round_video_candidates_parallel(
             &group_id,
@@ -892,9 +892,10 @@ async fn video_probe_meta(
         .ffmpeg_path
         .clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let ffprobe = ffmpeg_setup::resolve_ffprobe(&tools_dir, custom_ffmpeg.as_deref(), &mut |message| {
-            let _ = on_progress.send(message);
-        })?;
+        // on_progress 通道保留（前端 invoke 仍传 onProgress）：定位不产生进度消息，
+        // 历史占位，待 IPC 契约一并清理时移除
+        let _ = on_progress;
+        let ffprobe = ffmpeg_setup::resolve_ffprobe(&tools_dir, custom_ffmpeg.as_deref())?;
         video_probe::probe(&ffprobe, std::path::Path::new(&path))
     })
     .await

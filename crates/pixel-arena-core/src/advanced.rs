@@ -109,15 +109,10 @@ pub fn merge_args(base: &[String], rows: &[AdvancedParamRow]) -> Result<Vec<Stri
 /// 命令行预览：可执行文件 + 参数 + 输入与输出路径，逐词过 POSIX shell 引用
 ///（naming::shell_quote），复制出来可直接粘贴执行。
 pub fn command_line(executable: &str, args: &[String], input: &str, output: &str) -> String {
-    let mut words: Vec<&str> = vec![executable];
-    words.extend(args.iter().map(String::as_str));
-    words.push(input);
-    words.push(output);
-    words
-        .iter()
-        .map(|word| crate::naming::shell_quote(word))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut words: Vec<String> = args.to_vec();
+    words.push(input.to_string());
+    words.push(output.to_string());
+    quote_command(executable, &words)
 }
 
 // ---------- 编码器规格（静态映射表） ----------
@@ -496,6 +491,23 @@ pub struct AdvancedProduct {
     pub note: Option<String>,
 }
 
+/// 生效高级参数行的「标志 [值]」词序列（布尔行只有标志，未启用的行整体跳过）：
+/// 编码参数文本（[`advanced_params_text`]）与产物文件名的括号参数段共用同一来源，
+/// 避免两处口径分叉。
+fn enabled_row_words(rows: &[AdvancedParamRow]) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for row in rows {
+        if !row.enabled {
+            continue;
+        }
+        words.push(row.flag.trim().to_string());
+        if let Some(value) = row.value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            words.push(value.to_string());
+        }
+    }
+    words
+}
+
 /// 编码参数文本（结果表「编码参数」列）：`AVIF（libavif） q60（-s 4 --sharpyuv）`
 /// 式——质量段与一站式同口径，括号里是生效的高级参数词（不 shell 引用，给人看）。
 pub fn advanced_params_text(
@@ -509,16 +521,7 @@ pub fn advanced_params_text(
     } else {
         format!("{display_name} q{quality}")
     };
-    let mut words: Vec<String> = Vec::new();
-    for row in rows {
-        if !row.enabled {
-            continue;
-        }
-        words.push(row.flag.trim().to_string());
-        if let Some(value) = row.value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-            words.push(value.to_string());
-        }
-    }
+    let words = enabled_row_words(rows);
     if !words.is_empty() {
         text.push_str(&format!("（{}）", words.join(" ")));
     }
@@ -595,17 +598,9 @@ pub fn encode_advanced_image(
         message: format!("无法创建产物目录 {}：{err}", output_dir.display()),
     })?;
 
-    // 产物名：质量段写实际质量点，高级参数词进括号参数段（需求 9）
-    let mut custom_words: Vec<String> = Vec::new();
-    for row in &job.rows {
-        if !row.enabled {
-            continue;
-        }
-        custom_words.push(row.flag.trim().to_string());
-        if let Some(value) = row.value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-            custom_words.push(value.to_string());
-        }
-    }
+    // 产物名：质量段写实际质量点，高级参数词进括号参数段（需求 9；词序列与
+    // 编码参数文本同一来源 enabled_row_words）
+    let custom_words = enabled_row_words(&job.rows);
     let custom_words: Vec<&str> = custom_words.iter().map(String::as_str).collect();
     let segment = if lossless {
         QualitySegment::Lossless

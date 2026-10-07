@@ -201,25 +201,71 @@ impl Settings {
 
 /// 运行 `<可执行文件> -version` 探测版本（T29-2）：成功返回输出的首个非空行。
 /// 「可执行」与「版本可读」一并验证——能跑起来且有输出才算可用。
-/// 设置页保存校验（FFmpeg）与工具状态检测（FFmpeg + 四编码器）共用同一实现。
+/// 设置页保存校验（FFmpeg）与 ffmpeg_setup 检测共用同一实现（见
+/// [`probe_executable_version_timed`]）；tool_status 的编码器探测口径不同
+///（--version/-version 双试、stdout 空回退读 stderr、单次失败续试下一标志），
+/// 独立实现在 [`crate::tool_status::probe_tool_version`]。
 pub fn probe_executable_version(path: &std::path::Path, tool: &str) -> Result<String, String> {
+    probe_executable_version_timed(path, tool, None)
+}
+
+/// [`probe_executable_version`] 的超时注入版（ffmpeg_setup 检测用）：
+/// `timeout` 为 None 时阻塞等待到底（保存校验场景），Some 时超时杀进程报中文
+/// 错误（票面 5s 上限，防止挂起的可执行文件把检测卡死）。
+pub fn probe_executable_version_timed(
+    path: &std::path::Path,
+    tool: &str,
+    timeout: Option<std::time::Duration>,
+) -> Result<String, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
     if !path.is_file() {
         return Err(format!("{tool} 路径无效：{}（文件不存在）", path.display()));
     }
-    let output = std::process::Command::new(path)
+    let mut child = Command::new(path)
         .arg("-version")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|err| format!("无法执行 {tool}（{}）：{err}", path.display()))?;
-    if !output.status.success() {
+    let deadline = timeout.map(|limit| std::time::Instant::now() + limit);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // 超时文案是 FFmpeg 检测专用（当前唯一带超时的调用方），保留原文
+                    // 避免检测口径漂移
+                    return Err(format!(
+                        "FFmpeg 检测超时（{} 秒无响应），该路径可能不是可用的 ffmpeg。请在设置页更正路径或应用内下载",
+                        timeout.expect("超时分支必有 timeout").as_secs()
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(err) => return Err(format!("{tool} 进程状态读取失败：{err}")),
+        }
+    }
+    // 进程已退出（循环确认过）：先读管道残余输出再收尸，避免管道满的罕见死锁窗口
+    //（-version 输出只有几行，正常路径远不会触及上限）
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    let status = child
+        .wait()
+        .map_err(|err| format!("{tool} 进程收尾失败：{err}"))?;
+    if !status.success() {
         return Err(format!(
             "{tool}（{}）执行失败（退出码 {}），请确认它是对应工具的可执行文件",
             path.display(),
-            output.status.code().unwrap_or(-1)
+            status.code().unwrap_or(-1)
         ));
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let first_line = text.lines().map(str::trim).find(|line| !line.is_empty());
-    match first_line {
+    match stdout.lines().map(str::trim).find(|line| !line.is_empty()) {
         Some(line) => Ok(line.to_string()),
         None => Err(format!(
             "{tool}（{}）执行成功但未输出版本信息，无法确认可用性",
