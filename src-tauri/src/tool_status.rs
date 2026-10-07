@@ -161,7 +161,7 @@ fn build_status(
         status.hint = Some(if key == "ffmpeg" {
             "视频跑分前需要 FFmpeg：可在设置页点击「应用内下载」，或指定本机已有的 ffmpeg".to_string()
         } else {
-            "安装包未捆绑该编码器且尚未下载：首次使用时自动下载，也可联网后检查".to_string()
+            "内置文件缺失（可能被安全软件移除，或旧版本安装包未捆绑）：首次使用时自动下载补装，也可指定外部路径".to_string()
         });
         return status;
     };
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn unconfigured_hint_directs_to_settings_or_download() {
-        // 全空（未捆绑 + 未安装）：ffmpeg 指引设置页下载/指定路径；编码器说明未捆绑可下载
+        // 全空（未捆绑 + 未安装）：ffmpeg 指引设置页下载/指定路径；编码器说明内置缺失可补装
         let tools = tempfile::tempdir().unwrap();
         let statuses =
             tool_status_with(&Settings::default(), tools.path(), tools.path(), &fake_probe);
@@ -612,6 +612,6 @@ mod tests {
         assert!(hint.contains("应用内下载"), "{hint}");
         let cjxl = statuses.iter().find(|s| s.key == "cjxl").unwrap();
         assert_eq!(cjxl.source, ToolSource::Unconfigured);
-        assert!(cjxl.hint.as_deref().unwrap().contains("未捆绑"), "{:?}", cjxl.hint);
+        assert!(cjxl.hint.as_deref().unwrap().contains("内置文件缺失"), "{:?}", cjxl.hint);
     }
 }
