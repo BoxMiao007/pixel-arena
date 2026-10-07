@@ -33,7 +33,7 @@ jobs:
           tar -xzf mozjpeg.tar.gz
           cmake -S mozjpeg-4.1.5 -B mozjpeg-build -G Ninja \
             -DWITH_SIMD=0 -DPNG_SUPPORT=0 \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release
           cmake --build mozjpeg-build --target cjpeg
           mkdir -p artifact-mozjpeg
           cp mozjpeg-build/cjpeg artifact-mozjpeg/
@@ -49,7 +49,7 @@ jobs:
             -DWEBP_BUILD_VWEBP=OFF -DWEBP_BUILD_GIF2WEBP=OFF -DWEBP_BUILD_IMG2WEBP=OFF \
             -DWEBP_BUILD_WEBPINFO=OFF -DWEBP_BUILD_WEBPMUX=OFF -DWEBP_BUILD_DWEBP=OFF \
             -DWEBP_BUILD_WEBPQUALITY=OFF -DWEBP_BUILD_GET_DISTO=OFF \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release
           cmake --build libwebp-build --target cwebp
           mkdir -p artifact-webp
           cp libwebp-build/cwebp artifact-webp/
@@ -65,7 +65,7 @@ jobs:
             -DJPEGXL_ENABLE_BENCHMARK=OFF -DJPEGXL_ENABLE_EXAMPLES=OFF \
             -DJPEGXL_ENABLE_MANPAGES=OFF -DJPEGXL_ENABLE_JNI=OFF \
             -DJPEGXL_ENABLE_SJPEG=OFF -DJPEGXL_ENABLE_OPENEXR=OFF \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release
           cmake --build libjxl-build --target cjxl
           mkdir -p artifact-jxl
           cp libjxl-build/tools/cjxl artifact-jxl/
