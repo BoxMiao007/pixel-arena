@@ -195,12 +195,12 @@ pub fn mozjpeg_source() -> Result<EncoderSource, CoreError> {
         ("linux", "x86_64") => Ok(EncoderSource {
             name: "mozjpeg".to_string(),
             version: "4.1.5".to_string(),
-            // 工件由本机静态构建（无 SIMD，仅依赖 libc/libm），打包票（T16）把构建搬进 CI
-            // 并上传到本项目 GitHub Release；上传前 URL 会 404，测试可用
-            // PIXEL_ARENA_ENCODER_MIRROR=<目录URL> 覆盖下载主机（同名工件）。
+            // 工件与本仓 CI 源码构建同配置（无 SIMD、静态，仅依赖 libc/libm），已上传
+            // encoders-v1（T31 补齐，此前 URL 404）；测试可用 PIXEL_ARENA_ENCODER_MIRROR
+            // =<目录URL> 覆盖下载主机（同名工件）。
             url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/mozjpeg-v4.1.5-linux-x86_64.tar.gz"
                 .to_string(),
-            sha256: "6c2795a90da52d2fe0361fc6580cf4be309bb873797acb967725fe8f98325dee".to_string(),
+            sha256: "9b3fad009be16f6c826f219ed6e2e608f13c8cdeff2e11efa63a88eab2c576bf".to_string(),
             member: "cjpeg".to_string(),
         }),
         ("windows", "x86_64") => Ok(EncoderSource {

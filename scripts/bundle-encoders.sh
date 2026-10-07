@@ -66,7 +66,7 @@ if [[ "$os" == "Linux" ]]; then
   # macos-artifact.yml 同一配置（无 SIMD、静态）从源码构建——捆绑文件不做哈希
   # 锚定（运行期只查存在性），构建产物直接入捆绑目录。
   mozjpeg_url="https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/mozjpeg-v4.1.5-linux-x86_64.tar.gz"
-  mozjpeg_sha="6c2795a90da52d2fe0361fc6580cf4be309bb873797acb967725fe8f98325dee"
+  mozjpeg_sha="9b3fad009be16f6c826f219ed6e2e608f13c8cdeff2e11efa63a88eab2c576bf"
   if fetch "$mozjpeg_url" "$mozjpeg_sha" "mozjpeg-v4.1.5-linux-x86_64.tar.gz" 2>/dev/null; then
     extract "$work/mozjpeg-v4.1.5-linux-x86_64.tar.gz" cjpeg
   else
