@@ -19,7 +19,8 @@ import {
 import { openSettingsPanel } from './settings-ui';
 // T29-3 接线点：高级创建（多编码器 + 独立参数 + 命令行预览；面板与纯逻辑在
 // src/advanced-ui.ts / src/advanced.ts）
-import { openAdvancedPanel, type AdvancedProductDto } from './advanced-ui';
+import { openAdvancedPanel, type AdvancedEncodeOutcome } from './advanced-ui';
+import { askFileConflict } from './conflict';
 // T11/T22 接线点：一站式跑分升级为两种模式（质量优先拉杆 / 大小优先逼近），
 // 编码格式用胶囊多选；取点全部走核心库（onestop_quality_ladder / onestop_size_search），
 // 清单与生成循环在 src/onestop.ts，本文件只做模式 UI、触发与进度显示
@@ -547,6 +548,8 @@ async function runOnestop(): Promise<void> {
         render();
         markSaved();
       },
+      // T30：冲突询问弹窗（设置策略为「询问」时被调）
+      onConflict: askFileConflict,
     });
     // 大小优先：不可达标注按产物路径经 IPC 持久化进评测轮（US22，重启后
     // 结果表与导出仍可读；与核心库 annotation_note 同源）
@@ -1614,26 +1617,40 @@ function openAdvancedCreation(): void {
     },
     setReference: (groupId, roundId, path) =>
       mutate(() => invoke('round_set_reference', { groupId, roundId, path })),
-    encode: (groupId, roundId, referencePath, entry) =>
-      invoke<AdvancedProductDto>('advanced_encode', {
-        groupId,
-        roundId,
-        referencePath,
-        job: {
-          formatId: entry.encoderId,
-          lossless: entry.lossless,
-          mode: entry.mode,
-          quality: entry.quality,
-          targetBytes: entry.targetBytes,
-          rows: entry.rows.map((row) => ({
-            name: row.name,
-            flag: row.flag,
-            value: row.value.trim() === '' ? null : row.value.trim(),
-            note: row.note === '' ? null : row.note,
-            enabled: row.enabled,
-          })),
-        },
-      }),
+    encode: async (groupId, roundId, referencePath, entry, conflicts) => {
+      const invokeEncode = (overwrite: boolean): Promise<AdvancedEncodeOutcome> =>
+        invoke<AdvancedEncodeOutcome>('advanced_encode', {
+          groupId,
+          roundId,
+          referencePath,
+          conflictDecision: overwrite ? 'overwrite' : null,
+          job: {
+            formatId: entry.encoderId,
+            lossless: entry.lossless,
+            mode: entry.mode,
+            quality: entry.quality,
+            targetBytes: entry.targetBytes,
+            rows: entry.rows.map((row) => ({
+              name: row.name,
+              flag: row.flag,
+              value: row.value.trim() === '' ? null : row.value.trim(),
+              note: row.note === '' ? null : row.note,
+              enabled: row.enabled,
+            })),
+          },
+        });
+      const outcome = await invokeEncode(false);
+      if (outcome.kind === 'conflict') {
+        if ((await conflicts.decide(outcome.proposedName)) === 'skip') {
+          // 跳过：产物不生成、不进轮；抛中文原因进面板失败清单（与编码失败同路）
+          throw new Error(`已跳过（${outcome.proposedName} 已存在）`);
+        }
+        const retry = await invokeEncode(true);
+        if (retry.kind !== 'done') throw new Error('覆盖重调后不应再返回冲突');
+        return retry.product;
+      }
+      return outcome.product;
+    },
     addCandidates: async (groupId, roundId, paths, params) => {
       await mutate(() =>
         invoke('round_add_candidates', { groupId, roundId, paths, encodingParams: params }),
@@ -1649,6 +1666,8 @@ function openAdvancedCreation(): void {
     },
     scoreRound: () => scoreAllCandidates(),
     rerender: () => render(),
+    // T30：冲突询问弹窗（设置策略为「询问」时被调）
+    askConflict: (fileName) => askFileConflict(fileName),
   });
 }
 

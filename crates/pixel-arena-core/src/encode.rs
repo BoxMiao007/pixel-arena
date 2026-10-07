@@ -20,7 +20,7 @@
 
 use crate::error::CoreError;
 use crate::metrics::decode_srgb;
-use crate::naming::{product_file_name, unique_file_name, QualitySegment};
+use crate::naming::{product_file_name, unique_file_name, ConflictPolicy, QualitySegment};
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, ImageBuffer, Rgb};
 use sha2::{Digest, Sha256};
@@ -352,24 +352,9 @@ pub fn jxl_source() -> Result<EncoderSource, CoreError> {
 
 // ---------- 一站式入口 ----------
 
-/// 一站式入口：按格式把原图编码为一份跑分产物。
-///
-/// - 有损格式（jpeg/webp/avif/jxl）：quality 必填 1–100，产物名
-///   `<原图名>_<编码器小写>_q<质量>.<扩展名>`；
-/// - 无损组（png/webp-lossless/jxl-lossless）：quality 必须为 None，产物名
-///   `<原图名>_png.png` / `<原图名>_webp_lossless.webp` / `<原图名>_jpegxl_lossless.jxl`；
-/// - 编码器需要时自动下载安装（tools_dir）；同名冲突自动追加 `_1/_2` 不覆盖（D9）；
-/// - AVIF/JXL 产物写完自检可解码，并旁路一份 PNG 代片 `<产物>.png` 供查看器显示。
-pub fn encode_onestop(
-    source: impl AsRef<Path>,
-    format: &str,
-    quality: Option<u8>,
-    output_dir: impl AsRef<Path>,
-    tools_dir: impl AsRef<Path>,
-    overrides: &EncoderOverrides,
-) -> Result<PathBuf, CoreError> {
-    let format = OnestopFormat::parse(format)?;
-    // 无损组的像素必须逐位一致，质量参数无意义；有损组的质量在启动编码器前 fail-fast 校验
+/// 一站式质量参数的前置校验（encode_onestop 与 onestop_product_name 共用，
+/// 两处口径一字不差）：无损组不接受质量参数，有损组必填 1–100。
+fn validate_onestop_quality(format: OnestopFormat, quality: Option<u8>) -> Result<(), CoreError> {
     if format.is_lossless() {
         if quality.is_some() {
             return Err(CoreError::Encode {
@@ -381,33 +366,107 @@ pub fn encode_onestop(
             message: "有损格式需要质量参数（1–100）".to_string(),
         })?)?;
     }
+    Ok(())
+}
+
+/// 一站式产物的目标文件名（T30 询问策略用）：与正式编码同一套命名来源
+///（OnestopFormat 短名/扩展名 + [`product_file_name`]），GUI 在写入前据此探测
+/// 同名冲突、弹窗让用户拍板。只算名字，不碰编码器、不联网。
+pub fn onestop_product_name(
+    source: impl AsRef<Path>,
+    format: &str,
+    quality: Option<u8>,
+) -> Result<String, CoreError> {
+    let format = OnestopFormat::parse(format)?;
+    validate_onestop_quality(format, quality)?;
+    let segment = match quality {
+        Some(q) => QualitySegment::Lossy(q),
+        None if format == OnestopFormat::Png => QualitySegment::None,
+        None => QualitySegment::Lossless,
+    };
+    let stem = file_stem(source.as_ref())?;
+    product_file_name(&stem, format.encoder_short_name(), segment, &[], format.extension())
+}
+
+/// 一站式入口：按格式把原图编码为一份跑分产物。
+///
+/// - 有损格式（jpeg/webp/avif/jxl）：quality 必填 1–100，产物名
+///   `<原图名>_<编码器小写>_q<质量>.<扩展名>`；
+/// - 无损组（png/webp-lossless/jxl-lossless）：quality 必须为 None，产物名
+///   `<原图名>_png.png` / `<原图名>_webp_lossless.webp` / `<原图名>_jpegxl_lossless.jxl`；
+/// - 编码器需要时自动下载安装（tools_dir）；同名冲突按 `conflict` 处理（D9 +
+///   T30）：AutoAppend 自动追加 `_1/_2` 不覆盖，Overwrite 用确切名落位覆盖
+///  （编码先进产物目录下的暂存子目录完成——暂存内必然无冲突，成功后一次 rename
+///   覆盖已有文件；中途失败暂存目录整体丢弃，已有文件不受影响）；
+/// - AVIF/JXL 产物写完自检可解码，并旁路一份 PNG 代片 `<产物>.png` 供查看器显示。
+pub fn encode_onestop(
+    source: impl AsRef<Path>,
+    format: &str,
+    quality: Option<u8>,
+    output_dir: impl AsRef<Path>,
+    tools_dir: impl AsRef<Path>,
+    overrides: &EncoderOverrides,
+    conflict: ConflictPolicy,
+) -> Result<PathBuf, CoreError> {
+    let format = OnestopFormat::parse(format)?;
+    // 无损组的像素必须逐位一致，质量参数无意义；有损组的质量在启动编码器前 fail-fast 校验
+    validate_onestop_quality(format, quality)?;
 
     let source = source.as_ref();
     let output_dir = output_dir.as_ref();
     let tools_dir = tools_dir.as_ref();
 
+    // T30 覆盖模式：编码在暂存子目录里做（encode_*_using 的 unique_file_name 在
+    // 空目录里原样返回确切名），成功后 rename 进产物目录覆盖已有同名文件。
+    // tempdir_in 保证暂存与最终落位同一文件系统（rename 原子生效）。
+    let scratch = match conflict {
+        ConflictPolicy::AutoAppend => None,
+        ConflictPolicy::Overwrite => {
+            std::fs::create_dir_all(output_dir).map_err(|err| CoreError::Encode {
+                message: format!("无法创建产物目录 {}：{err}", output_dir.display()),
+            })?;
+            Some(tempfile::tempdir_in(output_dir).map_err(|err| CoreError::Encode {
+                message: format!("无法创建编码暂存目录（覆盖模式）：{err}"),
+            })?)
+        }
+    };
+    let encode_dir: &Path = scratch.as_ref().map(|dir| dir.path()).unwrap_or(output_dir);
+
     // 编码器解析与探测共用一份「格式 → 编码器」分派（resolve_onestop_encoder），
     // 保证设置中心覆盖同时作用于正式产物与大小优先探测
     let product = match format {
-        OnestopFormat::Png => encode_png_product(source, output_dir),
+        OnestopFormat::Png => encode_png_product(source, encode_dir),
         _ => {
             let encoder = resolve_onestop_encoder(format, tools_dir, overrides)?
                 .expect("无损 PNG 已在上方分支处理");
             match format {
                 OnestopFormat::Jpeg => {
-                    encode_jpeg_using(encoder, source, quality.expect("上方已校验"), output_dir)
+                    encode_jpeg_using(encoder, source, quality.expect("上方已校验"), encode_dir)
                 }
                 OnestopFormat::Webp | OnestopFormat::WebpLossless => {
-                    encode_webp_using(encoder, source, quality, output_dir)
+                    encode_webp_using(encoder, source, quality, encode_dir)
                 }
-                OnestopFormat::Avif => encode_avif_using(&encoder, source, quality, output_dir),
+                OnestopFormat::Avif => encode_avif_using(&encoder, source, quality, encode_dir),
                 OnestopFormat::Jxl | OnestopFormat::JxlLossless => {
-                    encode_jxl_using(encoder, source, quality, output_dir)
+                    encode_jxl_using(encoder, source, quality, encode_dir)
                 }
                 OnestopFormat::Png => unreachable!("外层分支已处理"),
             }
         }
     }?;
+
+    // 覆盖模式落位：暂存产物 rename 到确切目标名（三端 rename 均替换已有文件；
+    // 大小写仅差异的名字在 Linux 上会并存，见 ADR 0023 口径说明）
+    let product = match scratch {
+        None => product,
+        Some(_) => {
+            let dest = output_dir.join(product.file_name().expect("暂存产物必有文件名"));
+            std::fs::rename(&product, &dest).map_err(|err| CoreError::Encode {
+                message: format!("无法覆盖保存产物 {}：{err}", dest.display()),
+            })?;
+            dest
+        }
+    };
 
     // AVIF/JXL 产物 WebView 原生解不了：自检解码 + 旁路 PNG 代片（决策 0012）。
     // 自检失败视同产物失败：不留不可跑分的产物。
@@ -1244,6 +1303,7 @@ mod tests {
                 cjpeg: Some(stub),
                 ..Default::default()
             },
+            ConflictPolicy::AutoAppend,
         )
         .expect("覆盖的编码器应被使用");
         assert_eq!(std::fs::read(&product).unwrap(), b"FAKEOVERRIDE\n");
@@ -1251,6 +1311,83 @@ mod tests {
             !dir.join("tools/mozjpeg").exists(),
             "覆盖生效时内置编码器不应被安装"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn onestop_product_name_matches_actual_encode_product() {
+        // 询问策略（T30）的预检名字必须与正式编码落地的名字一字不差：桩 cjpeg 端到端
+        // 比对 onestop_product_name 与 encode_onestop 的产物文件名
+        let dir = std::env::temp_dir().join(format!("pixel-arena-t30-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("my-cjpeg.sh");
+        std::fs::write(&stub, "#!/bin/sh\necho FAKEOVERRIDE > \"$4\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let out_dir = dir.join("out");
+        let expected = onestop_product_name(fixture("photo-ref.png"), "jpeg", Some(75))
+            .expect("预检名字应可计算");
+        let product = encode_onestop(
+            fixture("photo-ref.png"),
+            "jpeg",
+            Some(75),
+            &out_dir,
+            dir.join("tools"),
+            &EncoderOverrides {
+                cjpeg: Some(stub),
+                ..Default::default()
+            },
+            ConflictPolicy::AutoAppend,
+        )
+        .expect("编码应成功");
+        assert_eq!(
+            product.file_name().and_then(|n| n.to_str()),
+            Some(expected.as_str()),
+            "预检名字应与实际产物名一致"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn onestop_overwrite_replaces_existing_product() {
+        // 覆盖模式（T30）：同名文件已存在时按确切名落位覆盖，不追加 _1；且原有
+        // 内容确实被新产物替换
+        let dir = std::env::temp_dir().join(format!("pixel-arena-t30-ov-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("my-cjpeg.sh");
+        std::fs::write(&stub, "#!/bin/sh\necho NEWPRODUCT > \"$4\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let out_dir = dir.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let expected = onestop_product_name(fixture("photo-ref.png"), "jpeg", Some(75)).unwrap();
+        std::fs::write(out_dir.join(&expected), b"OLDPRODUCT").unwrap();
+
+        let product = encode_onestop(
+            fixture("photo-ref.png"),
+            "jpeg",
+            Some(75),
+            &out_dir,
+            dir.join("tools"),
+            &EncoderOverrides {
+                cjpeg: Some(stub),
+                ..Default::default()
+            },
+            ConflictPolicy::Overwrite,
+        )
+        .expect("覆盖编码应成功");
+        assert_eq!(product, out_dir.join(&expected), "覆盖模式应使用确切名");
+        assert_eq!(
+            std::fs::read(&product).unwrap(),
+            b"NEWPRODUCT\n",
+            "已有同名文件应被新产物覆盖"
+        );
+        // 不得留下追加序号的副本或暂存残留
+        assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 1, "产物目录应只有覆盖后的产物");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1267,6 +1404,7 @@ mod tests {
                 cjpeg: Some(PathBuf::from("/不存在/fake-cjpeg")),
                 ..Default::default()
             },
+            ConflictPolicy::AutoAppend,
         )
         .err()
         .expect("假覆盖路径应报错")

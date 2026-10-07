@@ -800,6 +800,7 @@ fn run_run(args: RunArgs) -> ExitCode {
             &output_dir,
             &tools_dir,
             &EncoderOverrides::default(),
+            pixel_arena_core::naming::ConflictPolicy::AutoAppend,
         ) {
             Ok(product) => products.push((
                 item.label.clone(),
