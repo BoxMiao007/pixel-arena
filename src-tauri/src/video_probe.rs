@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use pixel_arena_core::process::apply_no_window;
 use serde::Serialize;
 
 /// ffprobe 读到的视频流元信息；fps / duration_secs 为 0 表示未知（前端自行降级处理）。
@@ -18,7 +19,7 @@ pub struct VideoMeta {
 /// 用 ffprobe 读取视频元信息。任何失败都返回面向用户的中文错误（fail-fast，不崩应用）。
 pub fn probe(ffprobe: &Path, video: &Path) -> Result<VideoMeta, String> {
     let mut command = std::process::Command::new(ffprobe);
-    pixel_arena_core::process::apply_no_window(&mut command);
+    apply_no_window(&mut command);
     let output = command
         .args([
             "-v",
@@ -174,7 +175,7 @@ mod tests {
             }
         }
         let mut which = std::process::Command::new("which");
-        pixel_arena_core::process::apply_no_window(&mut which);
+        apply_no_window(&mut which);
         let from_path = which
             .arg("ffprobe")
             .output()

@@ -58,6 +58,14 @@ const CONFLICT_POLICY_OPTIONS: { value: ConflictPolicyPref; label: string }[] = 
   { value: 'ask', label: '询问（写入前弹窗）' },
 ];
 
+/** 外链统一设置（发布页图标按钮、关于页仓库链接与库链接共用）：target="_blank"
+ * 是 opener 插件拦截的前提——点击经插件转系统浏览器，不会在应用窗口内导航；
+ * rel="noopener noreferrer" 兜底防 opener 泄露。 */
+function setExternalTarget(link: HTMLAnchorElement): void {
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+}
+
 /** 草稿深拷贝（嵌套的 encoderOverrides 一并复制，避免控件改到已保存设置）。 */
 function cloneSettings(value: SettingsData): SettingsData {
   return {
@@ -408,14 +416,12 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     lineHint.className = 'settings-status-hint';
     // 「官方发布页」图标按钮（决策 0025；v0.1.4 反馈由文本链接改图标）：地址来自后端
     // 锁定清单（release_page 单一数据源，与核心库缺失报错、关于页库链接同源），渲染前过
-    // isSafeLibraryUrl 白名单——非 https 时不设 href 并转禁用态。target="_blank" 是
-    // opener 插件拦截的前提：点击经插件转系统浏览器，不会在应用窗口内导航。
+    // isSafeLibraryUrl 白名单——非 https 时不设 href 并转禁用态。
     const releaseLink = document.createElement('a');
     releaseLink.className = 'settings-icon-btn';
     releaseLink.title = '从编码器官方发布页下载可执行文件，保存后在下方指定其路径';
     releaseLink.setAttribute('aria-label', '官方发布页');
-    releaseLink.target = '_blank';
-    releaseLink.rel = 'noopener noreferrer';
+    setExternalTarget(releaseLink);
     releaseLink.append(externalLinkIcon());
     statusLine.append(badge, lineHint, releaseLink);
     statusRenderers.push(() => {
@@ -490,7 +496,19 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   saveBtn.className = 'settings-primary-btn';
   saveBtn.textContent = '保存';
   saveBtn.addEventListener('click', () => {
-    void commitAll();
+    void (async () => {
+      // pending 态（issue #42）：保存可能跑外部 ffmpeg 路径探测（后端 5s 有界超时），
+      // 期间禁用 + 文案反馈，避免界面像假死；完成/失败后恢复，结果仍由 commitAll
+      // 按既有逻辑显示（成功清空错误行并刷新状态，失败显示中文原因）
+      saveBtn.disabled = true;
+      saveBtn.textContent = '保存中…';
+      try {
+        await commitAll();
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '保存';
+      }
+    })();
   });
   const resetBtn = document.createElement('button');
   resetBtn.className = 'settings-mini-btn';
@@ -564,9 +582,7 @@ function renderAbout(info: AboutData): Node[] {
     repoLink.href = info.repoUrl;
     repoLink.textContent = '仓库主页';
     repoLink.className = 'settings-link';
-    // target="_blank"：与发布页图标按钮同理，经 opener 插件转系统浏览器
-    repoLink.target = '_blank';
-    repoLink.rel = 'noopener noreferrer';
+    setExternalTarget(repoLink);
     meta.append(licenseLabel, document.createTextNode(' · '), repoLink);
   } else {
     meta.append(licenseLabel, document.createTextNode(' · 仓库主页'));
@@ -586,8 +602,7 @@ function renderAbout(info: AboutData): Node[] {
       link.href = lib.url;
       link.textContent = lib.name;
       link.className = 'settings-link';
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
+      setExternalTarget(link);
       item.append(link);
     } else {
       item.append(document.createTextNode(lib.name));

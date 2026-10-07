@@ -15,6 +15,9 @@
 
 use std::path::{Path, PathBuf};
 
+// 子进程派生统一加 Windows「不弹终端窗口」处理（issue #42）。
+use pixel_arena_core::process::apply_no_window;
+
 /// 锁定的 ffmpeg 构建压缩包下载地址（按平台）。
 #[cfg(target_os = "linux")]
 const FFMPEG_URL: &str = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz";
@@ -265,7 +268,7 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
     std::fs::create_dir_all(&staging).map_err(|err| format!("无法创建临时解压目录: {err}"))?;
     let archive_top = archive_top();
     let mut tar = std::process::Command::new("tar");
-    pixel_arena_core::process::apply_no_window(&mut tar);
+    apply_no_window(&mut tar);
     let extract = tar
         .args([
             "-xJf",

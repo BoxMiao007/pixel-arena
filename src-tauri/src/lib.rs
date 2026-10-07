@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{ipc::Channel, Manager, State};
 
+use pixel_arena_core::process::apply_no_window;
 use pixel_arena_core::workspace::{Group, GroupKind, Round, Workspace, WorkspaceError};
 
 use crate::settings::Settings;
@@ -283,15 +284,11 @@ mod conflict_protocol_tests {
 mod portable_encoders_tests {
     use super::*;
 
-    /// 在目录里造一个假捆绑成员（内容无所谓，消费端只看 is_file）。
+    /// 在目录里造一个假捆绑成员（内容无所谓，消费端只看 is_file）。文件名拼接口径
+    /// 与生产代码共用 [`member_name`]，避免 Windows 后缀逻辑两处漂移。
     fn make_member(dir: &Path, name: &str) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
-        let member = if cfg!(windows) {
-            format!("{name}.exe")
-        } else {
-            name.to_string()
-        };
-        let path = dir.join(&member);
+        let path = dir.join(member_name(name));
         std::fs::write(&path, b"placeholder").unwrap();
         path
     }
@@ -895,7 +892,7 @@ pub fn advanced_video_catalog_impl(
     match ffmpeg_setup::resolve_ffmpeg(tools_dir, custom_ffmpeg) {
         Ok(ffmpeg) => {
             let mut command = std::process::Command::new(&ffmpeg);
-            pixel_arena_core::process::apply_no_window(&mut command);
+            apply_no_window(&mut command);
             let encoder_names = match command
                 .arg("-hide_banner")
                 .arg("-encoders")
@@ -1187,18 +1184,22 @@ pub fn export_round_file(
     Ok(path.to_string())
 }
 
+/// 编码器成员的可执行文件名（Windows 加 .exe 后缀）。消费端与测试共用单一口径。
+fn member_name(base: &str) -> String {
+    if cfg!(windows) {
+        format!("{base}.exe")
+    } else {
+        base.to_string()
+    }
+}
+
 /// 票 #43 便携兜底：目录里是否存在任一捆绑编码器成员（五成员同进同出，由
 /// bundle-encoders.* 整体就位，故「任一存在」即可认定该目录是有效捆绑目录；
-/// 平台后缀按编译目标判断）。
+/// 平台后缀见 [`member_name`]）。
 fn has_encoder_members(dir: &Path) -> bool {
-    ["cjpeg", "cwebp", "avifenc", "avifdec", "cjxl"].iter().any(|name| {
-        let member = if cfg!(windows) {
-            format!("{name}.exe")
-        } else {
-            name.to_string()
-        };
-        dir.join(member).is_file()
-    })
+    ["cjpeg", "cwebp", "avifenc", "avifdec", "cjxl"]
+        .iter()
+        .any(|name| dir.join(member_name(name)).is_file())
 }
 
 /// 票 #43 便携兜底：捆绑编码器目录解析。优先级（整目录二选一，逐成员消费端
