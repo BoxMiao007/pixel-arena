@@ -300,6 +300,47 @@ export function validateEntry(spec: QuickSpec | null, entry: AdvancedEntry): str
   return errors;
 }
 
+// ---------- 编码器可执行文件可用性（票面 AC5：建轮前批量前置校验） ----------
+
+/** 单个工具的可用性状态（后端 advanced_encoder_status 回传的结构子集，
+ * 与 src-tauri/src/tool_status.rs 的 ToolSource serde 小写一一对应）。 */
+export interface ToolStatusLite {
+  key: string;
+  source: 'builtin' | 'external' | 'unconfigured' | 'unavailable';
+  hint: string | null;
+}
+
+/**
+ * 建轮前批量校验条目编码器的可执行文件是否可用（含设置页外部路径覆盖）。判定
+ * 与设置页 tool_status 同源：external/builtin = 可用；unconfigured = 内置未安装
+ * 但首次使用自动下载，放行；unavailable（外部路径失效/探测失败/内置损坏）=
+ * 明确报错并指向设置页。toolKeyOf 返回 null 的条目（表外视频编码器没有独立
+ * 可执行文件）跳过，交给创建时后端报错。返回 entryId → 错误文本（空 = 全部可用）。
+ */
+export function availabilityErrors(
+  entries: AdvancedEntry[],
+  toolKeyOf: (entry: AdvancedEntry) => string | null,
+  statuses: ToolStatusLite[],
+): Map<string, string> {
+  const byKey = new Map(statuses.map((status) => [status.key, status]));
+  const errors = new Map<string, string>();
+  for (const entry of entries) {
+    const key = toolKeyOf(entry);
+    if (!key) continue;
+    const status = byKey.get(key);
+    if (!status) {
+      errors.set(entry.id, `编码器 ${key} 的可用性检测失败（后端未返回该工具的状态），请重试`);
+    } else if (status.source === 'unavailable') {
+      errors.set(
+        entry.id,
+        `编码器 ${key} 不可用：${status.hint ?? '可执行文件无法执行'}。` +
+          '请到「设置」更正或清空该工具的路径并保存后重试',
+      );
+    }
+  }
+  return errors;
+}
+
 // ---------- 命令行预览（shell 引用，复制即可执行） ----------
 
 /** POSIX shell 单词引用（核心库 naming::shell_quote 的 TS 镜像）。 */

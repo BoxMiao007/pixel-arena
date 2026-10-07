@@ -93,6 +93,10 @@ pub struct Round {
     /// 跑分视频列表，含各自的跑分结果。T14 新增。
     #[serde(default)]
     pub video_candidates: Vec<CandidateVideo>,
+    /// 轮级备注（T29-3 视频高级创建确认后写入：编码器 + 参数摘要 + 命令行，配置
+    /// 随轮持久化不白丢）。其余流程为 None；旧文件缺字段回落 None（决策 0004）。
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// 评测轮内容里的一张跑分图及其跑分结果。
@@ -545,6 +549,20 @@ impl Workspace {
         Ok(())
     }
 
+    /// 轮级备注（T29-3 视频高级创建：确认后把编码器 + 参数摘要 + 命令行写进新轮，
+    /// 配置随轮持久化不白丢）。note 空白 = 清空。图片/视频组通用（与只服务图片
+    /// 跑分图的 [`Workspace::set_round_candidate_note`] 不同，这里不按组类型拦）。
+    pub fn set_round_note(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        note: Option<&str>,
+    ) -> Result<(), WorkspaceError> {
+        let note = note.map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+        self.round_mut(group_id, round_id)?.note = note;
+        Ok(())
+    }
+
     // ---------- T14：视频评测轮（原视频 / 跑分视频 / VMAF-PSNR-SSIM） ----------
     // 语义与图片侧三个方法一一对应；跑分需要调用方传入含 libvmaf 滤镜的 ffmpeg 路径。
 
@@ -798,6 +816,7 @@ impl Workspace {
             candidates: Vec::new(),
             video_reference_path: None,
             video_candidates: Vec::new(),
+            note: None,
         };
         group.active_round_id = Some(round.id.clone());
         group.rounds.push(round);
@@ -2187,6 +2206,36 @@ mod tests {
                 GroupKind::Image
             ))
         ));
+    }
+
+    // ---------- T29-3：轮级备注（视频高级创建确认后落地配置） ----------
+
+    #[test]
+    fn set_round_note_persists_on_video_group_roundtrip() {
+        // 视频组可用（与候选备注相反：轮级备注正是为视频高级创建加的）
+        let mut ws = Workspace::new();
+        let g = ws.create_group("视频对比", GroupKind::Video).unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        assert_eq!(ws.groups[0].rounds[0].note, None, "新轮备注为空");
+
+        let note = "高级创建配置\n1. H.264（libx264）：-crf 23";
+        ws.set_round_note(&g, &r, Some(note)).unwrap();
+        assert_eq!(ws.groups[0].rounds[0].note.as_deref(), Some(note));
+
+        // 持久化往返：camelCase 键名 note；旧文件（无该字段）回落 None（决策 0004）
+        let json = ws.to_json();
+        assert!(json.contains("\"note\""), "JSON 键名: {json}");
+        let restored = Workspace::from_json(&json).unwrap();
+        assert_eq!(restored.groups[0].rounds[0].note.as_deref(), Some(note));
+
+        // 传 None 清除；空白文本视同清除
+        ws.set_round_note(&g, &r, None).unwrap();
+        assert_eq!(ws.groups[0].rounds[0].note, None);
+        ws.set_round_note(&g, &r, Some("   ")).unwrap();
+        assert_eq!(ws.groups[0].rounds[0].note, None);
+
+        // 轮不存在报错（复用既有 RoundNotFound 口径）
+        assert!(ws.set_round_note(&g, "不存在", Some("x")).is_err());
     }
 
     // ---------- T18：单文件移除（从评测轮移除单个跑分图/跑分视频） ----------

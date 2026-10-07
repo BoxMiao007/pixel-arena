@@ -1474,3 +1474,15 @@ body {
   border-top: 1px solid var(--border);
   padding-top: 0.75rem;
 }
+
+/* 轮级备注（T29-3 视频高级创建的配置摘要）：保留换行的多行文本 */
+.round-note {
+  white-space: pre-line;
+  margin: 0 0 0.75rem;
+}
+
+/* 条目级报错（T29-3 编码器可执行文件不可用的红标） */
+.adv-entry-error {
+  margin: 0.4rem 0 0;
+  white-space: normal;
+}

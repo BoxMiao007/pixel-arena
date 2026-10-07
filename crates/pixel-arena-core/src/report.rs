@@ -424,6 +424,7 @@ mod tests {
             candidates,
             video_reference_path: None,
             video_candidates: Vec::new(),
+            note: None,
         }
     }
 
@@ -443,6 +444,7 @@ mod tests {
                     ("SSIM", MetricValue::new(0.9926)),
                 ]),
             )],
+            note: None,
         }
     }
 

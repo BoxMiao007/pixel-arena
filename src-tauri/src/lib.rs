@@ -89,6 +89,28 @@ fn about_info() -> tool_status::AboutInfo {
     tool_status::about_info_impl()
 }
 
+/// IPC 命令（T29-3 高级创建）：建轮前批量查一组工具键的可用性（条目编码器键 +
+/// 视频侧 ffmpeg）。判定逻辑与设置页 tool_status 完全同源（tool_status_for_keys），
+/// 只回请求的键、未知键跳过。探测要跑子进程（-version），放阻塞线程池执行。
+#[tauri::command]
+async fn advanced_encoder_status(
+    keys: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<tool_status::ToolStatus>, String> {
+    let settings = state.settings.lock().expect("设置锁不应中毒").clone();
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(tool_status::tool_status_for_keys(
+            &settings,
+            tools_dir.as_path(),
+            &keys,
+            &tool_status::probe_tool_version,
+        ))
+    })
+    .await
+    .map_err(|err| format!("编码器可用性检测任务执行失败: {err}"))?
+}
+
 /// 一站式单档产物（onestop_encode 回传）：产物路径 + 编码参数文本。
 /// 参数文本与 CLI 的进度标签同出核心库 OnestopFormat::encoding_params_text 一处，
 /// 前端纳入本轮时原样写入 encoding_params（结果表「编码参数」列的数据源）。
@@ -195,6 +217,18 @@ fn round_rename(
     state: State<AppState>,
 ) -> Result<Workspace, String> {
     mutate(&state, |ws| ws.rename_round(&group_id, &round_id, &name))
+}
+
+/// IPC 命令（T29-3）：写轮级备注（视频高级创建确认后把编码器配置摘要与命令行
+/// 落进新轮，配置不白丢）。note 传 null / 空白 = 清空。
+#[tauri::command]
+fn round_set_note(
+    group_id: String,
+    round_id: String,
+    note: Option<String>,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| ws.set_round_note(&group_id, &round_id, note.as_deref()))
 }
 
 #[tauri::command]
@@ -1043,6 +1077,8 @@ pub fn run() {
             group_activate,
             round_create,
             round_rename,
+            // T29-3：轮级备注（视频高级创建确认后落地配置）
+            round_set_note,
             round_delete,
             round_activate,
             round_set_reference,
@@ -1062,6 +1098,8 @@ pub fn run() {
             advanced_image_catalog,
             advanced_video_catalog,
             advanced_encode,
+            // T29-3 高级创建：建轮前批量查编码器可执行文件可用性（AC5）
+            advanced_encoder_status,
             // T14 视频评测轮
             round_set_video_reference,
             round_add_video_candidates,

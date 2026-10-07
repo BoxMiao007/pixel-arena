@@ -238,6 +238,22 @@ pub fn tool_status_with(
     statuses
 }
 
+/// 指定工具键的子集状态（T29-3 高级创建建轮前的批量可用性校验：前端把条目的
+/// 编码器键收集成一组传进来，只回这些键的状态，键序按请求序、未知键跳过）。
+/// 复用 [`tool_status_with`] 的单条构建逻辑，语义（外部优先 / 四态判定）与设置页
+/// 完全同源。
+pub fn tool_status_for_keys(
+    settings: &Settings,
+    tools_dir: &Path,
+    keys: &[String],
+    probe: &dyn Fn(&Path, &str) -> Result<String, String>,
+) -> Vec<ToolStatus> {
+    let all = tool_status_with(settings, tools_dir, probe);
+    keys.iter()
+        .filter_map(|key| all.iter().find(|status| &status.key == key).cloned())
+        .collect()
+}
+
 /// 「关于」区块数据（决策 D18）：项目信息 + 引用的库版本清单，版本一律读锁定清单
 ///（EncoderSource.version + ffmpeg 版本常量），库名超链接到各自项目主页。
 pub fn about_info_impl() -> AboutInfo {
@@ -413,5 +429,41 @@ mod tests {
             keys,
             ["ffmpeg", "cjpeg", "cwebp", "avifenc", "cjxl", "avifdec"]
         );
+    }
+
+    // ---------- T29-3：高级创建建轮前的批量可用性校验 ----------
+
+    #[test]
+    fn tool_status_for_keys_returns_only_requested_keys_in_request_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = ["cjxl".to_string(), "ffmpeg".to_string(), "cwebp".to_string()];
+        let statuses = tool_status_for_keys(&Settings::default(), dir.path(), &keys, &fake_probe);
+        let got: Vec<&str> = statuses.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(got, ["cjxl", "ffmpeg", "cwebp"], "键序按请求序，只含请求键");
+    }
+
+    #[test]
+    fn tool_status_for_keys_keeps_unavailability_semantics() {
+        // 与设置页同源：外部路径失效 → unavailable + 指引；未配置（内置未装）→
+        // unconfigured（编码器首次使用自动下载，建轮前不算不可用）
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.encoder_overrides.cjpeg = Some("/不存在/cjpeg".to_string());
+        let keys = ["cjpeg".to_string(), "avifenc".to_string()];
+        let statuses = tool_status_for_keys(&settings, dir.path(), &keys, &fake_probe);
+        let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
+        assert_eq!(cjpeg.source, ToolSource::Unavailable);
+        assert!(cjpeg.hint.as_deref().unwrap().contains("清空"));
+        let avifenc = statuses.iter().find(|s| s.key == "avifenc").unwrap();
+        assert_eq!(avifenc.source, ToolSource::Unconfigured);
+    }
+
+    #[test]
+    fn tool_status_for_keys_skips_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = ["cwebp".to_string(), "不是工具".to_string()];
+        let statuses = tool_status_for_keys(&Settings::default(), dir.path(), &keys, &fake_probe);
+        let got: Vec<&str> = statuses.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(got, ["cwebp"], "未知键跳过不报错");
     }
 }

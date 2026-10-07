@@ -15,6 +15,7 @@ import {
   buildEntryArgs,
   buildEntryArgsLenient,
   validateEntry,
+  availabilityErrors,
   shellQuote,
   formatCommandLine,
   previewImageCommand,
@@ -23,6 +24,7 @@ import {
   type AdvancedParamRow,
   type AdvancedSession,
   type ImageSpec,
+  type ToolStatusLite,
   type VideoSpec,
 } from './advanced';
 
@@ -384,5 +386,68 @@ describe('buildEntryArgsLenient（预览宽松合并）', () => {
   it('图片预览带未填完的自定义行不抛错（回归：曾把整面板渲染打断）', () => {
     const line = previewImageCommand(jpegSpec, entry({ rows: [row({ name: '', flag: '' })] }), null);
     expect(line).toBe(`cjpeg -quality 75 -outfile '<产物>' '<原图>'`);
+  });
+});
+
+// ---------- availabilityErrors（票面 AC5：建轮前的编码器可执行文件批量校验） ----------
+
+describe('availabilityErrors（建轮前批量可用性校验）', () => {
+  const ok = (key: string, source: ToolStatusLite['source'] = 'builtin'): ToolStatusLite => ({
+    key,
+    source,
+    hint: null,
+  });
+  const broken = (key: string): ToolStatusLite => ({
+    key,
+    source: 'unavailable',
+    hint: `${key} 路径无效：/不存在/${key}（文件不存在）。请更正该路径，或清空该项回退内置`,
+  });
+
+  it('unavailable（外部路径失效/探测失败）报错并指向设置页', () => {
+    const errors = availabilityErrors(
+      [entry({ id: 'e-jpeg' }), entry({ id: 'e-webp', encoderId: 'webp' })],
+      (e) => (e.encoderId === 'jpeg' ? 'cjpeg' : 'cwebp'),
+      [broken('cjpeg'), ok('cwebp')],
+    );
+    expect([...errors.keys()]).toEqual(['e-jpeg']);
+    const message = errors.get('e-jpeg')!;
+    expect(message).toContain('cjpeg');
+    expect(message).toContain('不可用');
+    expect(message).toContain('设置');
+  });
+
+  it('unconfigured 放行（内置未安装时首次使用自动下载）', () => {
+    const errors = availabilityErrors(
+      [entry({})],
+      () => 'cjpeg',
+      [ok('cjpeg', 'unconfigured')],
+    );
+    expect(errors.size).toBe(0);
+  });
+
+  it('external 与 builtin 均视为可用', () => {
+    const errors = availabilityErrors(
+      [entry({ id: 'a' }), entry({ id: 'b', encoderId: 'webp' })],
+      (e) => (e.encoderId === 'jpeg' ? 'cjpeg' : 'cwebp'),
+      [ok('cjpeg', 'external'), ok('cwebp', 'builtin')],
+    );
+    expect(errors.size).toBe(0);
+  });
+
+  it('视频条目按 ffmpeg 查；后端漏回该工具时报检测失败', () => {
+    const videoEntry = entry({ id: 'v1', kind: 'video', encoderId: 'libx264' });
+    const missing = availabilityErrors(videoEntry && [videoEntry], () => 'ffmpeg', [
+      ok('cjpeg'),
+    ]);
+    expect(missing.get('v1')).toContain('ffmpeg');
+    expect(missing.get('v1')).toContain('检测失败');
+
+    const brokenFfmpeg = availabilityErrors([videoEntry], () => 'ffmpeg', [broken('ffmpeg')]);
+    expect(brokenFfmpeg.get('v1')).toContain('不可用');
+  });
+
+  it('toolKeyOf 返回 null 的条目跳过（表外编码器交给创建时后端报错）', () => {
+    const errors = availabilityErrors([entry({ id: 'x' })], () => null, []);
+    expect(errors.size).toBe(0);
   });
 });

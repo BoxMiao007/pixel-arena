@@ -67,6 +67,8 @@ interface Round {
   // T14 接线点：视频评测字段（核心库 serde default，旧文件为空；实现都在 src/video.ts）
   videoReferencePath?: string | null;
   videoCandidates?: VideoCandidate[];
+  /** 轮级备注（T29-3 视频高级创建确认后写入的配置摘要，随轮持久化；其余流程为 null）。 */
+  note?: string | null;
 }
 
 // T17：跑分组类型（核心库 GroupKind 的 serde 输出），新建时选定、后端无修改入口
@@ -996,6 +998,15 @@ function renderContent(): void {
 
   $content.classList.add('filled');
 
+  // 轮级备注（T29-3 视频高级创建确认后写入的配置摘要）：随轮持久化，重启后仍显示
+  if (round.note) {
+    const noteEl = document.createElement('p');
+    noteEl.className = 'muted round-note';
+    noteEl.textContent = round.note;
+    noteEl.title = round.note;
+    $content.append(noteEl);
+  }
+
   // T17：跑分组分类型——图片组只有图片流程（无视频导入），视频组只有视频导入与
   // 逐帧同步对比（无一站式与编码阶梯入口）。类型创建时已锁定，界面没有更改入口。
   if (session.group.kind === 'video') {
@@ -1502,7 +1513,12 @@ function openAdvancedCreation(): void {
       return selected;
     },
     isBusy: () => scoring,
-    initialReference: () => activeRound()?.round.referencePath ?? null,
+    initialReference: () => {
+      const round = activeRound()?.round;
+      if (!round) return null;
+      // 图片组预填原图，视频组预填原视频（高级创建面板的命令行预览用）
+      return group.kind === 'video' ? round.videoReferencePath ?? null : round.referencePath ?? null;
+    },
     setStatus,
     createRound: async () => {
       const current = activeGroup();
@@ -1550,6 +1566,9 @@ function openAdvancedCreation(): void {
       await mutate(() =>
         invoke('round_set_candidate_note', { groupId, roundId, candidatePath: path, note }),
       );
+    },
+    setRoundNote: async (groupId, roundId, note) => {
+      await mutate(() => invoke('round_set_note', { groupId, roundId, note }));
     },
     scoreRound: () => scoreAllCandidates(),
     rerender: () => render(),

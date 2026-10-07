@@ -507,6 +507,7 @@ mod tests {
             candidates,
             video_reference_path: None,
             video_candidates: Vec::new(),
+            note: None,
         }
     }
 

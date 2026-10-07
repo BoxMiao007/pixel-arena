@@ -15,6 +15,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import {
   addEntry,
+  availabilityErrors,
+  buildEntryArgsLenient,
   moveEntry,
   previewImageCommand,
   previewVideoCommand,
@@ -28,6 +30,7 @@ import {
   type ImageSpec,
   type KnownParam,
   type QuickSpec,
+  type ToolStatusLite,
   type VideoSpec,
 } from './advanced';
 
@@ -63,6 +66,8 @@ export interface AdvancedDeps {
   addCandidates(groupId: string, roundId: string, paths: string[], params: string[]): Promise<void>;
   /** 大小优先不可达标注（与一站式同机制，随轮持久化）。 */
   setNote(groupId: string, roundId: string, path: string, note: string): Promise<void>;
+  /** 轮级备注（视频高级创建确认后把配置摘要与命令行写进新轮，随轮持久化）。 */
+  setRoundNote(groupId: string, roundId: string, note: string): Promise<void>;
   /** 复用主界面的整轮跑分循环。 */
   scoreRound(): Promise<void>;
   /** 创建完成后的整页重渲染（新轮出现在评测轮栏）。 */
@@ -112,7 +117,8 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
       ? '为每个编码器单独配置参数，一次生成全部产物并入同一轮跑分；产物写到原图旁的' +
         '「Pixel Arena」文件夹，编码参数随评测轮保存。高级创建的配置只在本次运行内保留。'
       : '选择视频编码器（按格式拆分 + ffmpeg 实际枚举）并配置参数、预览命令行。本版本只做' +
-        '创建流程与能力定义：确认后新建评测轮，视频自动编码链路将在后续版本提供。';
+        '创建流程与能力定义：确认后新建评测轮并把配置与命令行写进轮备注，视频自动编码链路' +
+        '将在后续版本提供；产物可复制命令行自行编码后用「添加跑分视频」导入。';
   panel.append(hint);
 
   // ---------- 目录拉取（图片规格 / 视频规格 + ffmpeg 枚举） ----------
@@ -208,6 +214,18 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     const spec = specOf(entry);
     return spec ? spec.displayName : entry.encoderId;
   };
+  /** 条目对应的工具键（可用性校验用）：图片 = 编码器键（cjpeg 等）；视频统一 ffmpeg。
+   * 表外条目（找不到规格映射）返回 null，跳过可执行文件校验。 */
+  const toolKeyOf = (entry: AdvancedEntry): string | null => {
+    if (kind === 'image') {
+      return imageSpecOf(entry)?.toolKey ?? null;
+    }
+    return 'ffmpeg';
+  };
+
+  // 编码器可执行文件不可用的条目（AC5）：entryId → 错误文本，条目卡片红标展示，
+  // 点「创建」重新校验通过后清空
+  const unavailableEntries = new Map<string, string>();
 
   // ---------- 预览与复制 ----------
   const refreshPreview = (entry: AdvancedEntry, cmdEl: HTMLElement): void => {
@@ -215,7 +233,7 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     const line =
       kind === 'image'
         ? previewImageCommand(spec as ImageSpec, entry, session.referencePath)
-        : previewVideoCommand(videoSpecOf(entry), entry, null);
+        : previewVideoCommand(videoSpecOf(entry), entry, session.referencePath);
     cmdEl.textContent = line;
     cmdEl.title =
       kind === 'image' && entry.mode === 'size' && !entry.lossless
@@ -417,6 +435,15 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     });
     headRow.append(label, select, upBtn, downBtn, delBtn);
     card.append(headRow);
+
+    // 编码器可执行文件不可用的红标（AC5）：点「创建」时批量检测，报错指向设置页
+    const unavailable = unavailableEntries.get(entry.id);
+    if (unavailable) {
+      const errEl = document.createElement('p');
+      errEl.className = 'settings-error adv-entry-error';
+      errEl.textContent = unavailable;
+      card.append(errEl);
+    }
 
     // 命令行预览 + 复制（快速参数行的输入事件会即时刷新它）
     const previewRow = document.createElement('div');
@@ -736,6 +763,22 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     return errors;
   };
 
+  /** 视频高级创建的轮备注（配置落地，随轮持久化不白丢）：编码器 + 参数摘要 +
+   * 命令行。参数摘要用宽松合并（与预览同口径，参数行没填完也不打断创建，
+   * 错误已被 validateAll 前置拦下）。 */
+  const buildVideoNote = (): string => {
+    const lines: string[] = [
+      '高级创建配置（视频自动编码链路将在后续版本提供；可复制命令行自行编码后用「添加跑分视频」导入）：',
+    ];
+    session.entries.forEach((entry, index) => {
+      const spec = videoSpecOf(entry);
+      const args = buildEntryArgsLenient(spec, entry);
+      lines.push(`${index + 1}. ${entryLabel(entry)}：${args.length > 0 ? args.join(' ') : '（无参数）'}`);
+      lines.push(`   命令行：${previewVideoCommand(spec, entry, session.referencePath)}`);
+    });
+    return lines.join('\n');
+  };
+
   /** 已创建的轮（全部失败重试时复用，避免重复建轮）。 */
   let created: { groupId: string; roundId: string } | null = null;
 
@@ -752,6 +795,39 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
       createBtn.disabled = true;
       addFirstBtn.disabled = true;
       try {
+        // AC5：建轮前批量校验条目编码器的可执行文件是否可用（含设置页外部路径
+        // 覆盖）。unavailable = 明确报错（条目红标 + 汇总提示去设置页）；
+        // unconfigured 放行（内置编码器首次使用时自动下载）。
+        const keys = [
+          ...new Set(session.entries.map(toolKeyOf).filter((key): key is string => key !== null)),
+        ];
+        let statuses: ToolStatusLite[];
+        try {
+          statuses = await invoke<ToolStatusLite[]>('advanced_encoder_status', { keys });
+        } catch (err) {
+          errorLine.textContent = `编码器可用性检测失败: ${String(err)}`;
+          errorLine.title = errorLine.textContent;
+          createBtn.disabled = false;
+          addFirstBtn.disabled = false;
+          return;
+        }
+        unavailableEntries.clear();
+        const avail = availabilityErrors(session.entries, toolKeyOf, statuses);
+        if (avail.size > 0) {
+          const summaries: string[] = [];
+          session.entries.forEach((entry, index) => {
+            const message = avail.get(entry.id);
+            if (message === undefined) return;
+            unavailableEntries.set(entry.id, message);
+            summaries.push(`第 ${index + 1} 项（${entryLabel(entry)}）：${message}`);
+          });
+          renderEntries();
+          errorLine.textContent = summaries.join('；');
+          errorLine.title = summaries.join('\n');
+          createBtn.disabled = false;
+          addFirstBtn.disabled = false;
+          return;
+        }
         if (!created) {
           created = await deps.createRound();
           if (kind === 'image') {
@@ -785,11 +861,13 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
           }
         }
         if (kind === 'video') {
+          // 配置落地（本版本不自动编码）：编码器 + 参数摘要 + 命令行写进轮备注
+          await deps.setRoundNote(created.groupId, created.roundId, buildVideoNote());
           dropSession(groupId);
           close();
           deps.setStatus(
-            `评测轮已创建（共 ${total} 项配置）。视频自动编码链路将在后续版本提供，` +
-              '当前可用「添加跑分视频」导入外部产物后跑分。',
+            `评测轮已创建（共 ${total} 项配置）。视频自动编码链路将在后续版本提供；` +
+              '产物可复制命令行自行编码后用「添加跑分视频」导入。',
           );
           deps.rerender();
           return;
