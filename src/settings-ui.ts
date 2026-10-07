@@ -97,24 +97,40 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
 
   // 状态行渲染：徽标（来源 + 探测版本）+ 提示小字。statusLoadError 置位时
   // 各行显示「检测失败」（IPC 异常不阻塞设置编辑，重开面板或保存成功后重试）。
+  // infoWrap（#45，编码器行专用）：有完整说明时行内只留版本号，说明进悬停气泡；
+  // 无说明（如内置正常态）或异常/加载中时图标整隐。FFmpeg 行不传则维持行内全文。
   let statusLoadError: string | null = null;
-  const renderStatus = (status: ToolStatus | undefined, badge: HTMLElement, hint: HTMLElement): void => {
+  const renderStatus = (
+    status: ToolStatus | undefined,
+    badge: HTMLElement,
+    hint: HTMLElement,
+    infoWrap?: { wrap: HTMLElement; bubble: HTMLElement },
+  ): void => {
     if (statusLoadError) {
       badge.textContent = '检测失败';
       badge.className = 'settings-badge settings-badge-unavailable';
       hint.textContent = statusLoadError;
+      if (infoWrap) infoWrap.wrap.style.display = 'none';
       return;
     }
     if (!status) {
       badge.textContent = '检测中…';
       badge.className = 'settings-badge';
       hint.textContent = '';
+      if (infoWrap) infoWrap.wrap.style.display = 'none';
       return;
     }
     badge.textContent = sourceLabel(status.source);
     badge.className = `settings-badge settings-badge-${status.source}`;
     const version = status.detectedVersion ?? status.builtinVersion;
-    hint.textContent = [version, status.hint].filter(Boolean).join(' · ');
+    if (infoWrap && status.hint) {
+      hint.textContent = version ?? '';
+      infoWrap.bubble.textContent = status.hint;
+      infoWrap.wrap.style.display = '';
+    } else {
+      hint.textContent = [version, status.hint].filter(Boolean).join(' · ');
+      if (infoWrap) infoWrap.wrap.style.display = 'none';
+    }
   };
 
   // 工具状态与设置保存联动：打开面板与每次保存成功后重查（改动立即生效）
@@ -417,9 +433,23 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     releaseLink.target = '_blank';
     releaseLink.rel = 'noopener noreferrer';
     releaseLink.append(externalLinkIcon());
-    statusLine.append(badge, lineHint, releaseLink);
+    // 详文气泡（#45）：状态行只留版本号，完整说明悬停/聚焦「圆圈叹号」图标时
+    // 气泡展开；图标是否显示由 renderStatus 按有无说明控制，FFmpeg 行不走此机制
+    const infoBubble = document.createElement('span');
+    infoBubble.className = 'settings-bubble';
+    const infoIcon = document.createElement('span');
+    infoIcon.className = 'settings-status-info-icon';
+    infoIcon.setAttribute('role', 'img');
+    infoIcon.setAttribute('aria-label', '状态详情');
+    infoIcon.setAttribute('tabindex', '0');
+    infoIcon.append(infoIconSvg());
+    const infoWrap = document.createElement('span');
+    infoWrap.className = 'settings-status-info';
+    infoWrap.append(infoIcon, infoBubble);
+    statusLine.append(badge, infoWrap, lineHint, releaseLink);
+    const info = { wrap: infoWrap, bubble: infoBubble };
     statusRenderers.push(() => {
-      renderStatus(statuses.get(field.key), badge, lineHint);
+      renderStatus(statuses.get(field.key), badge, lineHint, info);
       const href = statuses.has(field.key) ? releasePageHref(statuses.get(field.key)!) : null;
       if (href) {
         releaseLink.href = href;
@@ -622,5 +652,34 @@ function externalLinkIcon(): SVGSVGElement {
     path.setAttribute('d', d);
     svg.append(path);
   }
+  return svg;
+}
+
+// 状态详文气泡的「圆圈叹号」图标（#45）。与 externalLinkIcon 同理零依赖手绘，
+// 叹号圆圈造型对「未配置/不可用」状态语义比 ⓘ 更贴近
+function infoIconSvg(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '13');
+  svg.setAttribute('height', '13');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  const circle = document.createElementNS(NS, 'circle');
+  circle.setAttribute('cx', '12');
+  circle.setAttribute('cy', '12');
+  circle.setAttribute('r', '10');
+  const bar = document.createElementNS(NS, 'path');
+  bar.setAttribute('d', 'M12 7v6');
+  const dot = document.createElementNS(NS, 'circle');
+  dot.setAttribute('cx', '12');
+  dot.setAttribute('cy', '16.5');
+  dot.setAttribute('r', '1.2');
+  dot.setAttribute('fill', 'currentColor');
+  dot.setAttribute('stroke', 'none');
+  svg.append(circle, bar, dot);
   return svg;
 }
