@@ -245,11 +245,13 @@ pub fn probe_executable_version_timed(
 ) -> Result<String, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
+    // 探测在 spawn 前加 Windows「不弹终端窗口」处理（issue #42）。
+    use pixel_arena_core::process::apply_no_window;
     if !path.is_file() {
         return Err(format!("{tool} 路径无效：{}（文件不存在）", path.display()));
     }
     let mut command = Command::new(path);
-    pixel_arena_core::process::apply_no_window(&mut command);
+    apply_no_window(&mut command);
     let mut child = command
         .arg("-version")
         .stdin(Stdio::null())

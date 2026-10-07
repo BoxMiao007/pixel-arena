@@ -11,6 +11,7 @@
 // 实现说明：三个指标在一次 ffmpeg 进程里算完（split 出三对滤镜分支），结果从 stderr 的
 // 三条汇总行解析（`VMAF score:` / `PSNR ... average:` / `SSIM ... All:`），不落 JSON 日志文件。
 
+use crate::process::apply_no_window;
 use std::path::Path;
 use std::process::Command;
 use thiserror::Error;
@@ -57,7 +58,7 @@ pub fn score_videos(
     }
 
     let mut command = Command::new(ffmpeg);
-    crate::process::apply_no_window(&mut command);
+    apply_no_window(&mut command);
     let output = command
         .args([
             "-y",

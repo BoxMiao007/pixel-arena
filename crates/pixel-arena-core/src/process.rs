@@ -5,8 +5,9 @@
 // 多个模块，逐点手写 cfg 代码容易漏；非 Windows 平台是无害 no-op，行为零变化。
 
 /// Windows CREATE_NO_WINDOW 标志位（winbase.h：0x08000000，子进程不创建控制台窗口）。
+/// 仅 [`apply_no_window`] 的 Windows 分支使用，不对外暴露。
 #[cfg(target_os = "windows")]
-pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// 给命令加 Windows「不弹终端窗口」处理（issue #42）。在 `Command::new` 之后、
 /// `spawn` / `output` 之前调用；非 Windows 平台是无害 no-op。

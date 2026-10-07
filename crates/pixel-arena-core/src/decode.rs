@@ -10,6 +10,7 @@
 
 use crate::error::CoreError;
 use crate::metrics::decode_srgb;
+use crate::process::apply_no_window;
 use image::{ImageBuffer, Rgb};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -110,7 +111,7 @@ pub(crate) fn decode_avif(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, 
         .tempfile()
         .map_err(|err| decode_err(format!("无法创建 AVIF 解码临时文件：{err}")))?;
     let mut command = Command::new(&decoder);
-    crate::process::apply_no_window(&mut command);
+    apply_no_window(&mut command);
     let output = command
         .arg(path)
         .arg(png.path())

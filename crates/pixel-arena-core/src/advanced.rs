@@ -12,6 +12,7 @@
 //! 动态枚举解析（表外编码器可选但无推荐值）。
 
 use crate::error::CoreError;
+use crate::process::apply_no_window;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -687,7 +688,7 @@ pub fn encode_advanced_image(
         write_ppm_temp(&decoded)?
     };
     let mut command = std::process::Command::new(&encoder);
-    crate::process::apply_no_window(&mut command);
+    apply_no_window(&mut command);
     for word in &layout_words(spec.id, &merged, input.path().to_string_lossy().as_ref(), &product_tmp) {
         command.arg(word);
     }
