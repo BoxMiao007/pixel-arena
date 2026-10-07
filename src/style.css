@@ -1102,3 +1102,111 @@ body {
   margin: 0.6rem 0 0;
   white-space: pre-wrap;
 }
+
+/* ---------- 设置页扩展（T29-2）：来源状态 / 保存重置 / 关于 ---------- */
+
+/* 工具状态行：徽标 + 版本与提示小字 */
+.settings-status {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0.3rem 0;
+  font-size: 0.8rem;
+}
+
+.settings-status-indented {
+  padding-left: 9rem;
+}
+
+.settings-badge {
+  flex: 0 0 auto;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.settings-badge-builtin {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.settings-badge-external {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings-badge-unavailable {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.settings-status-hint {
+  color: var(--muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 一键保存 / 恢复默认 */
+.settings-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding: 0.75rem 0;
+}
+
+.settings-primary-btn {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.3rem 1.2rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-primary-btn:hover {
+  filter: brightness(1.1);
+}
+
+/* 关于（固定在面板底部） */
+.settings-about {
+  padding-bottom: 0.5rem;
+}
+
+.settings-about-body p {
+  margin: 0.3rem 0;
+  font-size: 0.85rem;
+}
+
+.settings-about-name {
+  font-size: 0.95rem;
+}
+
+.settings-about-meta {
+  color: var(--muted);
+}
+
+.settings-libraries {
+  margin: 0.3rem 0 0;
+  padding-left: 1.2rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.settings-libraries li {
+  margin: 0.15rem 0;
+}
+
+.settings-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.settings-link:hover {
+  text-decoration: underline;
+}

@@ -7,6 +7,9 @@ import {
   exportDefaultPath,
   openDefaultPath,
   nextRecentDir,
+  defaultSettings,
+  sourceLabel,
+  isSafeLibraryUrl,
   ENCODER_FIELDS,
   type SettingsData,
 } from './settings';
@@ -89,6 +92,7 @@ describe('nextRecentDir（选文件后的最近目录记录，US27/审查修复 
       cjxl: null,
       avifdec: null,
     },
+    ffmpegPath: null,
   };
 
   it('记录状态开：recentDir 更新为所选文件的父目录', () => {
@@ -117,5 +121,54 @@ describe('ENCODER_FIELDS（设置面板编码器清单）', () => {
       'cjxl',
       'avifdec',
     ]);
+  });
+});
+
+// ---------- T29-2：设置页扩展（FFmpeg 路径 / 来源状态 / 保存重置 / 关于） ----------
+
+describe('defaultSettings（重置 = 恢复默认值）', () => {
+  it('清空全部外部路径（编码器覆盖与 FFmpeg 路径）', () => {
+    const defaults = defaultSettings();
+    expect(defaults.encoderOverrides).toEqual({
+      cjpeg: null,
+      cwebp: null,
+      avifenc: null,
+      cjxl: null,
+      avifdec: null,
+    });
+    expect(defaults.ffmpegPath).toBeNull();
+  });
+
+  it('恢复默认并发 / 主题 / 目录与记录状态', () => {
+    const defaults = defaultSettings();
+    expect(defaults.scoreConcurrency).toBe('half');
+    expect(defaults.theme).toBe('dark');
+    expect(defaults.defaultExportDir).toBeNull();
+    expect(defaults.recentDir).toBeNull();
+    expect(defaults.recordState).toBe(true);
+    expect(defaults.window).toBeNull();
+  });
+});
+
+describe('sourceLabel（工具来源状态四态的中文标签）', () => {
+  it('内置/外部/未配置/不可用 一一映射', () => {
+    expect(sourceLabel('builtin')).toBe('内置');
+    expect(sourceLabel('external')).toBe('外部');
+    expect(sourceLabel('unconfigured')).toBe('未配置');
+    expect(sourceLabel('unavailable')).toBe('不可用');
+  });
+});
+
+describe('isSafeLibraryUrl（关于区块库名超链接的白名单校验）', () => {
+  it('https 链接可渲染为超链接', () => {
+    expect(isSafeLibraryUrl('https://ffmpeg.org')).toBe(true);
+    expect(isSafeLibraryUrl('https://github.com/libjxl/libjxl')).toBe(true);
+  });
+
+  it('非 https（http / 伪协议 / 空值）一律不渲染为超链接', () => {
+    expect(isSafeLibraryUrl('http://ffmpeg.org')).toBe(false);
+    expect(isSafeLibraryUrl('javascript:alert(1)')).toBe(false);
+    expect(isSafeLibraryUrl('data:text/html,hi')).toBe(false);
+    expect(isSafeLibraryUrl('')).toBe(false);
   });
 });

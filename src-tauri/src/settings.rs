@@ -102,6 +102,11 @@ pub struct Settings {
     pub window: Option<WindowSize>,
     #[serde(default)]
     pub encoder_overrides: EncoderOverrides,
+    /// FFmpeg 可执行文件路径覆盖（T29-2 设置页，决策 D1/D4）：None/空 = 使用应用内
+    /// 下载到 tools/ 的内置 ffmpeg。保存时校验存在/可执行/版本可读（validate），
+    /// 视频跑分与逐帧对比在每次使用时读取（改动对后续评测轮立即生效）。
+    #[serde(default)]
+    pub ffmpeg_path: Option<String>,
 }
 
 fn default_format_version() -> u32 {
@@ -123,6 +128,7 @@ impl Default for Settings {
             recent_dir: None,
             window: None,
             encoder_overrides: EncoderOverrides::default(),
+            ffmpeg_path: None,
         }
     }
 }
@@ -153,11 +159,14 @@ impl Settings {
         over.avifenc = normalize_path(&over.avifenc);
         over.cjxl = normalize_path(&over.cjxl);
         over.avifdec = normalize_path(&over.avifdec);
+        self.ffmpeg_path = normalize_path(&self.ffmpeg_path);
         self
     }
 
     /// 保存前的一致性校验：非空的路径必须真实存在，错误中文且指到具体项。
     /// 存在性只在保存时查——设置之后文件被删/挪由编码/解码时的报错兜底。
+    /// FFmpeg 路径额外要求「可执行 + 版本可读」（T29-2 票面：保存后立即校验，
+    /// 保存成功即可放心用于视频跑分）。
     pub fn validate(&self) -> Result<(), String> {
         let over = &self.encoder_overrides;
         for (tool, path) in [
@@ -181,7 +190,41 @@ impl Settings {
                 return Err(format!("默认导出目录无效：{dir}（目录不存在）"));
             }
         }
+        if let Some(ffmpeg) = &self.ffmpeg_path {
+            probe_executable_version(std::path::Path::new(ffmpeg), "ffmpeg").map_err(|err| {
+                format!("FFmpeg 自定义路径校验失败：{err}。请更正或清空（清空后使用应用内下载的内置 ffmpeg）")
+            })?;
+        }
         Ok(())
+    }
+}
+
+/// 运行 `<可执行文件> -version` 探测版本（T29-2）：成功返回输出的首个非空行。
+/// 「可执行」与「版本可读」一并验证——能跑起来且有输出才算可用。
+/// 设置页保存校验（FFmpeg）与工具状态检测（FFmpeg + 四编码器）共用同一实现。
+pub fn probe_executable_version(path: &std::path::Path, tool: &str) -> Result<String, String> {
+    if !path.is_file() {
+        return Err(format!("{tool} 路径无效：{}（文件不存在）", path.display()));
+    }
+    let output = std::process::Command::new(path)
+        .arg("-version")
+        .output()
+        .map_err(|err| format!("无法执行 {tool}（{}）：{err}", path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{tool}（{}）执行失败（退出码 {}），请确认它是对应工具的可执行文件",
+            path.display(),
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let first_line = text.lines().map(str::trim).find(|line| !line.is_empty());
+    match first_line {
+        Some(line) => Ok(line.to_string()),
+        None => Err(format!(
+            "{tool}（{}）执行成功但未输出版本信息，无法确认可用性",
+            path.display()
+        )),
     }
 }
 
@@ -396,5 +439,94 @@ mod tests {
             ScoreConcurrency::Half,
             "缺字段应兜底为默认档 1/2"
         );
+    }
+
+    // ---------- T29-2：FFmpeg 路径覆盖（保存时校验存在/可执行/版本可读） ----------
+
+    #[test]
+    fn ffmpeg_path_defaults_to_none_and_roundtrips_camel_case() {
+        // 旧设置文件没有 ffmpegPath 字段：兜底 None（内置 ffmpeg），向后兼容
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.ffmpeg_path, None);
+        let settings = Settings {
+            ffmpeg_path: Some("/opt/bin/ffmpeg".to_string()),
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("\"ffmpegPath\":\"/opt/bin/ffmpeg\""), "{json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ffmpeg_path.as_deref(), Some("/opt/bin/ffmpeg"));
+    }
+
+    #[test]
+    fn ffmpeg_path_empty_string_normalizes_to_none() {
+        let settings = Settings {
+            ffmpeg_path: Some("  ".to_string()),
+            ..Settings::default()
+        }
+        .normalized();
+        assert_eq!(settings.ffmpeg_path, None, "空串 = 清空覆盖，恢复内置 ffmpeg");
+    }
+
+    #[test]
+    fn validate_rejects_missing_ffmpeg_path_with_locatable_error() {
+        let settings = Settings {
+            ffmpeg_path: Some("/不存在/fake-ffmpeg".to_string()),
+            ..Settings::default()
+        };
+        let message = settings.validate().unwrap_err();
+        assert!(message.contains("FFmpeg"), "错误应点名 FFmpeg: {message}");
+        assert!(message.contains("/不存在/fake-ffmpeg"), "应包含路径: {message}");
+        assert!(message.contains("清空"), "应说明清空可回退内置: {message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_rejects_ffmpeg_without_readable_version() {
+        // 存在但不可执行/无版本输出：保存必须被拦下（票面「可执行/版本可读」）
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("ffmpeg");
+        std::fs::write(&fake, "不是可执行文件").unwrap();
+        let settings = Settings {
+            ffmpeg_path: Some(fake.to_string_lossy().into_owned()),
+            ..Settings::default()
+        };
+        let message = settings.validate().unwrap_err();
+        assert!(message.contains("FFmpeg 自定义路径校验失败"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_accepts_ffmpeg_with_readable_version() {
+        // 能执行且输出版本：校验通过（用 shell 脚本冒充 ffmpeg，-version 输出一行）
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("ffmpeg");
+        std::fs::write(&fake, "#!/bin/sh\necho \"ffmpeg version 7.0.2-test\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = Settings {
+            ffmpeg_path: Some(fake.to_string_lossy().into_owned()),
+            ..Settings::default()
+        };
+        settings.validate().expect("版本可读的 ffmpeg 应通过校验");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_executable_version_returns_first_output_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("tool");
+        std::fs::write(&fake, "#!/bin/sh\necho \"\"\necho \"tool version 1.2.3\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let version = probe_executable_version(&fake, "tool").unwrap();
+        assert_eq!(version, "tool version 1.2.3", "应返回首个非空输出行");
+        // 执行失败（非零退出）报中文错误
+        let bad = dir.path().join("bad");
+        std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let message = probe_executable_version(&bad, "tool").unwrap_err();
+        assert!(message.contains("执行失败"), "{message}");
+        assert!(message.contains("退出码 3"), "{message}");
     }
 }

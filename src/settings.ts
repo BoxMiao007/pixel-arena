@@ -31,6 +31,8 @@ export interface SettingsData {
   recentDir: string | null;
   window: WindowSize | null;
   encoderOverrides: EncoderOverrides;
+  /** FFmpeg 可执行文件路径覆盖（T29-2）：null = 使用应用内下载的内置 ffmpeg。 */
+  ffmpegPath: string | null;
 }
 
 /** 设置面板可编辑的编码器清单（与设置文件键一一对应；标签面向用户）。 */
@@ -75,4 +77,79 @@ export function nextRecentDir(settings: SettingsData, path: string): SettingsDat
   const dir = parentDir(path);
   if (!dir) return null;
   return { ...settings, recentDir: dir };
+}
+
+// ---------- T29-2：设置页扩展（来源状态 / 重置默认值 / 关于） ----------
+
+/** 工具来源状态四态（与 src-tauri/src/tool_status.rs 的 ToolSource serde 小写一一对应）。 */
+export type ToolSourceState = 'builtin' | 'external' | 'unconfigured' | 'unavailable';
+
+/** 单个工具（FFmpeg / 编码器 / avifdec）的状态条目，字段与 ToolStatus serde camelCase 一致。 */
+export interface ToolStatus {
+  key: string;
+  source: ToolSourceState;
+  overridePath: string | null;
+  effectivePath: string | null;
+  builtinVersion: string | null;
+  builtinInstalled: boolean;
+  detectedVersion: string | null;
+  hint: string | null;
+}
+
+/** 来源状态的中文标签（设置页每行的徽标文本，面向用户的展示契约）。 */
+const TOOL_SOURCE_LABELS: Record<ToolSourceState, string> = {
+  builtin: '内置',
+  external: '外部',
+  unconfigured: '未配置',
+  unavailable: '不可用',
+};
+
+export function sourceLabel(state: ToolSourceState): string {
+  return TOOL_SOURCE_LABELS[state];
+}
+
+/** 重置 = 恢复默认值（决策 D17）：清空全部外部路径（编码器覆盖 + FFmpeg）、
+ * 恢复默认并发 / 主题 / 目录；与后端 Settings::default() 的语义一一对应。 */
+export function defaultSettings(): SettingsData {
+  return {
+    formatVersion: 1,
+    recordState: true,
+    theme: 'dark',
+    scoreConcurrency: 'half',
+    defaultExportDir: null,
+    recentDir: null,
+    window: null,
+    encoderOverrides: {
+      cjpeg: null,
+      cwebp: null,
+      avifenc: null,
+      cjxl: null,
+      avifdec: null,
+    },
+    ffmpegPath: null,
+  };
+}
+
+/** 「关于」区块的单个库条目（与 AboutLibrary serde camelCase 一致）。 */
+export interface AboutLibrary {
+  name: string;
+  version: string;
+  url: string;
+}
+
+/** 「关于」区块数据（与 AboutInfo serde camelCase 一致）。 */
+export interface AboutData {
+  appName: string;
+  appVersion: string;
+  coreVersion: string;
+  intro: string;
+  license: string;
+  repoUrl: string;
+  libraries: AboutLibrary[];
+}
+
+/** 库名超链接的白名单校验：只把 https 链接渲染成 <a>（后端数据源可信，
+ * 这里仍守住伪协议注入；http/空值降级为纯文本库名）。 */
+export function isSafeLibraryUrl(url: string): boolean {
+  return url.startsWith('https://');
 }

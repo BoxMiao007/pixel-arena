@@ -1,16 +1,29 @@
-// 设置面板（T23 设置中心）：标题栏「设置」按钮打开的覆盖层面板。
-// 四组项即改即存（每次改动整体调 settings_save，后端做空串归一 + 存在性校验），
-// 失败把中文错误亮在面板底部并回滚该控件的显示值；成功后主题切换整页重渲染，
-// 画布底色随之立即生效。面板挂在 body 下（内容区整页重渲染不波及）。
+// 设置面板（T23 设置中心，T29-2 扩展为集中管理页）：标题栏「设置」按钮打开的
+// 覆盖层面板。决策 D15–D18（notes/T29-encoder-config.md）：
+// - 扩展现有 overlay，非路由；新增 FFmpeg 区 / 编码器来源状态区 / 文件选择器 /
+//   下载按钮 / 保存重置 / 关于区块；
+// - 一键保存全部：所有改动先进草稿，点「保存」整体提交（后端归一 + 校验失败
+//   整体回滚并显示中文原因；内存设置只在校验成功后替换，运行中任务不受影响）；
+// - 重置 = 恢复默认值（清空外部路径、恢复默认并发/主题/目录）；
+// - 「关于」固定在底部：项目信息 + 引用的库版本清单（版本读后端锁定清单，
+//   库名 https 链接渲染为超链接）。
+// 状态（内置/外部/未配置/不可用 + 探测版本）来自 settings_tool_status IPC，
+// 打开面板与每次保存成功后刷新——设置改完即重查，改动对后续评测轮立即生效。
 
+import { invoke, Channel } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { applyTheme } from './theme';
 import {
+  defaultSettings,
+  isSafeLibraryUrl,
+  sourceLabel,
   ENCODER_FIELDS,
+  type AboutData,
   type EncoderOverrides,
   type ScoreConcurrencyPref,
   type SettingsData,
   type ThemePref,
+  type ToolStatus,
 } from './settings';
 
 /** 设置面板对外依赖（main.ts 提供）：保存与改后的重渲染。 */
@@ -35,8 +48,19 @@ const SCORE_CONCURRENCY_OPTIONS: { value: ScoreConcurrencyPref; label: string }[
   { value: 'full', label: '全部核心' },
 ];
 
+/** 草稿深拷贝（嵌套的 encoderOverrides 一并复制，避免控件改到已保存设置）。 */
+function cloneSettings(value: SettingsData): SettingsData {
+  return {
+    ...value,
+    encoderOverrides: { ...value.encoderOverrides },
+  };
+}
+
 /** 打开设置面板（每次从当前设置构建，关闭即销毁）。 */
-export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost): void {
+export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): void {
+  let draft = cloneSettings(saved);
+  const statuses = new Map<string, ToolStatus>();
+
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
   const panel = document.createElement('div');
@@ -51,17 +75,66 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
     if (e.target === overlay) close();
   });
 
-  // 保存的统一入口：成功后清错误行并刷新界面；失败显示错误并回滚控件
-  const commit = async (next: SettingsData, revert: () => void): Promise<void> => {
+  // 回滚/重置时把全部控件值从草稿重刷（每个控件注册一个同步函数）
+  const syncFns: (() => void)[] = [];
+  const syncInputs = (): void => {
+    for (const fn of syncFns) fn();
+  };
+
+  // 状态行渲染：徽标（来源 + 探测版本）+ 提示小字。statusLoadError 置位时
+  // 各行显示「检测失败」（IPC 异常不阻塞设置编辑，重开面板或保存成功后重试）。
+  let statusLoadError: string | null = null;
+  const renderStatus = (status: ToolStatus | undefined, badge: HTMLElement, hint: HTMLElement): void => {
+    if (statusLoadError) {
+      badge.textContent = '检测失败';
+      badge.className = 'settings-badge settings-badge-unavailable';
+      hint.textContent = statusLoadError;
+      return;
+    }
+    if (!status) {
+      badge.textContent = '检测中…';
+      badge.className = 'settings-badge';
+      hint.textContent = '';
+      return;
+    }
+    badge.textContent = sourceLabel(status.source);
+    badge.className = `settings-badge settings-badge-${status.source}`;
+    const version = status.detectedVersion ?? status.builtinVersion;
+    hint.textContent = [version, status.hint].filter(Boolean).join(' · ');
+  };
+
+  // 工具状态与设置保存联动：打开面板与每次保存成功后重查（改动立即生效）
+  const statusRenderers: (() => void)[] = [];
+  const refreshStatuses = async (): Promise<void> => {
     try {
-      const saved = await host.save(next);
+      const list = await invoke<ToolStatus[]>('settings_tool_status');
+      const next = new Map<string, ToolStatus>();
+      for (const status of list) next.set(status.key, status);
+      statuses.clear();
+      for (const [key, status] of next) statuses.set(key, status);
+      statusLoadError = null;
+    } catch (err) {
+      statusLoadError = String(err);
+    }
+    for (const fn of statusRenderers) fn();
+  };
+
+  // 一键保存全部（D16）：成功 → 同步已保存设置并刷新状态；失败 → 显示原因并整体回滚
+  const commitAll = async (): Promise<void> => {
+    try {
+      const next = await host.save(cloneSettings(draft));
+      Object.assign(saved, next);
+      draft = cloneSettings(saved);
       errorLine.textContent = '';
-      // 后端可能归一了值（如空串路径收成 null），同步回本地显示
-      Object.assign(settings, saved);
+      applyTheme(saved.theme); // 与已保存设置对齐（重置回滚时恢复原主题）
       host.onApplied();
+      syncInputs();
+      await refreshStatuses();
     } catch (err) {
       errorLine.textContent = String(err);
-      revert();
+      draft = cloneSettings(saved);
+      applyTheme(saved.theme);
+      syncInputs();
     }
   };
 
@@ -88,20 +161,20 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
   // 记录状态开关
   const recordCheck = document.createElement('input');
   recordCheck.type = 'checkbox';
-  recordCheck.checked = settings.recordState;
   const recordWrap = document.createElement('label');
   recordWrap.className = 'settings-check';
   const recordText = document.createElement('span');
   recordText.textContent = '记住上次状态（启动时恢复标签页、窗口大小与最近目录）';
   recordCheck.addEventListener('change', () => {
-    void commit({ ...settings, recordState: recordCheck.checked }, () => {
-      recordCheck.checked = settings.recordState;
-    });
+    draft.recordState = recordCheck.checked;
   });
   recordWrap.append(recordCheck, recordText);
   general.append(recordWrap);
+  syncFns.push(() => {
+    recordCheck.checked = draft.recordState;
+  });
 
-  // 界面主题
+  // 界面主题（改动即时预览，落盘随「保存」）
   const themeLabel = document.createElement('span');
   themeLabel.className = 'settings-label';
   themeLabel.textContent = '界面主题';
@@ -112,19 +185,17 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
     opt.textContent = option.label;
     themeSelect.append(opt);
   }
-  themeSelect.value = settings.theme;
   themeSelect.addEventListener('change', () => {
-    const pref = themeSelect.value as ThemePref;
-    applyTheme(pref); // 先应用再保存：保存失败也保持所见（偏好属于可重试的轻量状态）
-    void commit({ ...settings, theme: pref }, () => {
-      themeSelect.value = settings.theme;
-      applyTheme(settings.theme);
-    });
+    draft.theme = themeSelect.value as ThemePref;
+    applyTheme(draft.theme); // 所见即所得；保存失败回滚时恢复原主题
   });
   const themeRow = document.createElement('div');
   themeRow.className = 'settings-row';
   themeRow.append(themeLabel, themeSelect);
   general.append(themeRow);
+  syncFns.push(() => {
+    themeSelect.value = draft.theme;
+  });
 
   // 跑分并发度（T24）：生效于图片与视频跑分（视频即同时打开的 ffmpeg 进程数）
   const concurrencyLabel = document.createElement('span');
@@ -137,17 +208,16 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
     opt.textContent = option.label;
     concurrencySelect.append(opt);
   }
-  concurrencySelect.value = settings.scoreConcurrency;
   concurrencySelect.addEventListener('change', () => {
-    const tier = concurrencySelect.value as ScoreConcurrencyPref;
-    void commit({ ...settings, scoreConcurrency: tier }, () => {
-      concurrencySelect.value = settings.scoreConcurrency;
-    });
+    draft.scoreConcurrency = concurrencySelect.value as ScoreConcurrencyPref;
   });
   const concurrencyRow = document.createElement('div');
   concurrencyRow.className = 'settings-row';
   concurrencyRow.append(concurrencyLabel, concurrencySelect);
   general.append(concurrencyRow);
+  syncFns.push(() => {
+    concurrencySelect.value = draft.scoreConcurrency;
+  });
 
   // 默认导出目录
   const exportLabel = document.createElement('span');
@@ -157,8 +227,9 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
   exportInput.type = 'text';
   exportInput.className = 'settings-path';
   exportInput.placeholder = '未设置（使用系统默认位置）';
-  exportInput.value = settings.defaultExportDir ?? '';
-  exportInput.title = exportInput.value;
+  exportInput.addEventListener('change', () => {
+    draft.defaultExportDir = exportInput.value.trim() || null;
+  });
   const browseBtn = document.createElement('button');
   browseBtn.className = 'settings-mini-btn';
   browseBtn.textContent = '浏览…';
@@ -168,9 +239,7 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
       if (typeof selected !== 'string') return;
       exportInput.value = selected;
       exportInput.title = selected;
-      await commit({ ...settings, defaultExportDir: selected }, () => {
-        exportInput.value = settings.defaultExportDir ?? '';
-      });
+      draft.defaultExportDir = selected;
     })();
   });
   const clearExportBtn = document.createElement('button');
@@ -179,28 +248,129 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
   clearExportBtn.addEventListener('click', () => {
     exportInput.value = '';
     exportInput.title = '';
-    void commit({ ...settings, defaultExportDir: null }, () => {
-      exportInput.value = settings.defaultExportDir ?? '';
-    });
+    draft.defaultExportDir = null;
   });
   const exportRow = document.createElement('div');
   exportRow.className = 'settings-row';
   exportRow.append(exportLabel, exportInput, browseBtn, clearExportBtn);
   general.append(exportRow);
+  syncFns.push(() => {
+    exportInput.value = draft.defaultExportDir ?? '';
+    exportInput.title = draft.defaultExportDir ?? '';
+  });
   panel.append(general);
 
-  // ---------- 编码器（高级）----------
+  // ---------- FFmpeg（T29-2，决策 D1/D4） ----------
+  const ffmpegSection = document.createElement('section');
+  ffmpegSection.className = 'settings-section';
+  const ffmpegTitle = document.createElement('h3');
+  ffmpegTitle.textContent = 'FFmpeg（视频跑分）';
+  const ffmpegHint = document.createElement('p');
+  ffmpegHint.className = 'settings-hint';
+  ffmpegHint.textContent =
+    '视频跑分依赖含 libvmaf 的 ffmpeg。留空使用应用内下载的内置版本；也可手动指定本机已有' +
+    '的可执行文件（保存时校验存在、可执行且版本可读）。';
+  ffmpegSection.append(ffmpegTitle, ffmpegHint);
+
+  const ffmpegStatusLine = document.createElement('div');
+  ffmpegStatusLine.className = 'settings-status';
+  const ffmpegBadge = document.createElement('span');
+  ffmpegBadge.className = 'settings-badge';
+  const ffmpegStatusHint = document.createElement('span');
+  ffmpegStatusHint.className = 'settings-status-hint';
+  ffmpegStatusLine.append(ffmpegBadge, ffmpegStatusHint);
+  ffmpegSection.append(ffmpegStatusLine);
+  statusRenderers.push(() => {
+    renderStatus(statuses.get('ffmpeg'), ffmpegBadge, ffmpegStatusHint);
+  });
+
+  const ffmpegLabel = document.createElement('span');
+  ffmpegLabel.className = 'settings-label';
+  ffmpegLabel.textContent = 'FFmpeg 路径';
+  const ffmpegInput = document.createElement('input');
+  ffmpegInput.type = 'text';
+  ffmpegInput.className = 'settings-path';
+  ffmpegInput.placeholder = '内置（应用内下载）';
+  ffmpegInput.addEventListener('change', () => {
+    draft.ffmpegPath = ffmpegInput.value.trim() || null;
+  });
+  const ffmpegBrowse = document.createElement('button');
+  ffmpegBrowse.className = 'settings-mini-btn';
+  ffmpegBrowse.textContent = '浏览…';
+  ffmpegBrowse.addEventListener('click', () => {
+    void (async () => {
+      const selected = await open({ title: '选择 ffmpeg 可执行文件', directory: false });
+      if (typeof selected !== 'string') return;
+      ffmpegInput.value = selected;
+      ffmpegInput.title = selected;
+      draft.ffmpegPath = selected;
+    })();
+  });
+  const ffmpegClear = document.createElement('button');
+  ffmpegClear.className = 'settings-mini-btn';
+  ffmpegClear.textContent = '清空';
+  ffmpegClear.addEventListener('click', () => {
+    ffmpegInput.value = '';
+    ffmpegInput.title = '';
+    draft.ffmpegPath = null;
+  });
+  // 应用内下载（决策 D1/D4：下载入口仅设置页）：锁定版本源装进 tools/，进度走状态行
+  const ffmpegDownload = document.createElement('button');
+  ffmpegDownload.className = 'settings-mini-btn';
+  ffmpegDownload.textContent = '应用内下载';
+  ffmpegDownload.title = '下载锁定版本的内置 ffmpeg 到应用数据目录（一次性，约 40MB）';
+  ffmpegDownload.addEventListener('click', () => {
+    void (async () => {
+      ffmpegDownload.disabled = true;
+      ffmpegStatusHint.textContent = '准备下载…';
+      try {
+        const channel = new Channel<string>();
+        channel.onmessage = (message) => {
+          ffmpegStatusHint.textContent = message;
+        };
+        await invoke('video_ensure_ffmpeg', { onProgress: channel });
+        await refreshStatuses();
+      } catch (err) {
+        ffmpegStatusHint.textContent = `下载失败: ${String(err)}`;
+      } finally {
+        ffmpegDownload.disabled = false;
+      }
+    })();
+  });
+  const ffmpegRow = document.createElement('div');
+  ffmpegRow.className = 'settings-row';
+  ffmpegRow.append(ffmpegLabel, ffmpegInput, ffmpegBrowse, ffmpegClear, ffmpegDownload);
+  ffmpegSection.append(ffmpegRow);
+  syncFns.push(() => {
+    ffmpegInput.value = draft.ffmpegPath ?? '';
+    ffmpegInput.title = draft.ffmpegPath ?? '';
+  });
+  panel.append(ffmpegSection);
+
+  // ---------- 编码器（T29-2：路径覆盖 + 来源状态） ----------
   const encoder = document.createElement('section');
   encoder.className = 'settings-section';
   const encoderTitle = document.createElement('h3');
-  encoderTitle.textContent = '编码器（高级）';
+  encoderTitle.textContent = '编码器';
   const encoderHint = document.createElement('p');
   encoderHint.className = 'settings-hint';
   encoderHint.textContent =
-    '留空使用内置自动下载的编码器；自定义路径需指向对应的可执行文件，保存时校验存在。';
+    '留空使用内置自动下载的编码器；设置外部路径且有效时优先使用。保存后修改对后续' +
+    '新建评测轮立即生效，运行中的任务不受影响。';
   encoder.append(encoderTitle, encoderHint);
 
   for (const field of ENCODER_FIELDS) {
+    const statusLine = document.createElement('div');
+    statusLine.className = 'settings-status settings-status-indented';
+    const badge = document.createElement('span');
+    badge.className = 'settings-badge';
+    const lineHint = document.createElement('span');
+    lineHint.className = 'settings-status-hint';
+    statusLine.append(badge, lineHint);
+    statusRenderers.push(() => {
+      renderStatus(statuses.get(field.key), badge, lineHint);
+    });
+
     const label = document.createElement('span');
     label.className = 'settings-label';
     label.textContent = field.label;
@@ -208,34 +378,154 @@ export function openSettingsPanel(settings: SettingsData, host: SettingsUiHost):
     input.type = 'text';
     input.className = 'settings-path';
     input.placeholder = '内置';
-    input.value = settings.encoderOverrides[field.key] ?? '';
+    input.addEventListener('change', () => {
+      draft.encoderOverrides = {
+        ...draft.encoderOverrides,
+        [field.key]: input.value.trim() || null,
+      } as EncoderOverrides;
+    });
+    const browse = document.createElement('button');
+    browse.className = 'settings-mini-btn';
+    browse.textContent = '浏览…';
+    browse.addEventListener('click', () => {
+      void (async () => {
+        const selected = await open({
+          title: `选择 ${field.label} 可执行文件`,
+          directory: false,
+        });
+        if (typeof selected !== 'string') return;
+        input.value = selected;
+        input.title = selected;
+        draft.encoderOverrides = {
+          ...draft.encoderOverrides,
+          [field.key]: selected,
+        } as EncoderOverrides;
+      })();
+    });
     const clearBtn = document.createElement('button');
     clearBtn.className = 'settings-mini-btn';
     clearBtn.textContent = '清空';
-    const saveField = (raw: string): void => {
-      const overrides: EncoderOverrides = { ...settings.encoderOverrides, [field.key]: raw };
-      void commit({ ...settings, encoderOverrides: overrides }, () => {
-        input.value = settings.encoderOverrides[field.key] ?? '';
-      });
-    };
-    // 失焦或回车提交；Esc 还原
-    input.addEventListener('change', () => saveField(input.value));
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') input.blur();
-      else if (e.key === 'Escape') {
-        input.value = settings.encoderOverrides[field.key] ?? '';
-      }
-    });
     clearBtn.addEventListener('click', () => {
       input.value = '';
-      saveField('');
+      input.title = '';
+      draft.encoderOverrides = {
+        ...draft.encoderOverrides,
+        [field.key]: null,
+      } as EncoderOverrides;
     });
     const row = document.createElement('div');
     row.className = 'settings-row';
-    row.append(label, input, clearBtn);
-    encoder.append(row);
+    row.append(label, input, browse, clearBtn);
+    encoder.append(statusLine, row);
+    syncFns.push(() => {
+      input.value = draft.encoderOverrides[field.key] ?? '';
+      input.title = draft.encoderOverrides[field.key] ?? '';
+    });
   }
   panel.append(encoder);
+
+  // ---------- 保存 / 重置（D16/D17：一键保存全部；失败整体回滚并显示原因） ----------
+  const actions = document.createElement('div');
+  actions.className = 'settings-actions';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'settings-primary-btn';
+  saveBtn.textContent = '保存';
+  saveBtn.addEventListener('click', () => {
+    void commitAll();
+  });
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'settings-mini-btn';
+  resetBtn.textContent = '恢复默认';
+  resetBtn.title = '清空全部外部路径，恢复默认并发 / 主题 / 目录';
+  resetBtn.addEventListener('click', () => {
+    void (async () => {
+      draft = defaultSettings();
+      applyTheme(draft.theme); // 默认深色立即生效
+      syncInputs();
+      await commitAll();
+    })();
+  });
+  actions.append(saveBtn, resetBtn);
   panel.append(errorLine);
+  panel.append(actions);
+
+  // ---------- 关于（固定底部，T29-2） ----------
+  const about = document.createElement('section');
+  about.className = 'settings-section settings-about';
+  const aboutTitle = document.createElement('h3');
+  aboutTitle.textContent = '关于';
+  about.append(aboutTitle);
+  const aboutBody = document.createElement('div');
+  aboutBody.className = 'settings-about-body';
+  aboutBody.textContent = '加载中…';
+  about.append(aboutBody);
+  panel.append(about);
+
+  void (async () => {
+    try {
+      const info = await invoke<AboutData>('about_info');
+      aboutBody.replaceChildren(...renderAbout(info));
+    } catch (err) {
+      aboutBody.textContent = `加载「关于」信息失败: ${String(err)}`;
+    }
+  })();
+
   document.body.append(overlay);
+  // 初次按草稿同步全部控件值（select 的 DOM 默认停在首选项，必须显式对齐当前设置）
+  syncInputs();
+  void refreshStatuses();
+}
+
+/** 渲染「关于」正文：项目信息行 + 库版本清单（库名 https 链接渲染为超链接）。 */
+function renderAbout(info: AboutData): Node[] {
+  const nodes: Node[] = [];
+  const headLine = document.createElement('p');
+  headLine.className = 'settings-about-name';
+  const strong = document.createElement('strong');
+  strong.textContent = info.appName;
+  headLine.append(
+    strong,
+    document.createTextNode(
+      ` v${info.appVersion}（核心库 v${info.coreVersion}）`,
+    ),
+  );
+  nodes.push(headLine);
+
+  const intro = document.createElement('p');
+  intro.textContent = info.intro;
+  nodes.push(intro);
+
+  const meta = document.createElement('p');
+  meta.className = 'settings-about-meta';
+  const licenseLabel = document.createElement('span');
+  licenseLabel.textContent = `许可证：${info.license}`;
+  const repoLink = document.createElement('a');
+  repoLink.href = info.repoUrl;
+  repoLink.textContent = '仓库主页';
+  repoLink.className = 'settings-link';
+  meta.append(licenseLabel, document.createTextNode(' · '), repoLink);
+  nodes.push(meta);
+
+  const libTitle = document.createElement('p');
+  libTitle.className = 'settings-about-meta';
+  libTitle.textContent = '引用的库（版本来自构建锁定清单）：';
+  nodes.push(libTitle);
+  const list = document.createElement('ul');
+  list.className = 'settings-libraries';
+  for (const lib of info.libraries) {
+    const item = document.createElement('li');
+    if (isSafeLibraryUrl(lib.url)) {
+      const link = document.createElement('a');
+      link.href = lib.url;
+      link.textContent = lib.name;
+      link.className = 'settings-link';
+      item.append(link);
+    } else {
+      item.append(document.createTextNode(lib.name));
+    }
+    item.append(document.createTextNode(` ${lib.version}`));
+    list.append(item);
+  }
+  nodes.push(list);
+  return nodes;
 }

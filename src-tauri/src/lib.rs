@@ -16,8 +16,16 @@ use crate::settings::Settings;
 
 mod ffmpeg_setup;
 mod settings;
+mod tool_status;
 mod video_probe;
 mod video_server;
+
+/// T29-2：锁定 ffmpeg 版本号对外可见（设置页「关于」端到端测试读它核对锁定清单）。
+pub use ffmpeg_setup::pinned_ffmpeg_version;
+
+/// T29-2：设置页工具状态与「关于」的实现体（pub 供不经 Tauri 运行时端到端测试，
+/// 沿 onestop_catalog_impl / export_round_file 先例）。
+pub use tool_status::{about_info_impl, tool_status_impl};
 
 /// 全局应用状态：内存中的工作区 + 工作区 JSON 文件路径 + ffmpeg 等外部工具目录。
 /// Arc 让跑分这类耗时命令能把引用带进阻塞线程池（不持锁跨 await）。
@@ -56,6 +64,29 @@ fn settings_save(settings: Settings, state: State<'_, AppState>) -> Result<Setti
     settings.save_to_file(&state.settings_path)?;
     *state.settings.lock().expect("设置锁不应中毒") = settings.clone();
     Ok(settings)
+}
+
+/// IPC 命令（T29-2 设置页扩展）：检测 FFmpeg + 编码器的来源状态（内置/外部/
+/// 未配置/不可用，含版本探测）。探测要跑子进程（-version），放阻塞线程池执行。
+/// 前端在打开设置页与每次保存成功后调用——设置改完即重查，状态始终反映当前设置。
+#[tauri::command]
+async fn settings_tool_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<tool_status::ToolStatus>, String> {
+    let settings = state.settings.lock().expect("设置锁不应中毒").clone();
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(tool_status::tool_status_impl(&settings, tools_dir.as_path()))
+    })
+    .await
+    .map_err(|err| format!("工具状态检测任务执行失败: {err}"))?
+}
+
+/// IPC 命令（T29-2 设置页扩展）：「关于」区块数据。版本一律读锁定清单
+///（决策 D18），纯内存构建，同步返回。
+#[tauri::command]
+fn about_info() -> tool_status::AboutInfo {
+    tool_status::about_info_impl()
 }
 
 /// 一站式单档产物（onestop_encode 回传）：产物路径 + 编码参数文本。
@@ -610,8 +641,15 @@ async fn round_score_video_candidates(
     let workspace = state.workspace.clone();
     let path = state.path.clone();
     let tools_dir = state.tools_dir.clone();
+    // T29-2：设置页的 FFmpeg 路径覆盖随命令读入（外部优先），改动对后续跑分立即生效
+    let custom_ffmpeg = state
+        .settings
+        .lock()
+        .expect("设置锁不应中毒")
+        .ffmpeg_path
+        .clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let ffmpeg = ffmpeg_setup::ensure_ffmpeg(&tools_dir, &mut |_| {})?;
+        let ffmpeg = ffmpeg_setup::resolve_ffmpeg(&tools_dir, custom_ffmpeg.as_deref(), &mut |_| {})?;
         let mut ws = workspace.lock().expect("工作区锁不应中毒");
         ws.score_round_video_candidates_parallel(
             &group_id,
@@ -656,8 +694,16 @@ async fn video_probe_meta(
     state: State<'_, AppState>,
 ) -> Result<video_probe::VideoMeta, String> {
     let tools_dir = state.tools_dir.clone();
+    // T29-2：FFmpeg 路径覆盖同样作用于 ffprobe 定位（优先取外部 ffmpeg 同目录的
+    // ffprobe，同目录没有则回落内置安装），保证探测与跑分用的是同一套外部工具
+    let custom_ffmpeg = state
+        .settings
+        .lock()
+        .expect("设置锁不应中毒")
+        .ffmpeg_path
+        .clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let ffprobe = ffmpeg_setup::ensure_ffprobe(&tools_dir, &mut |message| {
+        let ffprobe = ffmpeg_setup::resolve_ffprobe(&tools_dir, custom_ffmpeg.as_deref(), &mut |message| {
             let _ = on_progress.send(message);
         })?;
         video_probe::probe(&ffprobe, std::path::Path::new(&path))
@@ -866,6 +912,9 @@ pub fn run() {
             // T23 设置中心
             settings_load,
             settings_save,
+            // T29-2 设置页扩展：工具状态检测与「关于」
+            settings_tool_status,
+            about_info,
             workspace_load,
             group_create,
             group_rename,
