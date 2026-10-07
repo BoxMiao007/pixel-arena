@@ -145,9 +145,9 @@
 - 为什么：调度函数 0018 已就位并明确留给本票接上；CLI 批量场景（十几张跑分图 / 15 档一站式）逐张串行是大头耗时；夹制而非报错让脚本无须先查核数。
 - 放弃了：run 编码阶段并行（编码器子进程并发叠加内存峰值，票面未要求，YAGNI）；`--concurrency` 越界报用法错误（夹制对脚本更顺）；CLI 读 GUI 设置的并发度（决策 0017：CLI 行为只由命令行参数决定）。
 
-## 0021 · Windows AVIF 直连官方工件：libavif 官方开始发预编译（已确认）
+## 0021 · AVIF 三端直连官方工件：libavif 官方开始发预编译（已确认）
 
 - 日期：2026-10-07
-- 决策：Windows x86_64 的 AVIF 编码器条目直连官方 Release 工件（libavif v1.4.2 的 windows-artifacts.zip，内含 avifenc/avifdec/avifgainmaputil，libaom 3.14.1 + libpng + zlib 全静态链接，导入表仅 KERNEL32/VCRUNTIME140/UCRT，本机试跑 --version 正常），哈希锚定官方 zip（版本化 tag 不可变），包内成员名带 .exe（encode.rs 成员列表与 decode.rs 的 avifdec 路径按平台分派）。升级 = 换 URL + 换哈希（现有机制）。
-- 为什么：用户指出官方已有构建好的文件（决策 0012「官方只发源码」的记录过时，T28 核实 v1.4.2 起官方 Release 附带三平台预编译工件）；直连官方 = 零构建（用户机器性能不足，本地交叉编译被明确排除）、供应链与 libwebp/libjxl 同级（版本化 URL + sha256 双锚）。
-- 放弃了：CI windows runner 自建（avif-artifact workflow 已写好并跑过两轮，官方工件可用后删除）；本地 mingw 交叉编译（用户明确排除：电脑性能不足）；「每次发布自动跟随官方最新版本」（自动追 latest 会让哈希锚定失效——下载内容随版本变、无预锚定值，供应链校验退化为只防损坏不防篡改；现有版本锁定机制升级只需改条目两处）。
+- 决策：libavif 编码器三端条目全部直连官方 Release 工件（v1.4.2 的 linux/windows/macOS-artifacts.zip，内含 avifenc/avifdec/avifgainmaputil，libaom 3.14.1 + libpng + zlib 静态链接）——Linux 从本机自建换官方（动态依赖仅 libc/libm/libstdc++/libgcc 系统基础库，ldd 核对过；本机端到端编码→解码实测通过）、Windows 官方工件（导入表仅 KERNEL32/VCRUNTIME140/UCRT，试跑正常）、macOS 新增（arm64 Mach-O，Apple Silicon；Intel macOS 无官方工件仍报暂无分发；应用内 HTTP 下载不设 quarantine，Gatekeeper 不拦）。哈希锚定官方 zip（版本化 tag 不可变）；Windows 包内成员名带 .exe（encode.rs 成员列表与 decode.rs 的 avifdec 路径按平台分派）。升级 = 换 URL + 换哈希（现有机制）。
+- 为什么：用户指出官方已有构建好的文件（决策 0012「官方只发源码」的记录过时，T28 核实 v1.4.2 起官方 Release 附带三平台预编译工件）；直连官方 = 零构建（用户机器性能不足，本地交叉编译被明确排除）、供应链与 libwebp/libjxl 同级（版本化 URL + sha256 双锚）、三端来源一致。
+- 放弃了：CI windows runner 自建（avif-artifact workflow 已写好并跑过两轮，官方工件可用后删除）；本地 mingw 交叉编译（用户明确排除：电脑性能不足）；Linux 继续用本机自建工件（官方直连后自建不再必要，encoders-v1 的旧 Linux AVIF 资产作废留存）；「每次发布自动跟随官方最新版本」（自动追 latest 会让哈希锚定失效——下载内容随版本变、无预锚定值，供应链校验退化为只防损坏不防篡改；现有版本锁定机制升级只需改条目两处）。

@@ -220,18 +220,19 @@ pub fn webp_source() -> Result<EncoderSource, CoreError> {
     }
 }
 
-/// 当前平台的 libavif（avifenc + avifdec）来源清单：Linux 本机全静态自建（libaom 后端），
-/// Windows 直连官方 Release 工件（T28）。
+/// 当前平台的 libavif（avifenc + avifdec）来源清单：三端直连官方 Release 工件（T28）。
 pub fn avif_source() -> Result<EncoderSource, CoreError> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => Ok(EncoderSource {
             name: "libavif".to_string(),
             version: "1.4.2".to_string(),
-            // 官方只发源码不发二进制：工件由本机用 libaom 3.13.1 + libpng 静态构建后打包
-            //（仅依赖 libc/libm）。打包票（T16）把构建搬进 CI 并上传 GitHub Release。
-            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/libavif-v1.4.2-linux-x86_64.tar.gz"
+            // 官方 v1.4.2 Release 工件（T28 换官方直连，替代本机自建——官方开始发
+            // 预编译后自建不再必要）：linux-artifacts.zip 内 avifenc/avifdec/avifgainmaputil，
+            // libaom 3.14.1 + libpng + zlib 静态链接，动态依赖仅 libc/libm/libstdc++/libgcc
+            //（系统基础库，ldd 核对过）。哈希锚定官方 zip（版本化 tag 不可变）。
+            url: "https://github.com/AOMediaCodec/libavif/releases/download/v1.4.2/linux-artifacts.zip"
                 .to_string(),
-            sha256: "629b790e08fc93d4e4ce122242662c7b777446517c997ebfc380ca3a28d5668e".to_string(),
+            sha256: "faf58a670ffbfdc0e3559e6d37592cff277c447dd39453f1cd1d7d7f5a20b8ef".to_string(),
             member: "avifenc".to_string(),
         }),
         ("windows", "x86_64") => Ok(EncoderSource {
@@ -247,6 +248,18 @@ pub fn avif_source() -> Result<EncoderSource, CoreError> {
                 .to_string(),
             sha256: "cb2d9fea43dcbab1d0707e3b37eb7b08070ad2fb60a2c188c39ec12382c0484a".to_string(),
             member: "avifenc.exe".to_string(),
+        }),
+        ("darwin", "aarch64") => Ok(EncoderSource {
+            name: "libavif".to_string(),
+            version: "1.4.2".to_string(),
+            // 官方 v1.4.2 Release 工件（T28）：macOS-artifacts.zip 内 avifenc/avifdec
+            //（arm64 Mach-O，Apple Silicon；Intel macOS 无官方工件仍报暂无分发）。
+            // 应用内 HTTP 下载不设 quarantine 属性，Gatekeeper 不拦（官方 README 的
+            // xattr 说明针对浏览器手动下载场景）。哈希锚定官方 zip。
+            url: "https://github.com/AOMediaCodec/libavif/releases/download/v1.4.2/macOS-artifacts.zip"
+                .to_string(),
+            sha256: "41f9a3db7b7697aa4f9c83d5e07a1b2e00f28f23676d3f27698eef766689a6b6".to_string(),
+            member: "avifenc".to_string(),
         }),
         (_os, _arch) => Err(unsupported_platform("libavif")),
     }
