@@ -528,6 +528,80 @@ pub fn advanced_params_text(
     text
 }
 
+/// 高级创建任务的实际质量点解析（encode_advanced_image 与 advanced_product_name
+/// 共用，两处口径一字不差）：无损直接定档；大小优先先搜索实际质量点（探测编码到
+/// 暂存目录即弃）；质量优先用任务自带档位。返回（无损, 实际质量, 不可达标注）。
+fn resolve_advanced_quality(
+    source: &Path,
+    job: &AdvancedImageJob,
+    tools_dir: &Path,
+    overrides: &crate::encode::EncoderOverrides,
+) -> Result<(bool, u8, Option<String>), CoreError> {
+    use crate::encode::{probe_onestop_size, OnestopFormat};
+    use crate::ladder::size_search;
+
+    let format = OnestopFormat::parse(&job.format_id)?;
+    let spec = image_spec(&job.format_id)?;
+    if job.lossless {
+        return Ok((true, spec.quality_default, None));
+    }
+    if job.mode == AdvancedQuickMode::Size {
+        let scratch = tempfile::tempdir().map_err(|err| CoreError::Encode {
+            message: format!("无法创建探测暂存目录：{err}"),
+        })?;
+        let result = size_search(format, job.target_bytes, &mut |quality| {
+            probe_onestop_size(source, format, quality, scratch.path(), tools_dir, overrides)
+        })?;
+        Ok((false, result.hit.quality, result.annotation_note()))
+    } else {
+        Ok((false, job.quality, None))
+    }
+}
+
+/// 高级创建的产物文件名（encode_advanced_image 与 advanced_product_name 共用）：
+/// 质量段写实际质量点，高级参数词进括号参数段（需求 9；词序列与编码参数文本同一
+/// 来源 enabled_row_words）。
+fn advanced_file_name(
+    source: &Path,
+    job: &AdvancedImageJob,
+    format: crate::encode::OnestopFormat,
+    spec: &ImageEncoderSpec,
+    lossless: bool,
+    quality: u8,
+) -> Result<String, CoreError> {
+    use crate::encode::file_stem;
+    use crate::naming::{product_file_name, QualitySegment};
+
+    let stem = file_stem(source)?;
+    let custom_words = enabled_row_words(&job.rows);
+    let custom_words: Vec<&str> = custom_words.iter().map(String::as_str).collect();
+    let segment = if lossless {
+        QualitySegment::Lossless
+    } else {
+        QualitySegment::Lossy(quality)
+    };
+    product_file_name(&stem, format.encoder_short_name(), segment, &custom_words, spec.output_ext)
+}
+
+/// 高级创建产物的目标文件名（T30 询问策略用）：与正式编码同一套质量解析与命名
+/// 来源（encode_advanced_image 内部同样走 resolve_advanced_quality +
+/// advanced_file_name），GUI 在写入前据此探测同名冲突。大小优先模式会先跑逼近
+/// 搜索（探测编码在暂存目录完成、即弃），这是写入前拿到确切名的必要成本。
+pub fn advanced_product_name(
+    source: impl AsRef<Path>,
+    job: &AdvancedImageJob,
+    tools_dir: impl AsRef<Path>,
+    overrides: &crate::encode::EncoderOverrides,
+) -> Result<String, CoreError> {
+    use crate::encode::OnestopFormat;
+
+    let format = OnestopFormat::parse(&job.format_id)?;
+    let spec = image_spec(&job.format_id)?;
+    let (lossless, quality, _note) =
+        resolve_advanced_quality(source.as_ref(), job, tools_dir.as_ref(), overrides)?;
+    advanced_file_name(source.as_ref(), job, format, &spec, lossless, quality)
+}
+
 /// 高级创建：按任务把原图编码为一份跑分产物。
 ///
 /// - 编码器解析与一站式共用同一分派（设置中心覆盖优先，缺省内置自动安装）；
@@ -536,6 +610,9 @@ pub fn advanced_params_text(
 ///   参数——高级参数会影响实际大小，最终以预览与产物自查为准）；
 /// - 产物按 T29-1 命名新格式落盘，质量段写实际质量点（D8）、高级参数进括号参数段
 ///  （需求 9 示例 `image123_avif_q60_(-y 420 --sharpyuv -s 4).avif`）；
+/// - 同名冲突按 `conflict` 处理（D9 + T30）：AutoAppend 自动追加 `_1/_2` 不覆盖，
+///   Overwrite 用确切名落位覆盖（编码先进产物目录下的暂存子目录完成——暂存内必然
+///   无冲突，成功后一次 rename 覆盖已有文件；中途失败暂存目录整体丢弃）；
 /// - AVIF/JXL 产物写完自检解码并旁路 PNG 代片（决策 0012，与一站式一致）。
 pub fn encode_advanced_image(
     source: impl AsRef<Path>,
@@ -543,13 +620,12 @@ pub fn encode_advanced_image(
     output_dir: impl AsRef<Path>,
     tools_dir: impl AsRef<Path>,
     overrides: &crate::encode::EncoderOverrides,
+    conflict: crate::naming::ConflictPolicy,
 ) -> Result<AdvancedProduct, CoreError> {
     use crate::encode::{
-        file_stem, probe_onestop_size, resolve_onestop_encoder, run_subprocess, write_png_temp,
-        write_ppm_temp, OnestopFormat,
+        resolve_onestop_encoder, run_subprocess, write_png_temp, write_ppm_temp, OnestopFormat,
     };
-    use crate::ladder::size_search;
-    use crate::naming::{product_file_name, unique_file_name, QualitySegment};
+    use crate::naming::{resolve_product_name, ConflictPolicy};
 
     let spec = image_spec(&job.format_id)?;
     let format = OnestopFormat::parse(&job.format_id)?;
@@ -571,48 +647,37 @@ pub fn encode_advanced_image(
     let encoder = resolve_onestop_encoder(format, tools_dir, overrides)?
         .expect("高级创建只支持有损四格式，无进程内 PNG 分支");
 
-    // 质量与不可达标注：无损直接定档；大小优先先搜索实际质量点（探测编码到暂存目录即弃）
-    let mut note = None;
-    let (lossless, quality) = if job.lossless {
-        (true, spec.quality_default)
-    } else if job.mode == AdvancedQuickMode::Size {
-        let scratch = tempfile::tempdir().map_err(|err| CoreError::Encode {
-            message: format!("无法创建探测暂存目录：{err}"),
-        })?;
-        let result = size_search(format, job.target_bytes, &mut |quality| {
-            probe_onestop_size(source, format, quality, scratch.path(), tools_dir, overrides)
-        })?;
-        note = result.annotation_note();
-        (false, result.hit.quality)
-    } else {
-        (false, job.quality)
-    };
+    let (lossless, quality, note) = resolve_advanced_quality(source, job, tools_dir, overrides)?;
 
     let base = quick_base_args(&spec, lossless, quality)?;
     let merged = merge_args(&base, &job.rows)?;
 
     // 解码口径与跑分一致：喂给编码器的像素 = 算指标时看到的像素
     let decoded = crate::metrics::decode_srgb(source)?;
-    let stem = file_stem(source)?;
     std::fs::create_dir_all(output_dir).map_err(|err| CoreError::Encode {
         message: format!("无法创建产物目录 {}：{err}", output_dir.display()),
     })?;
 
-    // 产物名：质量段写实际质量点，高级参数词进括号参数段（需求 9；词序列与
-    // 编码参数文本同一来源 enabled_row_words）
-    let custom_words = enabled_row_words(&job.rows);
-    let custom_words: Vec<&str> = custom_words.iter().map(String::as_str).collect();
-    let segment = if lossless {
-        QualitySegment::Lossless
-    } else {
-        QualitySegment::Lossy(quality)
+    // T30 覆盖模式：编码在暂存子目录里做（名字解析在空目录里原样返回确切名），
+    // 成功后 rename 进产物目录覆盖已有同名文件。tempdir_in 保证暂存与最终落位
+    // 同一文件系统（rename 原子生效）。
+    let scratch = match conflict {
+        ConflictPolicy::AutoAppend => None,
+        ConflictPolicy::Overwrite => Some(
+            tempfile::tempdir_in(output_dir).map_err(|err| CoreError::Encode {
+                message: format!("无法创建编码暂存目录（覆盖模式）：{err}"),
+            })?,
+        ),
     };
-    let name = unique_file_name(
-        output_dir,
-        &product_file_name(&stem, format.encoder_short_name(), segment, &custom_words, spec.output_ext)?,
+    let encode_dir: &Path = scratch.as_ref().map(|dir| dir.path()).unwrap_or(output_dir);
+
+    let name = resolve_product_name(
+        encode_dir,
+        &advanced_file_name(source, job, format, &spec, lossless, quality)?,
+        conflict,
     )?;
-    let product = output_dir.join(&name);
-    let product_tmp = output_dir.join(format!("{name}.tmp"));
+    let product = encode_dir.join(&name);
+    let product_tmp = encode_dir.join(format!("{name}.tmp"));
 
     // 参数在前、输入与输出按编码器口味落位（layout_words 单一来源，命令行预览同用）：
     // cjpeg 用 -outfile（输入收尾），cwebp 输入后跟 -o，avifenc/cjxl 输入 + 输出位置参数
@@ -628,13 +693,24 @@ pub fn encode_advanced_image(
 
     let label = format!("{}（{}）", spec.display_name, spec.tool_key);
     let result = run_subprocess(&encoder, command, &label, &product_tmp);
-    let product = match crate::encode::finish_product(result, &product_tmp, &product) {
+    let mut product = match crate::encode::finish_product(result, &product_tmp, &product) {
         Ok(path) => path,
         Err(err) => {
             std::fs::remove_file(&product_tmp).ok();
             return Err(err);
         }
     };
+
+    // 覆盖模式落位：暂存产物 rename 到确切目标名（三端 rename 均替换已有文件；
+    // 大小写仅差异的名字在 Linux 上会并存，见 ADR 0023 口径说明）。
+    // scratch 变量本身保留到函数收尾才 drop：暂存目录必须活过落位 rename。
+    if scratch.is_some() {
+        let dest = output_dir.join(product.file_name().expect("暂存产物必有文件名"));
+        std::fs::rename(&product, &dest).map_err(|err| CoreError::Encode {
+            message: format!("无法覆盖保存产物 {}：{err}", dest.display()),
+        })?;
+        product = dest;
+    }
 
     // AVIF/JXL 产物 WebView 原生解不了：自检解码 + 旁路 PNG 代片（决策 0012）
     if matches!(format, OnestopFormat::Avif | OnestopFormat::Jxl) {
@@ -1042,6 +1118,7 @@ Audio encoders:
                 cjpeg: Some(stub.clone()),
                 ..Default::default()
             },
+            crate::naming::ConflictPolicy::AutoAppend,
         )
         .expect("高级创建应成功");
         assert!(Path::new(&product.path).exists(), "产物应落盘");
@@ -1086,6 +1163,7 @@ Audio encoders:
                 cwebp: Some(stub),
                 ..Default::default()
             },
+            crate::naming::ConflictPolicy::AutoAppend,
         )
         .expect("无损 WebP 高级创建应成功");
         assert!(
@@ -1127,6 +1205,7 @@ Audio encoders:
                 cjpeg: Some(stub),
                 ..Default::default()
             },
+            crate::naming::ConflictPolicy::AutoAppend,
         )
         .expect("大小优先高级创建应回退到最接近点");
         assert!(
@@ -1161,6 +1240,7 @@ Audio encoders:
             std::env::temp_dir(),
             std::env::temp_dir(),
             &crate::encode::EncoderOverrides::default(),
+            crate::naming::ConflictPolicy::AutoAppend,
         )
         .err()
         .expect("同标志冲突应在编码前报错");
@@ -1180,9 +1260,61 @@ Audio encoders:
             std::env::temp_dir(),
             std::env::temp_dir(),
             &crate::encode::EncoderOverrides::default(),
+            crate::naming::ConflictPolicy::AutoAppend,
         )
         .err()
         .expect("JPEG 无损应报错");
         assert!(err.to_string().contains("无损"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn advanced_product_name_matches_actual_product_and_overwrite_replaces() {
+        // 询问策略（T30）的预检名字必须与正式编码落地的名字一字不差；覆盖模式按
+        // 确切名落位替换已有文件、不追加 _1、不留暂存残留
+        let dir = std::env::temp_dir().join(format!("pixel-arena-t30-adv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = write_stub_encoder(&dir, "my-cjpeg.sh");
+        let out_dir = dir.join("out");
+        let job = AdvancedImageJob {
+            format_id: "jpeg".to_string(),
+            lossless: false,
+            mode: AdvancedQuickMode::Quality,
+            quality: 60,
+            target_bytes: 0,
+            rows: vec![],
+        };
+        let overrides = crate::encode::EncoderOverrides {
+            cjpeg: Some(stub),
+            ..Default::default()
+        };
+
+        let expected = advanced_product_name(
+            fixture("photo-ref.png"),
+            &job,
+            dir.join("tools"),
+            &overrides,
+        )
+        .expect("预检名字应可计算");
+        assert_eq!(
+            expected, "photo-ref_jpeg_q60.jpg",
+            "产物名 = 原图名_编码器_q质量"
+        );
+
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(out_dir.join(&expected), b"OLD").unwrap();
+        let product = encode_advanced_image(
+            fixture("photo-ref.png"),
+            &job,
+            &out_dir,
+            dir.join("tools"),
+            &overrides,
+            crate::naming::ConflictPolicy::Overwrite,
+        )
+        .expect("覆盖编码应成功");
+        assert!(product.path.ends_with(&expected), "覆盖模式应使用确切名: {}", product.path);
+        assert_eq!(std::fs::read(&product.path).unwrap(), b"FAKE\n", "已有同名文件应被新产物覆盖");
+        assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 1, "产物目录应只有覆盖后的产物");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -170,6 +170,100 @@ struct OnestopProduct {
     encoding_params: String,
 }
 
+/// 产物编码命令回包（T30 冲突询问协议）：done = 产物已生成；conflict = 「询问」
+/// 策略下目标名与已有文件冲突、尚未写入任何文件——前端弹窗拍板后带
+/// `conflictDecision: "overwrite"` 重调（「跳过」则不再重调）。
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum OnestopOutcome {
+    Done { product: OnestopProduct },
+    Conflict { proposed_name: String },
+}
+
+/// 高级创建编码命令回包（协议同 [`OnestopOutcome]`）。
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum AdvancedOutcome {
+    Done { product: pixel_arena_core::advanced::AdvancedProduct },
+    Conflict { proposed_name: String },
+}
+
+/// 解析前端回传的冲突决定（T30）：None = 首次调用；"overwrite" = 用户拍板覆盖；
+/// 「跳过」由前端直接不再重调，不经后端。未知值报中文错误（fail-fast）。
+fn parse_conflict_decision(raw: Option<&str>) -> Result<bool, String> {
+    match raw {
+        None => Ok(false),
+        Some("overwrite") => Ok(true),
+        Some(other) => Err(format!("未知的冲突决定：{other}")),
+    }
+}
+
+/// 「询问」策略的写入前冲突预检（T30）：设置策略为 ask 且用户尚未拍板覆盖时，
+/// 探测目标名是否与已有文件冲突（口径同核心库 unique_file_name，大小写不敏感）；
+/// 有冲突即返回 Some(目标名)（此时未写入任何文件），无冲突/无需询问返回 None。
+fn product_conflict_probe(
+    settings: &Settings,
+    overwrite: bool,
+    proposed_name: String,
+    product_dir: &Path,
+) -> Result<Option<String>, String> {
+    if overwrite {
+        return Ok(None);
+    }
+    if settings.conflict_policy != settings::FileConflictPolicy::Ask {
+        return Ok(None);
+    }
+    let conflicted = pixel_arena_core::naming::file_name_conflicts(product_dir, &proposed_name)
+        .map_err(|err| err.to_string())?;
+    Ok(conflicted.then_some(proposed_name))
+}
+
+/// 预检通过后的核心库冲突策略：「询问」+ 已拍板覆盖 → Overwrite（确切名落位），
+/// 其余（自动追加策略、或询问无冲突）→ AutoAppend（现状行为）。
+fn core_conflict_policy(overwrite: bool) -> pixel_arena_core::naming::ConflictPolicy {
+    if overwrite {
+        pixel_arena_core::naming::ConflictPolicy::Overwrite
+    } else {
+        pixel_arena_core::naming::ConflictPolicy::AutoAppend
+    }
+}
+
+#[cfg(test)]
+mod conflict_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn outcome_serializes_kind_tag_and_camel_case_fields() {
+        // T30 前端契约：tag=kind（done/conflict），字段 camelCase（proposedName）
+        let done = OnestopOutcome::Done {
+            product: OnestopProduct {
+                path: "/tmp/a.png".to_string(),
+                encoding_params: "PNG 无损".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&done).unwrap();
+        assert!(json.contains("\"kind\":\"done\""), "{json}");
+        // done 的产物嵌在 product 字段下（前端 OnestopEncodeOutcome 按此取值）
+        assert!(
+            json.contains("\"product\":{\"path\":\"/tmp/a.png\",\"encodingParams\":\"PNG 无损\"}"),
+            "{json}"
+        );
+
+        let conflict = OnestopOutcome::Conflict {
+            proposed_name: "a_png.png".to_string(),
+        };
+        let json = serde_json::to_string(&conflict).unwrap();
+        assert_eq!(json, r#"{"kind":"conflict","proposedName":"a_png.png"}"#);
+    }
+
+    #[test]
+    fn conflict_decision_rejects_unknown_values() {
+        assert!(!parse_conflict_decision(None).unwrap());
+        assert!(parse_conflict_decision(Some("overwrite")).unwrap());
+        assert!(parse_conflict_decision(Some("跳过")).is_err());
+    }
+}
+
 /// 启动时从磁盘恢复工作区。文件不存在（首次启动）回落到空工作区；
 /// 其余加载失败（坏 JSON、版本不支持等）如实上报，界面提示用户。
 /// T23：记录状态关闭时做干净启动——不读 workspace.json、返回空工作区；
@@ -620,8 +714,9 @@ async fn onestop_encode(
     reference_path: String,
     format: String,
     quality: Option<u8>,
+    conflict_decision: Option<String>,
     state: State<'_, AppState>,
-) -> Result<OnestopProduct, String> {
+) -> Result<OnestopOutcome, String> {
     // 前置校验（持锁只做只读检查）：评测轮必须还在，且传入原图与本轮所选原图一致，
     // 防止给 A 轮产物挂到 B 轮原图名下。
     {
@@ -644,12 +739,24 @@ async fn onestop_encode(
         .map_err(|err| err.to_string())?;
     pixel_arena_core::naming::ensure_output_dir_writable(&product_dir).map_err(|err| err.to_string())?;
 
+    // T30 冲突询问：设置策略为「询问」且尚未拍板时，写入前探测目标名冲突——
+    // 有冲突回 Conflict（未写入任何文件），等前端弹窗拍板后带决定重调
+    let overwrite = parse_conflict_decision(conflict_decision.as_deref())?;
+    let settings = state.settings.lock().expect("设置锁不应中毒").clone();
+    if let Some(proposed_name) = product_conflict_probe(
+        &settings,
+        overwrite,
+        pixel_arena_core::encode::onestop_product_name(&reference_path, &format, quality)
+            .map_err(|err| err.to_string())?,
+        &product_dir,
+    )? {
+        return Ok(OnestopOutcome::Conflict { proposed_name });
+    }
+
     let tools_dir = state.tools_dir.clone();
     // T23：设置中心的编码器路径覆盖随命令带入（None 项走内置自动安装路径）
-    let overrides = to_core_overrides(
-        &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
-        state.bundled_encoders.as_path(),
-    );
+    let overrides = to_core_overrides(&settings.encoder_overrides, state.bundled_encoders.as_path());
+    let conflict = core_conflict_policy(overwrite);
     tauri::async_runtime::spawn_blocking(move || {
         pixel_arena_core::encode::encode_onestop(
             &reference_path,
@@ -658,10 +765,13 @@ async fn onestop_encode(
             product_dir,
             tools_dir.as_path(),
             &overrides,
+            conflict,
         )
-        .map(|product| OnestopProduct {
-            path: product.to_string_lossy().into_owned(),
-            encoding_params: params,
+        .map(|product| OnestopOutcome::Done {
+            product: OnestopProduct {
+                path: product.to_string_lossy().into_owned(),
+                encoding_params: params,
+            },
         })
         .map_err(|err| err.to_string())
     })
@@ -758,8 +868,9 @@ async fn advanced_encode(
     round_id: String,
     reference_path: String,
     job: pixel_arena_core::advanced::AdvancedImageJob,
+    conflict_decision: Option<String>,
     state: State<'_, AppState>,
-) -> Result<pixel_arena_core::advanced::AdvancedProduct, String> {
+) -> Result<AdvancedOutcome, String> {
     // 前置校验（持锁只做只读检查）：与 onestop_encode 同一口径
     {
         let ws = state.workspace.lock().expect("工作区锁不应中毒");
@@ -773,11 +884,38 @@ async fn advanced_encode(
         .map_err(|err| err.to_string())?;
     pixel_arena_core::naming::ensure_output_dir_writable(&product_dir).map_err(|err| err.to_string())?;
 
+    // T30 冲突询问：与 onestop_encode 同一协议。目标名经核心库 advanced_product_name
+    // 计算（大小优先模式会先跑逼近搜索——写入前拿到确切名的必要成本，见其文档）。
+    let overwrite = parse_conflict_decision(conflict_decision.as_deref())?;
+    let settings = state.settings.lock().expect("设置锁不应中毒").clone();
     let tools_dir = state.tools_dir.clone();
-    let overrides = to_core_overrides(
-        &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
-        state.bundled_encoders.as_path(),
-    );
+    let overrides = to_core_overrides(&settings.encoder_overrides, state.bundled_encoders.as_path());
+    // 预检名字在阻塞线程池算（大小优先的逼近搜索要跑探测编码）；所需的引用数据
+    // 克隆进去，原值留给下方编码任务复用
+    let proposed = {
+        let reference_path = reference_path.clone();
+        let tools_dir = tools_dir.clone();
+        let overrides = overrides.clone();
+        let job = job.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            pixel_arena_core::advanced::advanced_product_name(
+                &reference_path,
+                &job,
+                tools_dir.as_path(),
+                &overrides,
+            )
+            .map_err(|err| err.to_string())
+        })
+        .await
+        .map_err(|err| format!("产物名计算任务执行失败: {err}"))??
+    };
+    if let Some(proposed_name) =
+        product_conflict_probe(&settings, overwrite, proposed, &product_dir)?
+    {
+        return Ok(AdvancedOutcome::Conflict { proposed_name });
+    }
+
+    let conflict = core_conflict_policy(overwrite);
     tauri::async_runtime::spawn_blocking(move || {
         pixel_arena_core::advanced::encode_advanced_image(
             &reference_path,
@@ -785,7 +923,9 @@ async fn advanced_encode(
             product_dir,
             tools_dir.as_path(),
             &overrides,
+            conflict,
         )
+        .map(|product| AdvancedOutcome::Done { product })
         .map_err(|err| err.to_string())
     })
     .await

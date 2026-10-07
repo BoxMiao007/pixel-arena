@@ -58,6 +58,19 @@ pub struct WindowSize {
     pub height: f64,
 }
 
+/// 产物文件名冲突策略（T30）：GUI 一站式/高级创建的产物写入行为。
+/// 仅作用于 GUI 产物写入；CLI 不读 GUI 设置，恒为自动追加（决策 0017）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileConflictPolicy {
+    /// 目标名已有文件时自动追加 `_1/_2`（现状默认行为，决策 D9，永不覆盖）。
+    #[default]
+    Auto,
+    /// 写入前探测到同名冲突时弹窗询问，用户对每个冲突拍板「覆盖 / 跳过」，
+    /// 可选应用到本次全部冲突。
+    Ask,
+}
+
 /// 编码器可执行文件路径覆盖（None/空 = 使用内置自动安装的编码器）。
 /// 键名与核心库 EncoderSource 的成员名一致；avifdec 是 AVIF 产物代片的解码器，
 /// GUI 侧经既有 PIXEL_ARENA_AVIFDEC 环境变量注入机制接入，不算编码器但也在此可配。
@@ -90,6 +103,10 @@ pub struct Settings {
     /// 跑分并发度（T24）：1/4、1/2、3/4、全部，默认 1/2（只用一半核心留余量）。
     #[serde(default)]
     pub score_concurrency: ScoreConcurrency,
+    /// 产物文件名冲突策略（T30）：auto = 自动追加 `_1/_2`（默认，现状行为）；
+    /// ask = 写入前弹窗询问。旧 settings.json 缺字段时 serde default 兜底为 auto。
+    #[serde(default)]
+    pub conflict_policy: FileConflictPolicy,
     /// CSV/HTML 导出对话框的默认目录；None/空 = 未设置。
     #[serde(default)]
     pub default_export_dir: Option<String>,
@@ -124,6 +141,7 @@ impl Default for Settings {
             record_state: true,
             theme: Theme::default(),
             score_concurrency: ScoreConcurrency::default(),
+            conflict_policy: FileConflictPolicy::default(),
             default_export_dir: None,
             recent_dir: None,
             window: None,
@@ -301,6 +319,40 @@ mod tests {
         assert_eq!(settings.recent_dir, None);
         assert_eq!(settings.window, None);
         assert_eq!(settings.encoder_overrides, EncoderOverrides::default());
+        assert_eq!(
+            settings.conflict_policy,
+            FileConflictPolicy::Auto,
+            "冲突策略默认自动追加 = 现状行为"
+        );
+    }
+
+    #[test]
+    fn conflict_policy_defaults_to_auto_and_parses_two_choices() {
+        // 默认 auto = 现状行为不变（票面验收 1）；两选合法，未知值拒绝
+        assert_eq!(
+            serde_json::from_str::<FileConflictPolicy>("\"auto\"").unwrap(),
+            FileConflictPolicy::Auto
+        );
+        assert_eq!(
+            serde_json::from_str::<FileConflictPolicy>("\"ask\"").unwrap(),
+            FileConflictPolicy::Ask
+        );
+        assert!(serde_json::from_str::<FileConflictPolicy>("\"覆盖\"").is_err());
+        // 旧 settings.json 没有 conflictPolicy 字段：serde default 兜底，无需迁移
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.conflict_policy, FileConflictPolicy::Auto);
+    }
+
+    #[test]
+    fn conflict_policy_roundtrips_camel_case() {
+        let settings = Settings {
+            conflict_policy: FileConflictPolicy::Ask,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("\"conflictPolicy\":\"ask\""), "{json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, settings);
     }
 
     #[test]

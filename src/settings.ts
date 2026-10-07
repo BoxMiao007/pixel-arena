@@ -7,6 +7,11 @@ export type ThemePref = 'light' | 'dark' | 'system';
  * threequarters=3/4、full=全部；与 src-tauri/src/settings.rs 的 serde 小写落盘一致。 */
 export type ScoreConcurrencyPref = 'quarter' | 'half' | 'threequarters' | 'full';
 
+/** 产物文件名冲突策略（T30）：auto = 自动追加 _1/_2（默认，现状行为）；
+ * ask = 产物写入前弹窗询问覆盖/跳过。仅作用于 GUI 产物写入（CLI 恒自动追加，
+ * 决策 0017）；与 src-tauri/src/settings.rs 的 FileConflictPolicy serde 小写一致。 */
+export type ConflictPolicyPref = 'auto' | 'ask';
+
 export interface WindowSize {
   width: number;
   height: number;
@@ -27,6 +32,8 @@ export interface SettingsData {
   theme: ThemePref;
   /** 跑分并发度（T24）：默认 half = 只用一半逻辑核留余量。 */
   scoreConcurrency: ScoreConcurrencyPref;
+  /** 产物文件名冲突策略（T30）：默认 auto = 自动追加 _1/_2。 */
+  conflictPolicy: ConflictPolicyPref;
   defaultExportDir: string | null;
   recentDir: string | null;
   window: WindowSize | null;
@@ -116,6 +123,7 @@ export function defaultSettings(): SettingsData {
     recordState: true,
     theme: 'dark',
     scoreConcurrency: 'half',
+    conflictPolicy: 'auto',
     defaultExportDir: null,
     recentDir: null,
     window: null,

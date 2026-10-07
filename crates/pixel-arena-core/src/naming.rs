@@ -13,6 +13,8 @@
 //!
 //! 同名冲突默认自动追加 `_1/_2` 不覆盖（决策 D9），比较大小写不敏感——
 //! Windows/macOS 文件系统本就大小写不敏感，Linux 上统一同样口径，三端行为一致。
+//! T30 起 GUI 可选「询问」策略：写入前弹窗，用户拍板「覆盖」时按确切名落位
+//!（[`ConflictPolicy`]）；CLI 恒为自动追加（决策 0017）。
 
 use crate::error::CoreError;
 use std::collections::HashSet;
@@ -77,6 +79,19 @@ pub fn product_file_name(
     Ok(format!("{stem}{suffix}"))
 }
 
+/// 产物名冲突的处理方式（T30）：GUI 可配置「自动追加 / 询问」，询问下用户拍板
+/// 「覆盖」时用 Overwrite；CLI 不读 GUI 设置，恒为 AutoAppend（决策 0017）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConflictPolicy {
+    /// 已有同名（大小写不敏感）时自动追加 `_1`/`_2`，永不覆盖已有文件（决策 D9，
+    /// 现状默认行为）。
+    #[default]
+    AutoAppend,
+    /// 使用确切的产物名，已有同名文件由最终落位的一次 rename 覆盖（编码先进
+    /// 暂存目录完成，见 [`crate::encode`]，中途失败不动已有文件）。
+    Overwrite,
+}
+
 /// 同名冲突去重（决策 D9）：`dir` 里已有同名文件（大小写不敏感比较）时自动追加
 /// `_1`/`_2`，永不覆盖已有文件。目录不存在视为无冲突（首个产物必然不撞名）。
 pub fn unique_file_name(dir: &Path, file_name: &str) -> Result<String, CoreError> {
@@ -114,6 +129,27 @@ pub fn unique_file_name(dir: &Path, file_name: &str) -> Result<String, CoreError
         }
     }
     unreachable!("候选序号穷举不可能耗尽")
+}
+
+/// 按冲突策略解析产物名（T30）：AutoAppend 走 [`unique_file_name`]（追加 `_1/_2`），
+/// Overwrite 原样返回（确切名落位覆盖，语义见 [`ConflictPolicy::Overwrite`]）。
+/// 编码函数一律经此解析，不再各自判断。
+pub fn resolve_product_name(
+    dir: &Path,
+    file_name: &str,
+    policy: ConflictPolicy,
+) -> Result<String, CoreError> {
+    match policy {
+        ConflictPolicy::AutoAppend => unique_file_name(dir, file_name),
+        ConflictPolicy::Overwrite => Ok(file_name.to_string()),
+    }
+}
+
+/// 目标名是否与 `dir` 里已有文件冲突（T30 询问策略用，大小写不敏感，口径与
+/// [`unique_file_name`] 完全一致——判定即「去重解析是否改了名」，不另起一套）。
+/// 目录不存在视为无冲突。
+pub fn file_name_conflicts(dir: &Path, file_name: &str) -> Result<bool, CoreError> {
+    Ok(unique_file_name(dir, file_name)? != file_name)
 }
 
 /// GUI 产物输出目录（决策 D5）：原图/视频所在目录下的「Pixel Arena」文件夹。
@@ -222,6 +258,50 @@ pub(crate) fn shell_quote(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------- T30：冲突策略（自动追加 / 询问后覆盖） ----------
+
+    #[test]
+    fn file_name_conflicts_detects_case_insensitive_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            !file_name_conflicts(dir.path(), "a_avif_q60.avif").unwrap(),
+            "目录不存在视为无冲突（首个产物必然不撞名）"
+        );
+        std::fs::write(dir.path().join("a_avif_q60.avif"), b"x").unwrap();
+        assert!(file_name_conflicts(dir.path(), "a_avif_q60.avif").unwrap());
+        // 大小写不敏感口径与 unique_file_name 一致（ADR 0023）
+        assert!(
+            file_name_conflicts(dir.path(), "A_AVIF_Q60.AVIF").unwrap(),
+            "冲突判定应大小写不敏感"
+        );
+        std::fs::write(dir.path().join("b_avif_q60.avif"), b"x").unwrap();
+        assert!(
+            !file_name_conflicts(dir.path(), "c_avif_q60.avif").unwrap(),
+            "名字不同的文件不算冲突"
+        );
+    }
+
+    #[test]
+    fn resolve_product_name_appends_or_keeps_per_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.png"), b"x").unwrap();
+        // AutoAppend：现状行为，追加 _1 不覆盖
+        assert_eq!(
+            resolve_product_name(dir.path(), "a.png", ConflictPolicy::AutoAppend).unwrap(),
+            "a_1.png"
+        );
+        // Overwrite：用户拍板覆盖，原样返回确切名
+        assert_eq!(
+            resolve_product_name(dir.path(), "a.png", ConflictPolicy::Overwrite).unwrap(),
+            "a.png"
+        );
+        // 无冲突时两种策略结果一致
+        assert_eq!(
+            resolve_product_name(dir.path(), "b.png", ConflictPolicy::Overwrite).unwrap(),
+            resolve_product_name(dir.path(), "b.png", ConflictPolicy::AutoAppend).unwrap()
+        );
+    }
 
     #[test]
     fn shell_quote_covers_plain_and_quoted_forms() {

@@ -14,6 +14,7 @@
 // 主模块统一提示（编码器首次使用要联网下载，下载失败时同一编码器的各档都会失败）。
 
 import { invoke } from '@tauri-apps/api/core';
+import { ConflictSession, type ConflictAnswer } from './conflict';
 import type { Workspace } from './main';
 
 /** 格式条目：规范格式串 + 界面显示名（显示名源头为核心库 OnestopFormat::display_name） */
@@ -169,6 +170,10 @@ export interface OnestopDeps {
   onProgress: (text: string) => void;
   /** 产物纳入本轮后回传最新工作区，主模块替换状态并重渲染 */
   onWorkspace: (ws: Workspace) => void;
+  /** T30：「询问」策略下目标名冲突时弹窗取回答（覆盖/跳过，可选应用到本次全部，
+   * 批量语义由 ConflictSession 消化）。策略为自动追加时后端永不回 conflict，
+   * 本函数不会被调用。 */
+  onConflict: (fileName: string) => Promise<ConflictAnswer>;
 }
 
 export interface OnestopProductResult {
@@ -193,25 +198,49 @@ export interface OnestopProduct {
   encodingParams: string;
 }
 
+/** onestop_encode 回包（T30 冲突询问协议，tag=kind）：done = 产物已生成
+ *（product 与既有 OnestopProduct 形状一致）；conflict = 「询问」策略下目标名与
+ * 已有文件冲突、尚未写入任何文件，弹窗拍板后带 conflictDecision:"overwrite"
+ * 重调（「跳过」则不再重调）。 */
+export type OnestopEncodeOutcome =
+  | { kind: 'done'; product: OnestopProduct }
+  | { kind: 'conflict'; proposedName: string };
+
 /** 跑完编码阶梯：逐项生成 → 产物纳入本轮。不含跑分（主模块接现有循环）。 */
 export async function runOnestop(deps: OnestopDeps): Promise<OnestopResult> {
   const products: OnestopProduct[] = [];
   const formats: string[] = [];
   const failures: string[] = [];
+  // T30：一次跑分一个冲突决策会话——「应用到本次全部冲突」只作用于本批
+  const conflicts = new ConflictSession(deps.onConflict);
+  const invokeEncode = (item: LadderItem, overwrite: boolean): Promise<OnestopEncodeOutcome> =>
+    invoke<OnestopEncodeOutcome>('onestop_encode', {
+      groupId: deps.groupId,
+      roundId: deps.roundId,
+      referencePath: deps.referencePath,
+      format: item.format,
+      quality: item.quality,
+      ...(overwrite ? { conflictDecision: 'overwrite' } : {}),
+    });
 
   for (let i = 0; i < deps.ladder.length; i++) {
     const item = deps.ladder[i];
     deps.onProgress(`正在生成 ${item.label}（${i + 1}/${deps.ladder.length}）`);
     try {
-      const product = await invoke<OnestopProduct>('onestop_encode', {
-        groupId: deps.groupId,
-        roundId: deps.roundId,
-        referencePath: deps.referencePath,
-        format: item.format,
-        quality: item.quality,
-      });
-      products.push(product);
-      formats.push(item.format);
+      let outcome = await invokeEncode(item, false);
+      if (outcome.kind === 'conflict') {
+        const decision = await conflicts.decide(outcome.proposedName);
+        if (decision === 'skip') {
+          // 跳过：该产物不生成、不进轮，原因进失败清单（措辞与编码失败一致）
+          failures.push(`${item.label}: 已跳过（${outcome.proposedName} 已存在）`);
+          continue;
+        }
+        outcome = await invokeEncode(item, true);
+      }
+      if (outcome.kind === 'done') {
+        products.push(outcome.product);
+        formats.push(item.format);
+      }
     } catch (err) {
       // 后端返回的已是中文错误（下载/校验/编码失败等），透传即可
       failures.push(`${item.label}: ${String(err)}`);

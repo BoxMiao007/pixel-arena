@@ -35,7 +35,15 @@ fn main() {
         }
     }
 
-    match encode_onestop(source, &format, quality, &out_dir, &tools_dir, &EncoderOverrides::default()) {
+    match encode_onestop(
+        source,
+        &format,
+        quality,
+        &out_dir,
+        &tools_dir,
+        &EncoderOverrides::default(),
+        pixel_arena_core::naming::ConflictPolicy::AutoAppend,
+    ) {
         Ok(product) => println!("{}", product.display()),
         Err(err) => {
             eprintln!("{err}");

@@ -38,6 +38,7 @@ fn unknown_format_reports_chinese_error() {
         std::env::temp_dir(),
         std::env::temp_dir(),
         &EncoderOverrides::default(),
+        pixel_arena_core::naming::ConflictPolicy::AutoAppend,
     )
     .err()
     .expect("未知格式应报错")
@@ -58,6 +59,7 @@ fn png_product_roundtrips_losslessly_without_external_encoder() {
             &out_dir,
             &dir,
             &EncoderOverrides::default(),
+            pixel_arena_core::naming::ConflictPolicy::AutoAppend,
         )
         .expect("PNG 产物应生成成功");
     assert!(
@@ -79,6 +81,7 @@ fn png_product_rejects_quality_fail_fast() {
         std::env::temp_dir(),
         std::env::temp_dir(),
         &EncoderOverrides::default(),
+        pixel_arena_core::naming::ConflictPolicy::AutoAppend,
     )
     .err()
     .expect("PNG 不接受质量参数")
@@ -97,6 +100,7 @@ fn lossless_group_rejects_quality_fail_fast() {
             std::env::temp_dir(),
             std::env::temp_dir(),
             &EncoderOverrides::default(),
+            pixel_arena_core::naming::ConflictPolicy::AutoAppend,
         )
         .err()
         .expect("无损格式不应接受质量参数")
@@ -117,6 +121,7 @@ fn lossy_quality_out_of_range_fails_fast() {
                 std::env::temp_dir(),
                 std::env::temp_dir(),
                 &EncoderOverrides::default(),
+                pixel_arena_core::naming::ConflictPolicy::AutoAppend,
             )
             .err()
             .expect("越界质量应报错")

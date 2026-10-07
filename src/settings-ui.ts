@@ -19,6 +19,7 @@ import {
   sourceLabel,
   ENCODER_FIELDS,
   type AboutData,
+  type ConflictPolicyPref,
   type EncoderOverrides,
   type ScoreConcurrencyPref,
   type SettingsData,
@@ -48,6 +49,12 @@ const SCORE_CONCURRENCY_OPTIONS: { value: ScoreConcurrencyPref; label: string }[
   { value: 'half', label: '1/2 核心' },
   { value: 'threequarters', label: '3/4 核心' },
   { value: 'full', label: '全部核心' },
+];
+
+/** 文件名冲突策略两档（T30）：默认自动追加（现状行为），可选写入前弹窗询问。 */
+const CONFLICT_POLICY_OPTIONS: { value: ConflictPolicyPref; label: string }[] = [
+  { value: 'auto', label: '自动追加序号' },
+  { value: 'ask', label: '询问（写入前弹窗）' },
 ];
 
 /** 草稿深拷贝（嵌套的 encoderOverrides 一并复制，避免控件改到已保存设置）。 */
@@ -223,6 +230,30 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   general.append(concurrencyRow);
   syncFns.push(() => {
     concurrencySelect.value = draft.scoreConcurrency;
+  });
+
+  // 产物文件名冲突策略（T30）：auto = 现状行为不变，ask = 写入前弹窗拍板
+  const conflictLabel = document.createElement('span');
+  conflictLabel.className = 'settings-label';
+  conflictLabel.textContent = '文件名冲突';
+  const conflictSelect = document.createElement('select');
+  for (const option of CONFLICT_POLICY_OPTIONS) {
+    const opt = document.createElement('option');
+    opt.value = option.value;
+    opt.textContent = option.label;
+    conflictSelect.append(opt);
+  }
+  conflictSelect.title =
+    '跑分产物与已有文件同名时的处理：自动在文件名后追加 _1/_2；或写入前弹窗询问，由你拍板覆盖还是跳过。';
+  conflictSelect.addEventListener('change', () => {
+    draft.conflictPolicy = conflictSelect.value as ConflictPolicyPref;
+  });
+  const conflictRow = document.createElement('div');
+  conflictRow.className = 'settings-row';
+  conflictRow.append(conflictLabel, conflictSelect);
+  general.append(conflictRow);
+  syncFns.push(() => {
+    conflictSelect.value = draft.conflictPolicy;
   });
 
   // 默认导出目录

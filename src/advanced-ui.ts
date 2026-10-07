@@ -13,6 +13,7 @@
 // 视觉复用设置面板的 overlay/panel 样式（settings-*），本模块只补高级特有布局。
 
 import { invoke } from '@tauri-apps/api/core';
+import { ConflictSession, type ConflictAnswer } from './conflict';
 import {
   addEntry,
   availabilityErrors,
@@ -42,6 +43,12 @@ export interface AdvancedProductDto {
   note: string | null;
 }
 
+/** advanced_encode 回包（T30 冲突询问协议，tag=kind）：done = 产物已生成；
+ * conflict = 「询问」策略下目标名与已有文件冲突、尚未写入任何文件。 */
+export type AdvancedEncodeOutcome =
+  | { kind: 'done'; product: AdvancedProductDto }
+  | { kind: 'conflict'; proposedName: string };
+
 /** 面板对宿主（main.ts）的依赖：文件选择与既有评测轮操作的全部接线点。 */
 export interface AdvancedDeps {
   kind: 'image' | 'video';
@@ -55,12 +62,15 @@ export interface AdvancedDeps {
   /** 新建并激活一轮评测（返回组 id 与新轮 id；命名沿用「评测轮 N」）。 */
   createRound(): Promise<{ groupId: string; roundId: string }>;
   setReference(groupId: string, roundId: string, path: string): Promise<void>;
-  /** 单个编码任务（advanced_encode；编码器解析/参数合并/命名都在核心库）。 */
+  /** 单个编码任务（advanced_encode；编码器解析/参数合并/命名都在核心库）。
+   * conflicts = 本批次的冲突决策会话（T30）：回包为 conflict 时经它取决定，
+   * 「覆盖」带 conflictDecision 重调，「跳过」抛错进失败清单。 */
   encode(
     groupId: string,
     roundId: string,
     referencePath: string,
     entry: AdvancedEntry,
+    conflicts: ConflictSession,
   ): Promise<AdvancedProductDto>;
   /** 产物带 encodingParams 纳入本轮（产物与参数随轮持久化，D19）。 */
   addCandidates(groupId: string, roundId: string, paths: string[], params: string[]): Promise<void>;
@@ -70,6 +80,8 @@ export interface AdvancedDeps {
   setRoundNote(groupId: string, roundId: string, note: string): Promise<void>;
   /** 复用主界面的整轮跑分循环。 */
   scoreRound(): Promise<void>;
+  /** T30：产物名冲突询问弹窗（设置策略为「询问」时被调；返回覆盖/跳过决定）。 */
+  askConflict(fileName: string): Promise<ConflictAnswer>;
   /** 创建完成后的整页重渲染（新轮出现在评测轮栏）。 */
   rerender(): void;
 }
@@ -837,11 +849,19 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
         const failures: string[] = [];
         const products: AdvancedProductDto[] = [];
         const total = session.entries.length;
+        // T30：一次批量创建一个冲突决策会话——「应用到本次全部冲突」只作用于本批
+        const conflicts = new ConflictSession((fileName) => deps.askConflict(fileName));
         for (const [index, entry] of session.entries.entries()) {
           deps.setStatus(`正在生成 第 ${index + 1}/${total} 项（${entryLabel(entry)}）…`);
           try {
             products.push(
-              await deps.encode(created.groupId, created.roundId, session.referencePath ?? '', entry),
+              await deps.encode(
+                created.groupId,
+                created.roundId,
+                session.referencePath ?? '',
+                entry,
+                conflicts,
+              ),
             );
           } catch (err) {
             failures.push(`${entryLabel(entry)}: ${String(err)}`);

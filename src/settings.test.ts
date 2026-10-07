@@ -82,6 +82,7 @@ describe('nextRecentDir（选文件后的最近目录记录，US27/审查修复 
     recordState: true,
     theme: 'dark',
     scoreConcurrency: 'half',
+    conflictPolicy: 'auto',
     defaultExportDir: null,
     recentDir: '/old',
     window: null,
@@ -139,9 +140,10 @@ describe('defaultSettings（重置 = 恢复默认值）', () => {
     expect(defaults.ffmpegPath).toBeNull();
   });
 
-  it('恢复默认并发 / 主题 / 目录与记录状态', () => {
+  it('恢复默认并发 / 主题 / 目录与记录状态，冲突策略默认自动追加（T30）', () => {
     const defaults = defaultSettings();
     expect(defaults.scoreConcurrency).toBe('half');
+    expect(defaults.conflictPolicy).toBe('auto');
     expect(defaults.theme).toBe('dark');
     expect(defaults.defaultExportDir).toBeNull();
     expect(defaults.recentDir).toBeNull();
