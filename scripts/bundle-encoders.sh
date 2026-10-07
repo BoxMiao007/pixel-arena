@@ -49,12 +49,14 @@ extract() {
   for member in "$@"; do
     found="$(find "$stage" -type f -name "$member" | head -n1)"
     if [[ -z "$found" ]]; then
-      echo "工件内未找到成员 $member（$archive）" >&2
+      echo "工件内未找到成员 ${member}（${archive}）" >&2
       exit 1
     fi
     cp "$found" "$dest/$member"
     chmod 755 "$dest/$member"
-    echo "捆绑成员 $member（来自 $(basename "$archive")）"
+    # ${member} 必须带花括号：macOS 自带 bash 3.2 非 UTF-8 aware，
+    # $member 后紧跟全角括号会把高位字节并进变量名报 unbound、捆绑半途而废
+    echo "捆绑成员 ${member}（来自 $(basename "$archive")）"
   done
 }
 
@@ -115,9 +117,18 @@ elif [[ "$os" == "Darwin" ]]; then
     "41f9a3db7b7697aa4f9c83d5e07a1b2e00f28f23676d3f27698eef766689a6b6" "libavif-macOS-artifacts.zip"
   extract "$work/libavif-macOS-artifacts.zip" avifenc avifdec
 else
-  echo "不支持的平台: $os（Linux/macOS 用本脚本，Windows 用 bundle-encoders.ps1）" >&2
+  echo "不支持的平台: ${os}（Linux/macOS 用本脚本，Windows 用 bundle-encoders.ps1）" >&2
   exit 1
 fi
 
 echo "---- 捆绑目录内容 ----"
 ls -la "$dest"
+
+# 自检：五个成员必须齐备，缺一个就让打包失败（不靠产物验证步骤兜底）
+for m in cjpeg cwebp avifenc avifdec cjxl; do
+  if [[ ! -x "$dest/$m" ]]; then
+    echo "捆绑自检失败：缺成员 $m" >&2
+    exit 1
+  fi
+done
+echo "捆绑自检通过：五成员齐备"
