@@ -30,7 +30,14 @@
       <nav class="roundbar" aria-label="评测轮">
         <span id="roundbar-label" class="roundbar-label">评测轮</span>
         <div id="rounds" class="rounds"></div>
-        <button id="add-round" class="add-btn" title="新建评测轮">＋ 新建评测轮</button>
+        <!-- T29-3：单一「新建评测轮」入口，点击展开类型下拉（默认 / 高级），选中即执行 -->
+        <div class="new-group-wrap">
+          <button id="add-round" class="add-btn" title="新建评测轮" aria-haspopup="menu" aria-expanded="false">＋ 新建评测轮</button>
+          <div id="new-round-menu" class="group-menu" role="menu" hidden>
+            <button type="button" class="group-menu-item" role="menuitem" data-kind="default">默认创建</button>
+            <button type="button" class="group-menu-item" role="menuitem" data-kind="advanced">高级创建…</button>
+          </div>
+        </div>
       </nav>
 
       <section id="content" class="content"></section>

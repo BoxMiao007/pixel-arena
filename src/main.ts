@@ -17,6 +17,9 @@ import {
   type SettingsData,
 } from './settings';
 import { openSettingsPanel } from './settings-ui';
+// T29-3 接线点：高级创建（多编码器 + 独立参数 + 命令行预览；面板与纯逻辑在
+// src/advanced-ui.ts / src/advanced.ts）
+import { openAdvancedPanel, type AdvancedProductDto } from './advanced-ui';
 // T11/T22 接线点：一站式跑分升级为两种模式（质量优先拉杆 / 大小优先逼近），
 // 编码格式用胶囊多选；取点全部走核心库（onestop_quality_ladder / onestop_size_search），
 // 清单与生成循环在 src/onestop.ts，本文件只做模式 UI、触发与进度显示
@@ -1429,7 +1432,129 @@ function startRename(
 }
 
 // fb3：$addGroup 的点击处理已上移到「新建跑分组」下拉菜单接线处（toggleGroupMenu）。
-$addRound.addEventListener('click', createRound);
+
+// T29-3：「新建评测轮」同样改为下拉菜单（默认创建 / 高级创建…），交互模式与
+// 「新建跑分组」下拉完全一致：点开选项即执行、点外部或 Esc 关闭。
+const $newRoundMenu = document.querySelector<HTMLDivElement>('#new-round-menu')!;
+
+function closeRoundMenu(): void {
+  $newRoundMenu.hidden = true;
+  $addRound.setAttribute('aria-expanded', 'false');
+}
+
+function toggleRoundMenu(): void {
+  const open = $newRoundMenu.hidden;
+  $newRoundMenu.hidden = !open;
+  $addRound.setAttribute('aria-expanded', String(open));
+}
+
+$addRound.addEventListener('click', (e) => {
+  e.stopPropagation(); // 别触发下面的「点外部关闭」监听
+  toggleRoundMenu();
+});
+
+for (const item of $newRoundMenu.querySelectorAll<HTMLButtonElement>('.group-menu-item')) {
+  item.addEventListener('click', () => {
+    closeRoundMenu();
+    if (item.dataset.kind === 'advanced') {
+      openAdvancedCreation();
+    } else {
+      createRound();
+    }
+  });
+}
+
+document.addEventListener('click', (e) => {
+  if (!$newRoundMenu.hidden && !$newRoundMenu.contains(e.target as Node)) closeRoundMenu();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$newRoundMenu.hidden) closeRoundMenu();
+});
+
+/**
+ * T29-3 接线点：高级创建面板（src/advanced-ui.ts）的宿主依赖。编码流程走
+ * advanced_encode（参数合并在核心库），产物带 encodingParams 纳入新建的评测轮
+ * 后复用整轮跑分循环。会话态在 advanced.ts 按跑分组键控（重启归零，D19）。
+ */
+function openAdvancedCreation(): void {
+  const group = activeGroup();
+  if (!group || scoring) return;
+
+  /** 不吞错误的改动流程（面板要在错误行里汇总报错，与 apply 的状态栏口径并存）。 */
+  const mutate = async (action: () => Promise<Workspace>): Promise<void> => {
+    ws = await action();
+    render();
+    markSaved();
+  };
+
+  void openAdvancedPanel(group.id, {
+    kind: group.kind,
+    pickReference: async () => {
+      const selected = await open({
+        title: '选择原图（高级创建）',
+        multiple: false,
+        filters: [IMAGE_FILTER],
+        defaultPath: defaultOpenPath(),
+      });
+      if (typeof selected !== 'string') return null;
+      notePickedPath(selected);
+      return selected;
+    },
+    isBusy: () => scoring,
+    initialReference: () => activeRound()?.round.referencePath ?? null,
+    setStatus,
+    createRound: async () => {
+      const current = activeGroup();
+      if (!current) throw new Error('跑分组不存在或已被关闭');
+      const beforeIds = new Set(current.rounds.map((r) => r.id));
+      const name = `评测轮 ${current.rounds.length + 1}`;
+      const updated = await invoke<Workspace>('round_create', {
+        groupId: current.id,
+        name,
+      });
+      const createdGroup = updated.groups.find((g) => g.id === current.id);
+      const newRound = createdGroup?.rounds.find((r) => !beforeIds.has(r.id));
+      if (!newRound) throw new Error('无法定位新建的评测轮');
+      await mutate(() => invoke('round_activate', { groupId: current.id, roundId: newRound.id }));
+      return { groupId: current.id, roundId: newRound.id };
+    },
+    setReference: (groupId, roundId, path) =>
+      mutate(() => invoke('round_set_reference', { groupId, roundId, path })),
+    encode: (groupId, roundId, referencePath, entry) =>
+      invoke<AdvancedProductDto>('advanced_encode', {
+        groupId,
+        roundId,
+        referencePath,
+        job: {
+          formatId: entry.encoderId,
+          lossless: entry.lossless,
+          mode: entry.mode,
+          quality: entry.quality,
+          targetBytes: entry.targetBytes,
+          rows: entry.rows.map((row) => ({
+            name: row.name,
+            flag: row.flag,
+            value: row.value.trim() === '' ? null : row.value.trim(),
+            note: row.note === '' ? null : row.note,
+            enabled: row.enabled,
+          })),
+        },
+      }),
+    addCandidates: async (groupId, roundId, paths, params) => {
+      await mutate(() =>
+        invoke('round_add_candidates', { groupId, roundId, paths, encodingParams: params }),
+      );
+    },
+    setNote: async (groupId, roundId, path, note) => {
+      await mutate(() =>
+        invoke('round_set_candidate_note', { groupId, roundId, candidatePath: path, note }),
+      );
+    },
+    scoreRound: () => scoreAllCandidates(),
+    rerender: () => render(),
+  });
+}
 
 // T23：设置面板（挂在 body 的覆盖层，不受内容区整页重渲染影响）
 $openSettings.addEventListener('click', () => {

@@ -199,7 +199,7 @@ fn truncate_utf8(s: &str, budget: usize) -> &str {
 /// - 稳妥字符（字母数字与 `_ - . / : = @ % + ,`）不加引号；
 /// - 其余统一单引号包裹，内部单引号走 `'\''` 三段式（不用双引号形式：`"` 是
 ///   Windows 文件名禁字符，参数段还要当文件名用）。
-fn shell_quote(word: &str) -> String {
+pub(crate) fn shell_quote(word: &str) -> String {
     let plain = !word.is_empty()
         && word
             .chars()

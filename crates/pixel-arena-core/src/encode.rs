@@ -449,7 +449,7 @@ pub fn write_view_proxy(product: impl AsRef<Path>) -> Result<PathBuf, CoreError>
 /// 共用同一份「格式 → 编码器」分派，保证「搜出的大小」与「真实产物」出自同一个
 /// 编码器（探测旁路设置中心覆盖曾是缺陷：搜索结果与最终产物可能不一致）。
 /// 无损 PNG 为进程内编码、无外部二进制，返回 `None`（两个调用方各自处理）。
-fn resolve_onestop_encoder(
+pub(crate) fn resolve_onestop_encoder(
     format: OnestopFormat,
     tools_dir: &Path,
     overrides: &EncoderOverrides,
@@ -772,7 +772,7 @@ fn encode_png_file(decoded: &ImageBuffer<Rgb<u8>, Vec<u8>>, dest: &Path) -> Resu
 }
 
 /// 原图文件名去扩展名（产物命名用）。
-fn file_stem(source: &Path) -> Result<String, CoreError> {
+pub(crate) fn file_stem(source: &Path) -> Result<String, CoreError> {
     source
         .file_stem()
         .and_then(|s| s.to_str())
@@ -784,7 +784,7 @@ fn file_stem(source: &Path) -> Result<String, CoreError> {
 
 /// 把解码像素包成 P6 PPM 临时文件（cjpeg/cwebp/cjxl 的输入）。
 /// 不走 stdin 管道：要同时读子进程的 stderr，大输出下双管道互塞会死锁，临时文件最稳。
-fn write_ppm_temp(decoded: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> Result<tempfile::NamedTempFile, CoreError> {
+pub(crate) fn write_ppm_temp(decoded: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> Result<tempfile::NamedTempFile, CoreError> {
     let (width, height) = decoded.dimensions();
     let ppm = tempfile::NamedTempFile::new().map_err(|err| CoreError::Encode {
         message: format!("无法创建 PPM 临时文件：{err}"),
@@ -805,7 +805,7 @@ fn write_ppm_temp(decoded: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> Result<tempfile::N
 }
 
 /// 把解码像素包成 PNG 临时文件（avifenc 只吃 PNG，不吃 PPM）。
-fn write_png_temp(decoded: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> Result<tempfile::NamedTempFile, CoreError> {
+pub(crate) fn write_png_temp(decoded: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> Result<tempfile::NamedTempFile, CoreError> {
     let png = tempfile::Builder::new()
         .suffix(".png")
         .tempfile()
@@ -817,7 +817,7 @@ fn write_png_temp(decoded: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> Result<tempfile::N
 }
 
 /// 跑编码子进程并统一检查退出码与产物存在性。
-fn run_subprocess(
+pub(crate) fn run_subprocess(
     encoder: &Path,
     mut command: Command,
     label: &str,
@@ -847,7 +847,7 @@ fn run_subprocess(
 }
 
 /// 编码成功：临时产物改名落位（同名覆盖幂等）；失败：清理半截临时文件。
-fn finish_product(
+pub(crate) fn finish_product(
     result: Result<(), CoreError>,
     product_tmp: &Path,
     product: &Path,

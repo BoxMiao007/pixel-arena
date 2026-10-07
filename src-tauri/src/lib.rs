@@ -523,7 +523,6 @@ async fn onestop_size_search(
 
 
 /// IPC 命令：一站式模式按（格式, 质量）逐次生成一份跑分产物（T11 完整编码阶梯）。
-///
 /// 格式标识：jpeg / webp / avif / jxl（有损，quality 必填）与 png / webp-lossless /
 /// jxl-lossless（无损对照组，quality 必须为 null）。产物写到原图所在目录的
 /// 「Pixel Arena」文件夹（T29-1，决策 D5：已存在直接复用，不可写报中文错误，用户可
@@ -583,6 +582,128 @@ async fn onestop_encode(
     })
     .await
     .map_err(|err| format!("编码任务执行失败: {err}"))?
+}
+
+// ---------- 高级创建（T29-3，决策 D10–D14/D19/D20） ----------
+
+/// IPC 命令：高级创建的图片编码器规格清单（质量范围 / 无损能力 / 推荐参数，
+/// 全部来自核心库静态规格表，纯内存同步返回）。
+#[tauri::command]
+fn advanced_image_catalog() -> Vec<pixel_arena_core::advanced::ImageEncoderSpec> {
+    pixel_arena_core::advanced::image_specs()
+}
+
+/// 高级创建的视频编码器目录（advanced_video_catalog 回传）：ffmpeg 可用性 +
+/// `ffmpeg -encoders` 动态枚举的编码器名 + 四条静态映射规格（决策 D12–D14）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdvancedVideoCatalog {
+    pub ffmpeg_available: bool,
+    pub ffmpeg_path: Option<String>,
+    pub ffmpeg_error: Option<String>,
+    pub encoder_names: Vec<String>,
+    pub specs: Vec<pixel_arena_core::advanced::VideoEncoderSpec>,
+}
+
+/// 视频编码器目录的实现体（pub 供不经 Tauri 运行时测试）：ffmpeg 定位与一站式
+/// 同源（设置页外部路径优先，缺省内置安装）；枚举失败不阻塞面板——规格四条照常
+/// 可选，只是表外名称拿不到。
+pub fn advanced_video_catalog_impl(
+    tools_dir: &Path,
+    custom_ffmpeg: Option<&str>,
+) -> AdvancedVideoCatalog {
+    let specs = pixel_arena_core::advanced::video_specs();
+    match ffmpeg_setup::resolve_ffmpeg(tools_dir, custom_ffmpeg, &mut |_| {}) {
+        Ok(ffmpeg) => {
+            let encoder_names = match std::process::Command::new(&ffmpeg)
+                .arg("-hide_banner")
+                .arg("-encoders")
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    pixel_arena_core::advanced::parse_ffmpeg_encoders(&String::from_utf8_lossy(
+                        &output.stdout,
+                    ))
+                }
+                _ => Vec::new(),
+            };
+            AdvancedVideoCatalog {
+                ffmpeg_available: true,
+                ffmpeg_path: Some(ffmpeg.display().to_string()),
+                ffmpeg_error: None,
+                encoder_names,
+                specs,
+            }
+        }
+        Err(err) => AdvancedVideoCatalog {
+            ffmpeg_available: false,
+            ffmpeg_path: None,
+            ffmpeg_error: Some(err),
+            encoder_names: Vec::new(),
+            specs,
+        },
+    }
+}
+
+/// IPC 命令：高级创建的视频编码器目录（决策 D14 动态枚举 + 静态映射表）。枚举要
+/// 跑 `ffmpeg -encoders` 子进程，放阻塞线程池执行。
+#[tauri::command]
+async fn advanced_video_catalog(state: State<'_, AppState>) -> Result<AdvancedVideoCatalog, String> {
+    let tools_dir = state.tools_dir.clone();
+    let custom_ffmpeg = state
+        .settings
+        .lock()
+        .expect("设置锁不应中毒")
+        .ffmpeg_path
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(advanced_video_catalog_impl(tools_dir.as_path(), custom_ffmpeg.as_deref()))
+    })
+    .await
+    .map_err(|err| format!("视频编码器目录任务执行失败: {err}"))?
+}
+
+/// IPC 命令：高级创建按单个编码任务生成一份跑分产物。与 onestop_encode 同一套
+/// 前置校验（轮存在 + 原图一致）与产物输出目录（原图旁「Pixel Arena」文件夹）；
+/// 参数合并 / 同标志冲突在核心库 fail-fast（坏参数不联网不编码）。产物由前端
+/// round_add_candidates（带 encodingParams）纳入本轮。
+#[tauri::command]
+async fn advanced_encode(
+    group_id: String,
+    round_id: String,
+    reference_path: String,
+    job: pixel_arena_core::advanced::AdvancedImageJob,
+    state: State<'_, AppState>,
+) -> Result<pixel_arena_core::advanced::AdvancedProduct, String> {
+    // 前置校验（持锁只做只读检查）：与 onestop_encode 同一口径
+    {
+        let ws = state.workspace.lock().expect("工作区锁不应中毒");
+        let (_, round) = find_round(&ws, &group_id, &round_id)?;
+        if round.reference_path.as_deref() != Some(reference_path.as_str()) {
+            return Err("传入的原图与本轮所选原图不一致，请重新触发高级创建".to_string());
+        }
+    }
+    // T29-1（决策 D5）：产物输出到原图旁的「Pixel Arena」文件夹，编码前建好并探针可写性
+    let product_dir = pixel_arena_core::naming::product_output_dir(Path::new(&reference_path))
+        .map_err(|err| err.to_string())?;
+    pixel_arena_core::naming::ensure_output_dir_writable(&product_dir).map_err(|err| err.to_string())?;
+
+    let tools_dir = state.tools_dir.clone();
+    let overrides = to_core_overrides(
+        &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        pixel_arena_core::advanced::encode_advanced_image(
+            &reference_path,
+            &job,
+            product_dir,
+            tools_dir.as_path(),
+            &overrides,
+        )
+        .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| format!("高级创建编码任务执行失败: {err}"))?
 }
 
 /// IPC 命令：为评测轮选入原视频（路径来自 tauri-plugin-dialog 文件对话框）。T14。
@@ -937,6 +1058,10 @@ pub fn run() {
             // T22：质量优先取点与大小优先逼近搜索
             onestop_quality_ladder,
             onestop_size_search,
+            // T29-3 高级创建：图片/视频编码器目录与按任务编码
+            advanced_image_catalog,
+            advanced_video_catalog,
+            advanced_encode,
             // T14 视频评测轮
             round_set_video_reference,
             round_add_video_candidates,

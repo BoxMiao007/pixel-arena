@@ -1210,3 +1210,267 @@ body {
 .settings-link:hover {
   text-decoration: underline;
 }
+
+/* ---------- T29-3：高级创建面板（复用 settings-overlay/panel 观感） ---------- */
+
+.adv-panel {
+  width: min(760px, calc(100vw - 2rem));
+}
+
+.adv-reference-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.adv-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.adv-entry {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.adv-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.adv-entry-label {
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+  color: var(--muted);
+  min-width: 3.2rem;
+}
+
+.adv-encoder-select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.9rem;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem 0.4rem;
+}
+
+/* 快速参数行：无损开关 + 质量滑块 + 目标大小 + 模式二选一 */
+.adv-quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 0.9rem;
+  font-size: 0.85rem;
+}
+
+.adv-lossless {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.adv-quality {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.adv-quality-slider {
+  width: 11rem;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+.adv-quality-slider:disabled {
+  cursor: default;
+}
+
+.adv-quality-text {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.adv-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.adv-size-input {
+  font: inherit;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.4rem;
+  width: 6rem;
+}
+
+.adv-size-input:disabled,
+.adv-size-unit:disabled {
+  opacity: 0.5;
+}
+
+.adv-size-unit {
+  font: inherit;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.3rem;
+}
+
+.adv-mode {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.adv-mode button {
+  border: none;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.adv-mode button + button {
+  border-left: 1px solid var(--border);
+}
+
+.adv-mode button.active {
+  background: var(--active-bg);
+  color: var(--active-text);
+}
+
+.adv-mode button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* 高级参数折叠栏：默认折叠（无 open 属性即收起） */
+.adv-advanced summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--muted);
+  user-select: none;
+}
+
+.adv-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.adv-param-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.adv-param-row input[type='text'],
+.adv-param-row input[type='number'] {
+  font: inherit;
+  font-size: 0.82rem;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.4rem;
+  min-width: 0;
+}
+
+.adv-param-name {
+  flex: 1.1;
+}
+
+.adv-param-flag {
+  flex: 1.2;
+}
+
+.adv-param-value {
+  flex: 1;
+  font: inherit;
+  font-size: 0.82rem;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.4rem;
+  min-width: 4rem;
+}
+
+.adv-param-note {
+  flex: 1.6;
+}
+
+.adv-add-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.adv-known-select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.82rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.35rem;
+}
+
+/* 命令行预览：等宽、可横向滚动、可复制 */
+.adv-preview-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.adv-cmd {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono, monospace);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.adv-error {
+  margin: 0.5rem 0 0;
+}
+
+.adv-actions {
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
