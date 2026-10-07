@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 安装构建工具
-        run: brew install ninja highway
+        run: brew install ninja highway lcms2
 
       # ---------- MozJPEG 4.1.5 → cjpeg（无 SIMD、静态，与 Linux/Windows 工件同配置） ----------
       - name: 构建 MozJPEG cjpeg
@@ -62,7 +62,7 @@ jobs:
           tar -xzf libjxl.tar.gz
           git clone --depth 1 https://github.com/google/skcms libjxl-0.11.1/third_party/skcms
           cmake -S libjxl-0.11.1 -B libjxl-build -G Ninja \
-            -DBUILD_SHARED_LIBS=OFF -DJPEGXL_ENABLE_TOOLS=ON \
+            -DBUILD_SHARED_LIBS=OFF -DJPEGXL_ENABLE_TOOLS=ON -DJPEGXL_ENABLE_SKCMS=OFF \
             -DJPEGXL_ENABLE_BENCHMARK=OFF -DJPEGXL_ENABLE_EXAMPLES=OFF \
             -DJPEGXL_ENABLE_MANPAGES=OFF -DJPEGXL_ENABLE_JNI=OFF \
             -DJPEGXL_ENABLE_SJPEG=OFF -DJPEGXL_ENABLE_TESTING=OFF -DBUILD_TESTING=OFF -DJPEGXL_ENABLE_OPENEXR=OFF \
