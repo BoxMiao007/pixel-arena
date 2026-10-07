@@ -23,9 +23,11 @@ jobs:
       - uses: actions/checkout@v4
 
       # libaom/libpng/zlib 用 vcpkg 静态 triplet（静态库 + /MT 运行时），
-      # avifenc 链接后为全静态单文件（导入表仅系统 DLL）
+      # avifenc 链接后为全静态单文件（导入表仅系统 DLL）；
+      # libjpeg-turbo 是 apps 的可选依赖（avifenc 读 JPEG 输入用，我们只喂 PNG，
+      # 但缺了 cmake 配置会挂）
       - name: vcpkg 安装静态依赖
-        run: vcpkg install --triplet x64-windows-static zlib libpng aom
+        run: vcpkg install --triplet x64-windows-static zlib libpng libjpeg-turbo aom
 
       - name: 下载 libavif 1.4.2 源码
         run: |
@@ -40,6 +42,7 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x64-windows-static `
             -DBUILD_SHARED_LIBS=OFF `
             -DAVIF_BUILD_APPS=ON `
+            -DAVIF_LIBYUV=OFF `
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release --target avifenc avifdec
 
