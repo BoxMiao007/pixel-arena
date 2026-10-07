@@ -61,8 +61,8 @@ fn png_product_roundtrips_losslessly_without_external_encoder() {
         )
         .expect("PNG 产物应生成成功");
     assert!(
-        product.to_string_lossy().ends_with("photo-ref-png.png"),
-        "产物名规则 <原图名>-png.png: {product:?}"
+        product.to_string_lossy().ends_with("photo-ref_png.png"),
+        "产物名规则 <原图名>_png.png: {product:?}"
     );
     assert_lossless_anchors(
         pixel_arena_core::score_images(data("photo-ref.png"), &product).expect("产物应可解码跑分"),
@@ -153,7 +153,7 @@ fn encode_webp_using_pipes_ppm_and_writes_product() {
     let out = encode_webp_using(&encoder, data("photo-ref.png"), Some(75), &out_dir)
         .expect("编码应成功");
     assert!(
-        out.to_string_lossy().ends_with("photo-ref-q75.webp"),
+        out.to_string_lossy().ends_with("photo-ref_webp_q75.webp"),
         "产物名应含原图名与质量档: {out:?}"
     );
     assert_eq!(std::fs::read(&out).unwrap(), b"FAKEWEBP");
@@ -184,7 +184,7 @@ fn encode_webp_lossless_uses_lossless_flag() {
     let out = encode_webp_using(&encoder, data("photo-ref.png"), None, &out_dir)
         .expect("无损编码应成功");
     assert!(
-        out.to_string_lossy().ends_with("photo-ref-webpll.webp"),
+        out.to_string_lossy().ends_with("photo-ref_webp_lossless.webp"),
         "无损 WebP 产物名规则: {out:?}"
     );
     let args = std::fs::read_to_string(dir.join("fake-cwebp-ll.sh.args")).unwrap();
@@ -211,7 +211,7 @@ fn encode_avif_using_pipes_png_and_writes_product() {
     let out = encode_avif_using(&encoder, data("photo-ref.png"), Some(75), &out_dir)
         .expect("编码应成功");
     assert!(
-        out.to_string_lossy().ends_with("photo-ref-q75.avif"),
+        out.to_string_lossy().ends_with("photo-ref_avif_q75.avif"),
         "产物名应含原图名与质量档: {out:?}"
     );
     assert_eq!(std::fs::read(&out).unwrap(), b"FAKEAVIF");
@@ -247,7 +247,7 @@ fn encode_jxl_using_pipes_ppm_and_writes_product() {
     let out = encode_jxl_using(&encoder, data("photo-ref.png"), Some(75), &out_dir)
         .expect("编码应成功");
     assert!(
-        out.to_string_lossy().ends_with("photo-ref-q75.jxl"),
+        out.to_string_lossy().ends_with("photo-ref_jpegxl_q75.jxl"),
         "产物名应含原图名与质量档: {out:?}"
     );
     assert_eq!(std::fs::read(&out).unwrap(), b"FAKEJXL");
@@ -275,7 +275,7 @@ fn encode_jxl_lossless_uses_q100() {
     let out = encode_jxl_using(&encoder, data("photo-ref.png"), None, &out_dir)
         .expect("无损编码应成功");
     assert!(
-        out.to_string_lossy().ends_with("photo-ref-jxllossless.jxl"),
+        out.to_string_lossy().ends_with("photo-ref_jpegxl_lossless.jxl"),
         "无损 JXL 产物名规则: {out:?}"
     );
     let args = std::fs::read_to_string(dir.join("fake-cjxl-ll.sh.args")).unwrap();
@@ -320,7 +320,7 @@ fn encode_failure_surfaces_exit_code_and_stderr() {
         .expect("非零退出应报错")
         .to_string();
     assert!(message.contains("编码器炸了"), "stderr 应透传: {message}");
-    assert!(!out_dir.join("photo-ref-q60.webp").exists(), "失败不得留下产物文件");
+    assert!(!out_dir.join("photo-ref_webp_q60.webp").exists(), "失败不得留下产物文件");
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -12,13 +12,15 @@
 //
 // 编码链路：image crate 解码原图（与跑分同一套 decode_srgb 口径）→ 按编码器口味写
 // 中间临时文件（cjpeg/cwebp/cjxl 吃 P6 PPM，avifenc 吃 PNG）→ 子进程编码 →
-// 产物写到评测轮工作目录。AVIF/JXL 产物写完自检解码并旁路一份 PNG 代片供查看器显示
-//（WebView 原生解不了这两种格式，见决策 0012）。
+// 产物按 T29-1 命名新格式落盘（crates/pixel-arena-core/src/naming.rs：格式、冲突
+// 去重与输出目录的单一来源）。AVIF/JXL 产物写完自检解码并旁路一份 PNG 代片供查看器
+// 显示（WebView 原生解不了这两种格式，见决策 0012）。
 //
 // CLI（T12）复用 encode_onestop / install_encoder_members，无需新逻辑。
 
 use crate::error::CoreError;
 use crate::metrics::decode_srgb;
+use crate::naming::{product_file_name, unique_file_name, QualitySegment};
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, ImageBuffer, Rgb};
 use sha2::{Digest, Sha256};
@@ -150,6 +152,29 @@ impl OnestopFormat {
             (Self::JxlLossless, None) => "JPEG XL 无损".to_string(),
             // 无损格式不会带质量参数（encode_onestop 已 fail-fast），兜底走显示名
             (format, None) => format.display_name().to_string(),
+        }
+    }
+
+    /// 产物名里的编码器小写短名（需求 9 裁定：无空格短名，JPEG XL → `jpegxl`）。
+    /// 有损与无损对照组同名（无损靠质量段 `lossless` 区分）。
+    pub fn encoder_short_name(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpeg",
+            Self::Webp | Self::WebpLossless => "webp",
+            Self::Avif => "avif",
+            Self::Jxl | Self::JxlLossless => "jpegxl",
+            Self::Png => "png",
+        }
+    }
+
+    /// 产物扩展名（与 display_name/短名同源，命名与编码分派不再各写一份）。
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Webp | Self::WebpLossless => "webp",
+            Self::Avif => "avif",
+            Self::Jxl | Self::JxlLossless => "jxl",
+            Self::Png => "png",
         }
     }
 }
@@ -329,10 +354,11 @@ pub fn jxl_source() -> Result<EncoderSource, CoreError> {
 
 /// 一站式入口：按格式把原图编码为一份跑分产物。
 ///
-/// - 有损格式（jpeg/webp/avif/jxl）：quality 必填 1–100，产物名 `<原图名>-q<质量>.<扩展名>`；
-/// - 无损组（png/webp-lossless/jxl-lossless）：quality 必须为 None，
-///   产物名 `<原图名>-png.png` / `<原图名>-webpll.webp` / `<原图名>-jxllossless.jxl`；
-/// - 编码器需要时自动下载安装（tools_dir）；产物同名覆盖（重复触发幂等）；
+/// - 有损格式（jpeg/webp/avif/jxl）：quality 必填 1–100，产物名
+///   `<原图名>_<编码器小写>_q<质量>.<扩展名>`；
+/// - 无损组（png/webp-lossless/jxl-lossless）：quality 必须为 None，产物名
+///   `<原图名>_png.png` / `<原图名>_webp_lossless.webp` / `<原图名>_jpegxl_lossless.jxl`；
+/// - 编码器需要时自动下载安装（tools_dir）；同名冲突自动追加 `_1/_2` 不覆盖（D9）；
 /// - AVIF/JXL 产物写完自检可解码，并旁路一份 PNG 代片 `<产物>.png` 供查看器显示。
 pub fn encode_onestop(
     source: impl AsRef<Path>,
@@ -523,6 +549,9 @@ pub fn encode_jpeg(
 }
 
 /// 用指定的编码器可执行文件把原图编码为 JPEG（`encode_jpeg` 的可注入缝，测试用）。
+///
+/// 产物名新格式（T29-1，决策 D6–D9）：`<原图名>_jpeg_q<quality>.jpg`，同名冲突
+/// 自动追加 `_1/_2` 不覆盖。
 pub fn encode_jpeg_using(
     encoder: impl AsRef<Path>,
     source: impl AsRef<Path>,
@@ -543,8 +572,12 @@ pub fn encode_jpeg_using(
     })?;
 
     // 先写临时名再重命名：编码中途失败不会留下半截 .jpg 被当成产物
-    let product = output_dir.join(format!("{stem}-q{quality}.jpg"));
-    let product_tmp = output_dir.join(format!("{stem}-q{quality}.jpg.tmp"));
+    let name = unique_file_name(
+        output_dir,
+        &product_file_name(&stem, "jpeg", QualitySegment::Lossy(quality), &[], "jpg")?,
+    )?;
+    let product = output_dir.join(&name);
+    let product_tmp = output_dir.join(format!("{name}.tmp"));
 
     let ppm = write_ppm_temp(&decoded)?;
     let mut command = Command::new(encoder);
@@ -560,7 +593,8 @@ pub fn encode_jpeg_using(
 }
 
 /// 用 cwebp 把原图编码为 WebP：Some(质量) 有损（`-q`），None 无损（`-lossless`）。
-/// cwebp 吃 P6 PPM，输入与跑分同一套解码口径；产物名 `-q<质量>.webp` / `-webpll.webp`。
+/// cwebp 吃 P6 PPM，输入与跑分同一套解码口径；产物名 `<原图名>_webp_q<质量>.webp`
+/// / `<原图名>_webp_lossless.webp`（T29-1 命名新格式，冲突自动 `_1/_2`）。
 pub fn encode_webp_using(
     encoder: impl AsRef<Path>,
     source: impl AsRef<Path>,
@@ -580,12 +614,16 @@ pub fn encode_webp_using(
         message: format!("无法创建产物目录 {}：{err}", output_dir.display()),
     })?;
 
-    let suffix = match quality {
-        Some(q) => format!("q{q}"),
-        None => "webpll".to_string(),
+    let segment = match quality {
+        Some(q) => QualitySegment::Lossy(q),
+        None => QualitySegment::Lossless,
     };
-    let product = output_dir.join(format!("{stem}-{suffix}.webp"));
-    let product_tmp = output_dir.join(format!("{stem}-{suffix}.webp.tmp"));
+    let name = unique_file_name(
+        output_dir,
+        &product_file_name(&stem, "webp", segment, &[], "webp")?,
+    )?;
+    let product = output_dir.join(&name);
+    let product_tmp = output_dir.join(format!("{name}.tmp"));
 
     let mut command = Command::new(encoder);
     command.arg("-quiet");
@@ -601,7 +639,8 @@ pub fn encode_webp_using(
 }
 
 /// 用 avifenc 把原图编码为 AVIF：Some(质量) 有损（`-q`），None 无损（`--lossless`）。
-/// avifenc 只吃 PNG 等容器（不吃 PPM），输入写 PNG 临时文件；产物名 `-q<质量>.avif`。
+/// avifenc 只吃 PNG 等容器（不吃 PPM），输入写 PNG 临时文件；产物名
+/// `<原图名>_avif_q<质量>.avif` / `<原图名>_avif_lossless.avif`（T29-1 命名新格式）。
 pub fn encode_avif_using(
     encoder: impl AsRef<Path>,
     source: impl AsRef<Path>,
@@ -621,10 +660,14 @@ pub fn encode_avif_using(
         message: format!("无法创建产物目录 {}：{err}", output_dir.display()),
     })?;
 
-    let name = match quality {
-        Some(q) => format!("{stem}-q{q}.avif"),
-        None => format!("{stem}-aviflossless.avif"),
+    let segment = match quality {
+        Some(q) => QualitySegment::Lossy(q),
+        None => QualitySegment::Lossless,
     };
+    let name = unique_file_name(
+        output_dir,
+        &product_file_name(&stem, "avif", segment, &[], "avif")?,
+    )?;
     let product = output_dir.join(&name);
     let product_tmp = output_dir.join(format!("{name}.tmp"));
 
@@ -641,8 +684,8 @@ pub fn encode_avif_using(
 }
 
 /// 用 cjxl 把原图编码为 JPEG XL：Some(质量) 有损（`-q <质量>`），None 无损（`-q 100`，
-/// cjxl 的 100 = 数学无损）。cjxl 吃 PNM 家族，输入写 PPM；产物名 `-q<质量>.jxl` /
-/// `-jxllossless.jxl`。
+/// cjxl 的 100 = 数学无损）。cjxl 吃 PNM 家族，输入写 PPM；产物名
+/// `<原图名>_jpegxl_q<质量>.jxl` / `<原图名>_jpegxl_lossless.jxl`（T29-1 命名新格式）。
 pub fn encode_jxl_using(
     encoder: impl AsRef<Path>,
     source: impl AsRef<Path>,
@@ -662,12 +705,16 @@ pub fn encode_jxl_using(
         message: format!("无法创建产物目录 {}：{err}", output_dir.display()),
     })?;
 
-    let (suffix, quality_arg) = match quality {
-        Some(q) => (format!("q{q}"), q.to_string()),
-        None => ("jxllossless".to_string(), "100".to_string()),
+    let (segment, quality_arg) = match quality {
+        Some(q) => (QualitySegment::Lossy(q), q.to_string()),
+        None => (QualitySegment::Lossless, "100".to_string()),
     };
-    let product = output_dir.join(format!("{stem}-{suffix}.jxl"));
-    let product_tmp = output_dir.join(format!("{stem}-{suffix}.jxl.tmp"));
+    let name = unique_file_name(
+        output_dir,
+        &product_file_name(&stem, "jpegxl", segment, &[], "jxl")?,
+    )?;
+    let product = output_dir.join(&name);
+    let product_tmp = output_dir.join(format!("{name}.tmp"));
 
     let ppm = write_ppm_temp(&decoded)?;
     let command = {
@@ -685,7 +732,8 @@ pub fn encode_jxl_using(
     finish_product(result, &product_tmp, &product)
 }
 
-/// 无损 PNG 对照组：进程内 image crate 编码，无外部二进制。产物名 `<原图名>-png.png`。
+/// 无损 PNG 对照组：进程内 image crate 编码，无外部二进制。
+/// 产物名 `<原图名>_png.png`（T29-1 命名新格式，PNG 无质量段，冲突自动 `_1/_2`）。
 fn encode_png_product(
     source: impl AsRef<Path>,
     output_dir: impl AsRef<Path>,
@@ -697,8 +745,12 @@ fn encode_png_product(
     std::fs::create_dir_all(output_dir).map_err(|err| CoreError::Encode {
         message: format!("无法创建产物目录 {}：{err}", output_dir.display()),
     })?;
-    let product = output_dir.join(format!("{stem}-png.png"));
-    let product_tmp = output_dir.join(format!("{stem}-png.png.tmp"));
+    let name = unique_file_name(
+        output_dir,
+        &product_file_name(&stem, "png", QualitySegment::None, &[], "png")?,
+    )?;
+    let product = output_dir.join(&name);
+    let product_tmp = output_dir.join(format!("{name}.tmp"));
     let result = encode_png_file(&decoded, &product_tmp);
     finish_product(result, &product_tmp, &product)
 }

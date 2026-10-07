@@ -5,7 +5,7 @@
 // 每个命令改内存工作区后立即写盘（改动即自动保存），并把最新状态整份返回给前端。
 // T14：视频评测轮（原视频/跑分视频/ffmpeg 跑分）+ ffmpeg 工具下载（见 ffmpeg_setup.rs）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tauri::{ipc::Channel, Manager, State};
@@ -26,8 +26,6 @@ struct AppState {
     path: Arc<PathBuf>,
     /// 编码器安装目录（应用数据目录 tools/，一站式模式首次使用时自动下载）。
     tools_dir: Arc<PathBuf>,
-    /// 评测轮工作目录的父目录（应用数据目录 rounds/，一站式产物按 <rounds>/<轮 id>/ 存放）。
-    rounds_dir: Arc<PathBuf>,
     /// 视频流服务（T15）：Linux 端 WebKitGTK 媒体引擎不走 asset 协议，视频元素从
     /// 127.0.0.1 回环地址拉流（见 video_server.rs）。
     video_stream: Arc<video_server::VideoStreamServer>,
@@ -496,8 +494,9 @@ async fn onestop_size_search(
 /// IPC 命令：一站式模式按（格式, 质量）逐次生成一份跑分产物（T11 完整编码阶梯）。
 ///
 /// 格式标识：jpeg / webp / avif / jxl（有损，quality 必填）与 png / webp-lossless /
-/// jxl-lossless（无损对照组，quality 必须为 null）。产物写到应用数据目录
-/// rounds/<轮 id>/；是否纳入本轮由前端在生成成功后调 round_add_candidates 决定
+/// jxl-lossless（无损对照组，quality 必须为 null）。产物写到原图所在目录的
+/// 「Pixel Arena」文件夹（T29-1，决策 D5：已存在直接复用，不可写报中文错误，用户可
+/// 中止或更换位置）；是否纳入本轮由前端在生成成功后调 round_add_candidates 决定
 ///（某项失败不影响其他项）。下载/安装编码器与编码都可能耗时（首次使用要联网下载），
 /// 放阻塞线程池执行。
 #[tauri::command]
@@ -510,7 +509,7 @@ async fn onestop_encode(
     state: State<'_, AppState>,
 ) -> Result<OnestopProduct, String> {
     // 前置校验（持锁只做只读检查）：评测轮必须还在，且传入原图与本轮所选原图一致，
-    // 防止往已删除的轮目录里写产物或给 A 轮产物挂到 B 轮原图名下。
+    // 防止给 A 轮产物挂到 B 轮原图名下。
     {
         let ws = state.workspace.lock().expect("工作区锁不应中毒");
         let (_, round) = find_round(&ws, &group_id, &round_id)?;
@@ -525,7 +524,12 @@ async fn onestop_encode(
         .map_err(|err| err.to_string())?
         .encoding_params_text(quality);
 
-    let rounds_dir = state.rounds_dir.clone();
+    // T29-1（决策 D5）：产物输出到原图旁的「Pixel Arena」文件夹，不再写应用数据
+    // 隔离目录；目录在编码前建好并探针可写性（不可写当场报错，用户可中止/更换）。
+    let product_dir = pixel_arena_core::naming::product_output_dir(Path::new(&reference_path))
+        .map_err(|err| err.to_string())?;
+    pixel_arena_core::naming::ensure_output_dir_writable(&product_dir).map_err(|err| err.to_string())?;
+
     let tools_dir = state.tools_dir.clone();
     // T23：设置中心的编码器路径覆盖随命令带入（None 项走内置自动安装路径）
     let overrides = to_core_overrides(
@@ -536,7 +540,7 @@ async fn onestop_encode(
             &reference_path,
             &format,
             quality,
-            rounds_dir.join(&round_id),
+            product_dir,
             tools_dir.as_path(),
             &overrides,
         )
@@ -847,7 +851,6 @@ pub fn run() {
                 workspace: Arc::new(Mutex::new(Workspace::new())),
                 path: Arc::new(dir.join("workspace.json")),
                 tools_dir: Arc::new(tools_dir),
-                rounds_dir: Arc::new(dir.join("rounds")),
                 video_stream: Arc::new(video_stream),
                 settings: Arc::new(Mutex::new(settings.clone())),
                 settings_path: Arc::new(dir.join("settings.json")),

@@ -133,7 +133,7 @@ fn run_png对照组_csv_表头与一行_质量列lossless_psnr为inf_退出码0(
     let fields: Vec<&str> = lines[1].split(',').collect();
     assert_eq!(fields.len(), 12, "每行 12 列，实际：{}", lines[1]);
     assert_eq!(fields[0], reference.to_str().unwrap(), "reference 列应原样回显传入路径");
-    assert!(fields[1].ends_with("photo-ref-png.png"), "candidate 列应为产物路径：{}", fields[1]);
+    assert!(fields[1].ends_with("photo-ref_png.png"), "candidate 列应为产物路径：{}", fields[1]);
     assert_eq!(fields[2], "png", "format 列应为规范格式字符串");
     assert_eq!(fields[3], "lossless", "无损组质量列应为 lossless");
     assert_eq!(fields[4], "inf", "无损产物与原图逐位一致，PSNR 应为 inf 哨兵");
@@ -182,7 +182,7 @@ fn run_png对照组_json_质量为null_psnr为inf哨兵_退出码0() {
     assert_eq!(rows.len(), 1, "一个档位应有一个元素");
     let row = &rows[0];
     assert_eq!(row["reference"].as_str(), Some(reference.to_str().unwrap()));
-    assert!(row["candidate"].as_str().unwrap().ends_with("photo-ref-png.png"));
+    assert!(row["candidate"].as_str().unwrap().ends_with("photo-ref_png.png"));
     assert_eq!(row["format"], "png", "format 字段应为规范格式字符串");
     assert!(row["quality"].is_null(), "无损组 JSON quality 应为 null：{row}");
     assert_eq!(row["psnr"], serde_json::json!("inf"), "无损 PSNR 应为 \"inf\" 哨兵");
@@ -222,7 +222,7 @@ fn run_产物目录参数_产物落盘_结束提示路径() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        out.path().join("photo-ref-png.png").exists(),
+        out.path().join("photo-ref_png.png").exists(),
         "产物应落在 --out 指定目录"
     );
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -455,7 +455,7 @@ fn run_已装编码器直接复用_webp有损档_输出真实跑分行_无下载
     let psnr: f64 = fields[4].parse().unwrap_or_else(|_| panic!("psnr 应是数字，实际 {}", fields[4]));
     assert!(psnr.is_finite() && psnr > 0.0, "有损档 PSNR 应为有限正值，实际 {psnr}");
     assert!(
-        out.path().join("photo-ref-q60.webp").exists(),
+        out.path().join("photo-ref_webp_q60.webp").exists(),
         "产物应按 <原图名>-q<质量>.<扩展名> 落在 --out 目录"
     );
 }
@@ -574,12 +574,14 @@ fn run_镜像无工件下载失败_退出码1_中文报错_stdout空() {
 
 #[test]
 fn run_并发参数_png组_并发2与并发1输出逐行一致() {
-    // PNG 无损组离线可跑全链路：image crate 编码确定性保证同一 --out 两次产物逐位
-    // 一致，并发度不同 stdout 必须完全一致（run_parallel 保序 + 闭式指标）
+    // PNG 无损组离线可跑全链路：image crate 编码确定性保证两次产物逐位一致，
+    // 并发度不同 stdout 必须完全一致（run_parallel 保序 + 闭式指标）。
+    // 两次 run 各用自己的 --out：产物同名冲突自动 _1 不覆盖（T29-1 决策 D9），
+    // 共用目录会让 candidate 列路径不同、无法逐行对比。
     let reference = sample("photo-ref.png");
-    let out = tempfile::tempdir().unwrap();
     let run_with = |concurrency: &str| {
-        Command::cargo_bin("pixel-arena-cli")
+        let out = tempfile::tempdir().unwrap();
+        let output = Command::cargo_bin("pixel-arena-cli")
             .unwrap()
             .args([
                 "run",
@@ -594,24 +596,35 @@ fn run_并发参数_png组_并发2与并发1输出逐行一致() {
                 concurrency,
             ])
             .output()
-            .unwrap()
+            .unwrap();
+        (out, output)
     };
 
-    let serial = run_with("1");
+    let (out_serial, serial) = run_with("1");
     assert_eq!(
         serial.status.code(),
         Some(0),
         "stderr：{}",
         String::from_utf8_lossy(&serial.stderr)
     );
-    let parallel = run_with("2");
+    let (out_parallel, parallel) = run_with("2");
     assert_eq!(
         parallel.status.code(),
         Some(0),
         "stderr：{}",
         String::from_utf8_lossy(&parallel.stderr)
     );
-    assert_eq!(serial.stdout, parallel.stdout, "并发度不应改变 run 的输出数据");
+    // candidate 列含各自的临时目录路径，比较前归一成文件名
+    let normalize = |bytes: &[u8], dir: &std::path::Path| -> String {
+        String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .replace(dir.to_str().unwrap(), "")
+    };
+    assert_eq!(
+        normalize(&serial.stdout, out_serial.path()),
+        normalize(&parallel.stdout, out_parallel.path()),
+        "并发度不应改变 run 的输出数据"
+    );
 
     let stderr = String::from_utf8(parallel.stderr).unwrap();
     assert!(
@@ -733,9 +746,9 @@ fn run_默认阶梯_本机已装编码器时_15行_格式质量序与无损锚�
     }
 
     // 产物落盘抽查：三种扩展名代表有损/无损/代片机制
-    assert!(out.path().join("photo-ref-q60.jpg").exists());
-    assert!(out.path().join("photo-ref-q90.avif").exists());
-    assert!(out.path().join("photo-ref-jxllossless.jxl").exists());
+    assert!(out.path().join("photo-ref_jpeg_q60.jpg").exists());
+    assert!(out.path().join("photo-ref_avif_q90.avif").exists());
+    assert!(out.path().join("photo-ref_jpegxl_lossless.jxl").exists());
 
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("（15/15）"), "生成进度应走到最后一项：{stderr}");

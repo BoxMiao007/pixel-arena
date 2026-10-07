@@ -159,3 +159,9 @@
 - 为什么：用户点名解决缺口 2 剩余部分；ffmpeg 三条件（含 libvmaf + 版本化锁定 URL + 可锚定哈希）在 martin-riedl 齐备（evermeet 只有 Intel 且作者明确不做 ARM、osxexperts 无版本化锁定）；编码器官方无工件只能 CI 自建（用户机器性能不足本地构建被排除）；CI runner 原生编译免去交叉复杂度。
 - 放弃了：evermeet.cx（仅 Intel，Apple Silicon 要 Rosetta 转译，作者明确不做 ARM）；osxexperts.net（URL 不版本化）；Homebrew 运行期安装（决策 0010 放弃过的不可控来源）；vcpkg 装 mozjpeg（port 不装 cjpeg 工具）；libjxl 的 skcms（google/skcms 仓库已被清空，clone 不可得，走 lcms2）。
 - 构建配方：macos-artifact workflow（MozJPEG cmake 无 SIMD、libwebp cmake 静态、libjxl cmake 静态 + BUILD_TESTING=OFF + lcms2）；CI 调试迭代踩坑：CMake 4 需 -DCMAKE_POLICY_VERSION_MINIMUM=3.5、libjxl 需 BUILD_TESTING=OFF（GTest）+ highway（brew）+ skcms 替代。
+
+## 0023 · 产物命名新格式与输出目录：原图旁「Pixel Arena」+ `{原图名}_{编码器}_q<值>|lossless`（已确认）
+- 日期：2026-10-07
+- 决策：产物命名全面换成 `{原图名}_{编码器小写}_q<值>|lossless[_{(自定义参数)}].{扩展名}`（例 `image123_avif_q60_(-y 420 --sharpyuv -s 4).avif`，编码器短名无空格如 `jpegxl`，质量段统一 `q<值>`/`lossless`，PNG 无质量段，大小优先写实际质量点）；GUI 产物输出目录从应用数据 `rounds/<轮 id>/` 改为原图所在目录的「Pixel Arena」文件夹（已存在复用，不可写报中文错误可中止/更换）；同名冲突大小写不敏感去重、自动追加 `_1/_2` 不覆盖（GUI 与 CLI 同格式，CLI `--out` 语义不变）。命名纯函数/冲突去重/输出目录助手集中在核心库 `naming.rs`。
+- 为什么：旧名 `-q75` 式不含编码器与自定义参数，跨格式对比与文件管理都要靠猜；产物落在应用数据隔离目录，用户找不到也用不上自己的产物；同名覆盖会悄悄丢历史产物（需求 9/10 + T29 决策 D5–D9）。
+- 放弃了：继续用 `-q<值>` 短名与 `webpll`/`jxllossless` 无损段（与需求 9 的统一格式冲突）；冲突时询问用户（spec 定为设置页后续可改「询问」，当前默认静默加序号）；参数段保证任意值可壳执行（POSIX 引号字符与 Windows 文件名禁字符冲突，`'`/`"` 等字符所在值以文件名合法性优先，空间值等常见场景仍可壳执行）。

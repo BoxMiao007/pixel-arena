@@ -49,7 +49,7 @@ fn encode_jpeg_using_pipes_ppm_and_writes_product() {
     )
     .expect("编码应成功");
     let out_str = out.to_string_lossy().into_owned();
-    assert!(out_str.ends_with("photo-ref-q75.jpg"), "产物名应含原图名与质量档: {out_str}");
+    assert!(out_str.ends_with("photo-ref_jpeg_q75.jpg"), "产物名应含原图名与质量档: {out_str}");
 
     // 产物内容 = 桩编码器写入的字节（我们不做二次加工）
     assert_eq!(std::fs::read(&out).unwrap(), b"FAKEJPEG");
@@ -66,10 +66,11 @@ fn encode_jpeg_using_pipes_ppm_and_writes_product() {
     assert!(header.starts_with("P6\n256 256\n255\n"), "PPM 头应为 P6/256x256/255: {header:?}");
     assert_eq!(ppm.len() - header_end, 256 * 256 * 3, "像素数据应为 8-bit RGB 三通道");
 
-    // 重复编码同档幂等：覆盖旧产物，不报错
+    // 重复编码同档不再覆盖（T29-1 决策 D9）：冲突自动追加 _1，旧产物原样保留
     let again = encode_jpeg_using(&encoder, data("photo-ref.png"), 75, &out_dir).expect("重复编码应成功");
-    assert_eq!(again, out);
+    assert_eq!(again, out_dir.join("photo-ref_jpeg_q75_1.jpg"), "冲突产物应追加 _1");
     assert_eq!(std::fs::read(&again).unwrap(), b"FAKEJPEG");
+    assert!(out.is_file(), "旧产物不得被覆盖");
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -92,7 +93,7 @@ fn encode_failure_surfaces_exit_code_and_stderr_in_chinese_error() {
     assert!(message.contains("编码器炸了"), "stderr 应透传: {message}");
     assert!(message.contains('3'), "退出码应在错误里: {message}");
     // 不留半截产物
-    assert!(!out_dir.join("photo-ref-q60.jpg").exists(), "失败不得留下产物文件");
+    assert!(!out_dir.join("photo-ref_jpeg_q60.jpg").exists(), "失败不得留下产物文件");
     std::fs::remove_dir_all(&dir).ok();
 }
 
