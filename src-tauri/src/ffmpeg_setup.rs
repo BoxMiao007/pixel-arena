@@ -264,7 +264,9 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|err| format!("无法创建临时解压目录: {err}"))?;
     let archive_top = archive_top();
-    let extract = std::process::Command::new("tar")
+    let mut tar = std::process::Command::new("tar");
+    pixel_arena_core::process::apply_no_window(&mut tar);
+    let extract = tar
         .args([
             "-xJf",
             &tarball.display().to_string(),

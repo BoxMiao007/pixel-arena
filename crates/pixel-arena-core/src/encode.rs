@@ -23,6 +23,7 @@
 use crate::error::CoreError;
 use crate::metrics::decode_srgb;
 use crate::naming::{product_file_name, unique_file_name, ConflictPolicy, QualitySegment};
+use crate::process::apply_no_window;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, ImageBuffer, Rgb};
 use std::io::{Read, BufWriter, Write};
@@ -522,6 +523,7 @@ pub fn encode_jpeg_using(
 
     let ppm = write_ppm_temp(&decoded)?;
     let mut command = Command::new(encoder);
+    apply_no_window(&mut command);
     command
         .arg("-quality")
         .arg(quality.to_string())
@@ -567,6 +569,7 @@ pub fn encode_webp_using(
     let product_tmp = output_dir.join(format!("{name}.tmp"));
 
     let mut command = Command::new(encoder);
+    apply_no_window(&mut command);
     command.arg("-quiet");
     match quality {
         Some(q) => command.arg("-q").arg(q.to_string()),
@@ -613,6 +616,7 @@ pub fn encode_avif_using(
     let product_tmp = output_dir.join(format!("{name}.tmp"));
 
     let mut command = Command::new(encoder);
+    apply_no_window(&mut command);
     match quality {
         Some(q) => command.arg("-q").arg(q.to_string()),
         None => command.arg("--lossless"),
@@ -660,6 +664,7 @@ pub fn encode_jxl_using(
     let ppm = write_ppm_temp(&decoded)?;
     let command = {
         let mut command = Command::new(encoder);
+        apply_no_window(&mut command);
         command
             .arg("--quiet")
             .arg(ppm.path())

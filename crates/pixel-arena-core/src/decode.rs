@@ -109,7 +109,9 @@ pub(crate) fn decode_avif(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, 
         .suffix(".png")
         .tempfile()
         .map_err(|err| decode_err(format!("无法创建 AVIF 解码临时文件：{err}")))?;
-    let output = Command::new(&decoder)
+    let mut command = Command::new(&decoder);
+    crate::process::apply_no_window(&mut command);
+    let output = command
         .arg(path)
         .arg(png.path())
         .output()
