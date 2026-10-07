@@ -7,8 +7,9 @@
 //   清空该项回退内置（保存时已被 validate 拦下，这里兜「保存之后文件被删/挪」）；
 // - 未配置：没有覆盖且内置尚未就位（安装包未捆绑该编码器且无旧版 tools/ 安装 /
 //   ffmpeg 待应用内下载）→ unconfigured，hint 指引官方发布页 + 外部路径（决策 0025）；
-// - 内置：随安装包捆绑（resource_dir/encoders/<member>）或已下载安装到 tools/ 且
-//   探测可用 → builtin，版本行展示锁定清单版本号（票面「内置+版本号」）；
+// - 内置：随安装包捆绑（resource_dir/encoders/<member>，便携 zip 裸跑时由启动期
+//   解析回落 exe 同目录 encoders/，见 lib.rs resolve_bundled_encoders_dir）或已下载
+//   安装到 tools/ 且探测可用 → builtin，版本行展示锁定清单版本号（票面「内置+版本号」）；
 //   捆绑与 tools/ 安装同时在时以捆绑优先（与编码链 to_core_overrides 一致）。
 //
 // 版本探测一律运行可执行文件的 -version / --version（票面「检测结果」），不读
