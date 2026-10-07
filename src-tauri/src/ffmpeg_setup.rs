@@ -3,12 +3,14 @@
 // 把锁定版本的静态构建下载到应用数据目录 tools/ 下，校验 sha256 后解压备用；
 // tools/ 里已有 ffmpeg 则直接复用。决策依据与放弃项见 docs/decisions.md 0010、0014。
 //
-// 锁定来源（按平台，T16 定稿）：
+// 锁定来源（按平台，T16 定稿；macOS 为缺口 2 补齐）：
 // - Linux：johnvansickle.com 的版本化 release（URL 不会随更新变动），官方公告的 md5
 //   已交叉核对一致；
 // - Windows：BtbN FFmpeg-Builds 的版本化 autobuild tag（GitHub release 资产不可变，
 //   构建配置 --enable-libvmaf 已核对，全静态单文件仅依赖系统 DLL）；
-// - macOS：暂无查证过含 libvmaf 的稳定版本化来源，维持中文提示（分发随后续票落实）。
+// - macOS：ffmpeg.martin-riedl.de 的版本化 release（时间戳+版本锁定目录，URL 不可变），
+//   构建配置 --enable-libvmaf（libvmaf 3.2.0）已核对，官方 .sha256 与下载实测一致，
+//   arm64 原生（Apple Silicon）；ffmpeg 与 ffprobe 是两个独立 zip，分开下载校验。
 // 代码内锁定 sha256，不匹配即删除重下。
 
 use std::path::{Path, PathBuf};
@@ -18,6 +20,11 @@ use std::path::{Path, PathBuf};
 const FFMPEG_URL: &str = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz";
 #[cfg(target_os = "windows")]
 const FFMPEG_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2024-11-30-13-12/ffmpeg-n7.1-39-g64e2864cb9-win64-gpl-7.1.zip";
+#[cfg(target_os = "macos")]
+const FFMPEG_URL: &str = "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip";
+/// macOS 的 ffprobe 是独立 zip（与 ffmpeg 同版本同目录，分开下载校验）。
+#[cfg(target_os = "macos")]
+const FFPROBE_URL: &str = "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffprobe.zip";
 
 /// 锁定构建压缩包的 sha256（下载后全量校验，按平台）。
 #[cfg(target_os = "linux")]
@@ -26,8 +33,15 @@ const FFMPEG_TARBALL_SHA256: &str =
 #[cfg(target_os = "windows")]
 const FFMPEG_TARBALL_SHA256: &str =
     "f72c2f46c3646a5d4b457d5b7001ff96dc185111455f7866a0456f21e430555b";
+#[cfg(target_os = "macos")]
+const FFMPEG_TARBALL_SHA256: &str =
+    "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924";
+/// macOS ffprobe zip 的 sha256（官方 .sha256 文件与下载实测一致）。
+#[cfg(target_os = "macos")]
+const FFPROBE_TARBALL_SHA256: &str =
+    "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6";
 
-/// 压缩包内顶层目录名（Linux 解压时据此定位二进制；Windows 走核心库 zip 解包无需此值）。
+/// 压缩包内顶层目录名（Linux 解压时据此定位二进制；Windows/macOS 走核心库 zip 解包无需此值）。
 #[cfg(target_os = "linux")]
 const ARCHIVE_TOP: &str = "ffmpeg-7.0.2-amd64-static";
 
@@ -36,6 +50,8 @@ const ARCHIVE_TOP: &str = "ffmpeg-7.0.2-amd64-static";
 const FFMPEG_SOURCE_NOTE: &str = "ffmpeg 7.0.2 amd64 static (johnvansickle.com, GPL, 含 libvmaf) + ffprobe";
 #[cfg(target_os = "windows")]
 const FFMPEG_SOURCE_NOTE: &str = "ffmpeg 7.1 win64-gpl static (BtbN FFmpeg-Builds autobuild-2024-11-30-13-12, 含 libvmaf) + ffprobe";
+#[cfg(target_os = "macos")]
+const FFMPEG_SOURCE_NOTE: &str = "ffmpeg 9.0.2 macOS arm64 static (ffmpeg.martin-riedl.de, GPL, 含 libvmaf 3.2.0) + ffprobe";
 
 /// ffmpeg 可执行文件的落地路径（tools_dir/ffmpeg，Windows 为 ffmpeg.exe）。
 pub fn ffmpeg_path(tools_dir: &Path) -> PathBuf {
@@ -85,7 +101,7 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
 
     // 1. 下载到 tools/ 下的临时文件（同盘保证后续操作不跨设备）
     let tarball = tools_dir.join("ffmpeg.tar.xz.tmp");
-    let result = download_tarball(&tarball, progress);
+    let result = download_to_file(FFMPEG_URL, &tarball, progress);
     if let Err(err) = result {
         std::fs::remove_file(&tarball).ok();
         return Err(err);
@@ -176,7 +192,7 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
 
     // 1. 下载 zip 到 tools/ 下的临时文件（同盘保证后续操作不跨设备）
     let zip_path = tools_dir.join("ffmpeg.zip.tmp");
-    let result = download_tarball(&zip_path, progress);
+    let result = download_to_file(FFMPEG_URL, &zip_path, progress);
     if let Err(err) = result {
         std::fs::remove_file(&zip_path).ok();
         return Err(err);
@@ -247,25 +263,115 @@ fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf
 }
 
 #[cfg(target_os = "macos")]
-fn install(_tools_dir: &Path, _progress: &mut dyn FnMut(String)) -> Result<PathBuf, String> {
-    // macOS 暂无查证过「含 libvmaf + 版本化锁定 URL + 可锚定哈希」三条件齐备的稳定来源
-    //（决策 0014）：-evermeet 构建不含 libvmaf，osxexperts 无版本化锁定。分发随后续票落实。
-    Err(
-        "macOS 侧 ffmpeg 分发随后续票落实；当前请手动把含 libvmaf 的 ffmpeg（及 ffprobe）放到应用数据目录的 tools/ 文件夹里"
-            .to_string(),
-    )
+fn install(tools_dir: &Path, progress: &mut dyn FnMut(String)) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(tools_dir).map_err(|err| format!("无法创建工具目录: {err}"))?;
+
+    // macOS 的 ffmpeg 与 ffprobe 是两个独立 zip（同版本同目录）：各下载、各校验、各安置。
+    // 半途失败不污染 tools/（先暂存目录、成功才搬入）。
+    let staging = tools_dir.join(format!(".ffmpeg-install-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|err| format!("无法创建临时解压目录: {err}"))?;
+
+    let mut cleanup = || {
+        std::fs::remove_dir_all(&staging).ok();
+    };
+    let install_one = |url: &str,
+                       sha256: &str,
+                       member: &str,
+                       zip_name: &str,
+                       progress: &mut dyn FnMut(String)|
+     -> Result<(), String> {
+        // 1. 下载到 tools/ 下的临时文件（同盘保证后续操作不跨设备）
+        let zip_path = tools_dir.join(format!("{zip_name}.tmp"));
+        if let Err(err) = download_to_file(url, &zip_path, progress) {
+            std::fs::remove_file(&zip_path).ok();
+            return Err(err);
+        }
+
+        // 2. 全量 sha256 校验（供应链底线：不匹配即删除，绝不解压）
+        progress("正在校验 ffmpeg 完整性…".to_string());
+        let actual = pixel_arena_core::net::sha256_file(&zip_path).map_err(|err| {
+            std::fs::remove_file(&zip_path).ok();
+            format!("读取下载文件失败: {err}")
+        })?;
+        if actual != sha256 {
+            std::fs::remove_file(&zip_path).ok();
+            return Err(
+                "下载的 ffmpeg 校验失败（sha256 不匹配），已删除。可能是网络劫持或上游构建变动，请重试或反馈"
+                    .to_string(),
+            );
+        }
+
+        // 3. 解出二进制到暂存目录（martin-riedl 包内是裸二进制 ffmpeg/ffprobe，无 .exe）
+        progress("正在解压 ffmpeg…".to_string());
+        let archive = std::fs::read(&zip_path)
+            .map_err(|err| format!("读取下载文件失败: {err}"))?;
+        let extract = pixel_arena_core::encode::extract_archive_members(
+            &archive,
+            &[member],
+            &staging,
+        )
+        .map_err(|err| format!("解压 ffmpeg 失败: {err}"));
+        if let Err(err) = extract {
+            std::fs::remove_file(&zip_path).ok();
+            return Err(err);
+        }
+        std::fs::remove_file(&zip_path).ok();
+        Ok(())
+    };
+
+    if let Err(err) = install_one(FFMPEG_URL, FFMPEG_TARBALL_SHA256, "ffmpeg", "ffmpeg.zip", progress)
+        .and_then(|_| install_one(FFPROBE_URL, FFPROBE_TARBALL_SHA256, "ffprobe", "ffprobe.zip", progress))
+    {
+        cleanup();
+        return Err(err);
+    }
+
+    // 4. 安置 + 明确可执行权限（zip 解包已统一补执行权限，再补一道防呆）
+    let target = ffmpeg_path(tools_dir);
+    let probe_target = ffprobe_path(tools_dir);
+    let place = |staged: &Path, dest: &Path| -> Result<(), String> {
+        std::fs::remove_file(dest).ok();
+        std::fs::rename(staged, dest)
+            .map_err(|err| format!("无法安置 ffmpeg 工具 {}：{err}", dest.display()))
+    };
+    if let Err(err) = place(&staging.join("ffmpeg"), &target)
+        .and_then(|_| place(&staging.join("ffprobe"), &probe_target))
+    {
+        cleanup();
+        return Err(err);
+    }
+    #[allow(unused_mut)]
+    for binary in [&target, &probe_target] {
+        if let Ok(mut perms) = std::fs::metadata(binary).map(|m| m.permissions()) {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(binary, perms);
+        }
+    }
+    cleanup();
+
+    // 5. 记录来源，便于排查与将来升级版本
+    let _ = std::fs::write(
+        tools_dir.join("ffmpeg-source.txt"),
+        format!("{FFMPEG_SOURCE_NOTE}\nurl: {FFMPEG_URL}\nsha256: {FFMPEG_TARBALL_SHA256}\n安装时间: {}\n",
+            chrono_like_now()),
+    );
+
+    progress("ffmpeg 就绪".to_string());
+    Ok(target)
 }
 
 /// 下载压缩包到 tarball 路径，边下边把「已下载 MB / 总 MB」报给 progress（每约 2MB 一次）。
 /// 网络与代理处理下沉核心库（net::download，与编码器安装同一套口径）：显式复用系统
-/// 代理环境变量、512MB 防御性大小上限（Linux 静态构建约 40MB、Windows 约 150MB）。
-#[cfg(not(target_os = "macos"))]
-fn download_tarball(tarball: &Path, progress: &mut dyn FnMut(String)) -> Result<(), String> {
+/// 代理环境变量、512MB 防御性大小上限（Linux 静态构建约 40MB、Windows 约 150MB、
+/// macOS 两个 zip 各约 28MB）。
+fn download_to_file(url: &str, tarball: &Path, progress: &mut dyn FnMut(String)) -> Result<(), String> {
     let mut file = std::fs::File::create(tarball)
         .map_err(|err| format!("无法创建下载临时文件: {err}"))?;
     let mut last_reported: u64 = 0;
     pixel_arena_core::net::download(
-        FFMPEG_URL,
+        url,
         512 * 1024 * 1024,
         &mut |downloaded, total| {
             // 每下载约 2MB 报一次进度，避免事件刷屏
@@ -288,11 +394,10 @@ fn download_tarball(tarball: &Path, progress: &mut dyn FnMut(String)) -> Result<
         &mut |chunk| std::io::Write::write_all(&mut file, chunk),
     )
     .map(|_| ())
-    .map_err(|reason| format!("下载 ffmpeg 失败（{FFMPEG_URL}）: {reason}"))
+    .map_err(|reason| format!("下载 ffmpeg 失败（{url}）: {reason}"))
 }
 
 /// 本地时间戳（仅用于来源记录，格式宽松即可）。
-#[cfg(not(target_os = "macos"))]
 fn chrono_like_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
