@@ -220,7 +220,8 @@ pub fn webp_source() -> Result<EncoderSource, CoreError> {
     }
 }
 
-/// 当前平台的 libavif（avifenc + avifdec）来源清单：本机全静态自建（libaom 后端，无 SIMD）。
+/// 当前平台的 libavif（avifenc + avifdec）来源清单：Linux 本机全静态自建（libaom 后端），
+/// Windows 直连官方 Release 工件（T28）。
 pub fn avif_source() -> Result<EncoderSource, CoreError> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => Ok(EncoderSource {
@@ -232,6 +233,20 @@ pub fn avif_source() -> Result<EncoderSource, CoreError> {
                 .to_string(),
             sha256: "629b790e08fc93d4e4ce122242662c7b777446517c997ebfc380ca3a28d5668e".to_string(),
             member: "avifenc".to_string(),
+        }),
+        ("windows", "x86_64") => Ok(EncoderSource {
+            name: "libavif".to_string(),
+            version: "1.4.2".to_string(),
+            // 官方 v1.4.2 Release 开始附带预编译工件（T28 核实，此前「官方只发源码」的
+            // 记录过时）：windows-artifacts.zip 内含 avifenc/avifdec/avifgainmaputil，
+            // libaom 3.14.1 + libpng + zlib 全静态链接（导入表仅 KERNEL32/VCRUNTIME140/UCRT，
+            // 核对过；本机试跑 --version 正常）。哈希锚定官方 zip（版本化 tag 不可变）。
+            // 用户机器性能不足，本地构建被明确排除；CI 自建方案（avif-artifact workflow）
+            // 因官方工件可用而删除。
+            url: "https://github.com/AOMediaCodec/libavif/releases/download/v1.4.2/windows-artifacts.zip"
+                .to_string(),
+            sha256: "cb2d9fea43dcbab1d0707e3b37eb7b08070ad2fb60a2c188c39ec12382c0484a".to_string(),
+            member: "avifenc.exe".to_string(),
         }),
         (_os, _arch) => Err(unsupported_platform("libavif")),
     }
@@ -388,7 +403,15 @@ fn resolve_onestop_encoder(
             // libavif 工件一次下载解出 avifenc 与 avifdec（后者供产物解码/代片用；
             // 探测路径装上 avifdec 无额外下载成本，换来两侧分派完全一致）
             Box::new(|| {
-                Ok(install_encoder_members(&avif_source()?, tools_dir, &["avifenc", "avifdec"])?.remove(0))
+                // libavif 工件一次下载解出 avifenc 与 avifdec（后者供产物解码/代片用；
+                // 探测路径装上 avifdec 无额外下载成本，换来两侧分派完全一致）。
+                // Windows 官方工件包内成员带 .exe（T28）
+                let members: [&str; 2] = if std::env::consts::OS == "windows" {
+                    ["avifenc.exe", "avifdec.exe"]
+                } else {
+                    ["avifenc", "avifdec"]
+                };
+                Ok(install_encoder_members(&avif_source()?, tools_dir, &members)?.remove(0))
             }),
         ),
         OnestopFormat::Jxl | OnestopFormat::JxlLossless => (

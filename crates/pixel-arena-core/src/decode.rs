@@ -136,11 +136,13 @@ pub(crate) fn decode_avif(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, 
 /// GUI 在启动时把它注入 PIXEL_ARENA_AVIFDEC，之后安装完成即可直接解码。
 pub fn avif_decoder_path(tools_dir: impl AsRef<Path>) -> Option<PathBuf> {
     let source = super::encode::avif_source().ok()?;
+    // Windows 官方工件包内成员带 .exe（T28）
+    let decoder = if std::env::consts::OS == "windows" { "avifdec.exe" } else { "avifdec" };
     Some(
         tools_dir
             .as_ref()
             .join(&source.name)
             .join(&source.version)
-            .join("avifdec"),
+            .join(decoder),
     )
 }
