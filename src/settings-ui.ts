@@ -172,9 +172,10 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   generalTitle.textContent = '常规';
   general.append(generalTitle);
 
-  // 记录状态开关
+  // 记录状态开关（滑动开关外观见 style.css settings-switch，状态语义仍是原生 checkbox）
   const recordCheck = document.createElement('input');
   recordCheck.type = 'checkbox';
+  recordCheck.className = 'settings-switch';
   const recordWrap = document.createElement('label');
   recordWrap.className = 'settings-check';
   const recordText = document.createElement('span');
@@ -405,21 +406,27 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     badge.className = 'settings-badge';
     const lineHint = document.createElement('span');
     lineHint.className = 'settings-status-hint';
-    // 「官方发布页」链接（决策 0025）：地址来自后端锁定清单（release_page 单一数据源，
-    // 与核心库缺失报错、关于页库链接同源），渲染前过 isSafeLibraryUrl 白名单——
-    // 非 https 时不设 href（<a> 无 href 即纯文本，不产生可点击链接）。
+    // 「官方发布页」图标按钮（决策 0025；v0.1.4 反馈由文本链接改图标）：地址来自后端
+    // 锁定清单（release_page 单一数据源，与核心库缺失报错、关于页库链接同源），渲染前过
+    // isSafeLibraryUrl 白名单——非 https 时不设 href 并转禁用态。target="_blank" 是
+    // opener 插件拦截的前提：点击经插件转系统浏览器，不会在应用窗口内导航。
     const releaseLink = document.createElement('a');
-    releaseLink.className = 'settings-link';
-    releaseLink.textContent = '官方发布页';
+    releaseLink.className = 'settings-icon-btn';
     releaseLink.title = '从编码器官方发布页下载可执行文件，保存后在下方指定其路径';
+    releaseLink.setAttribute('aria-label', '官方发布页');
+    releaseLink.target = '_blank';
+    releaseLink.rel = 'noopener noreferrer';
+    releaseLink.append(externalLinkIcon());
     statusLine.append(badge, lineHint, releaseLink);
     statusRenderers.push(() => {
       renderStatus(statuses.get(field.key), badge, lineHint);
       const href = statuses.has(field.key) ? releasePageHref(statuses.get(field.key)!) : null;
       if (href) {
         releaseLink.href = href;
+        releaseLink.removeAttribute('aria-disabled');
       } else {
         releaseLink.removeAttribute('href');
+        releaseLink.setAttribute('aria-disabled', 'true');
       }
     });
 
@@ -557,6 +564,9 @@ function renderAbout(info: AboutData): Node[] {
     repoLink.href = info.repoUrl;
     repoLink.textContent = '仓库主页';
     repoLink.className = 'settings-link';
+    // target="_blank"：与发布页图标按钮同理，经 opener 插件转系统浏览器
+    repoLink.target = '_blank';
+    repoLink.rel = 'noopener noreferrer';
     meta.append(licenseLabel, document.createTextNode(' · '), repoLink);
   } else {
     meta.append(licenseLabel, document.createTextNode(' · 仓库主页'));
@@ -576,6 +586,8 @@ function renderAbout(info: AboutData): Node[] {
       link.href = lib.url;
       link.textContent = lib.name;
       link.className = 'settings-link';
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
       item.append(link);
     } else {
       item.append(document.createTextNode(lib.name));
@@ -585,4 +597,30 @@ function renderAbout(info: AboutData): Node[] {
   }
   nodes.push(list);
   return nodes;
+}
+
+// 「官方发布页」图标按钮的内联 SVG（feather external-link 造型）。项目零图标依赖，
+// 手绘 24×24 描边图形，描边色随 currentColor 走主题变量
+function externalLinkIcon(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '13');
+  svg.setAttribute('height', '13');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const d of [
+    'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6',
+    'M15 3h6v6',
+    'M10 14L21 3',
+  ]) {
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
 }

@@ -1,13 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口默认能力：应用自定义 IPC 命令默认放行，核心 API 用 core:default 最小集，文件对话框放行「打开」与「保存」（保存供报告导出，T13）",
+  "description": "主窗口默认能力：应用自定义 IPC 命令默认放行，核心 API 用 core:default 最小集，文件对话框放行「打开」与「保存」（保存供报告导出，T13），外链经 opener 插件转系统浏览器（open-url 仅默认 URL 范围 https/http/mailto/tel）",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
   ]
 }

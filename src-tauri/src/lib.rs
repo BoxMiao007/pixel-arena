@@ -1233,6 +1233,10 @@ fn record_window_size(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 外链（官方发布页图标按钮、关于页链接）经 opener 插件转系统浏览器：
+        // 前端 <a target="_blank"> 由插件注入脚本拦截走 IPC；不装插件时点击会在
+        // 应用窗口内直接导航走，整个界面被外站页面替换
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // 工作区文件与外部工具放应用数据目录：<系统数据目录>/<identifier>/
             let dir = app

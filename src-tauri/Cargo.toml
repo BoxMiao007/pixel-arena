@@ -25,3 +25,4 @@ serde_json = "1"
 # 必须放 [dependencies]（曾两度被挪去 [dev-dependencies]，见 T22/T23 笔记与审查修复 A2）；
 # settings.rs 单测（T23）随 [dependencies] 同样可见
 tempfile = "3"
+tauri-plugin-opener = "2.7.0"
