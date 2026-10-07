@@ -205,6 +205,73 @@ const $roundbarLabel = document.querySelector<HTMLSpanElement>('#roundbar-label'
 const $addRound = document.querySelector<HTMLButtonElement>('#add-round')!;
 // T23 接线点：标题栏「设置」按钮
 const $openSettings = document.querySelector<HTMLButtonElement>('#open-settings')!;
+// T29-4 接线点：FFmpeg 未就绪时的全局警告条（index.html 静态元素，render 不重建）
+const $ffmpegWarning = document.querySelector<HTMLDivElement>('#ffmpeg-warning')!;
+
+// ---------- FFmpeg 检测（T29-4） ----------
+// 后端 ffmpeg_check（ffmpeg -version，5s 超时）的结果：主界面警告条与创建入口
+// 警告共用。boot 时异步获取（不阻塞首屏）；设置面板关闭后重查，改动即刷新。
+
+/** 与后端 FFmpegDetection serde camelCase 一一对应。 */
+interface FFmpegCheck {
+  available: boolean;
+  path: string | null;
+  version: string | null;
+  error: string | null;
+}
+
+let ffmpegCheck: FFmpegCheck | null = null;
+
+/** 重查 FFmpeg 就绪状态并刷新警告条与创建入口警告（boot 与设置面板关闭后调用）。 */
+async function refreshFfmpegCheck(): Promise<void> {
+  try {
+    ffmpegCheck = await invoke<FFmpegCheck>('ffmpeg_check');
+  } catch (err) {
+    // 检测 IPC 本身失败也按「未就绪」警示，但不编造后端原因
+    ffmpegCheck = { available: false, path: null, version: null, error: null };
+    console.warn('FFmpeg 检测失败:', err);
+  }
+  renderFfmpegWarning();
+  updateEntryWarnings();
+}
+
+/** FFmpeg 未就绪时显示主界面警告条（含原因与「前往设置」），就绪则隐藏。 */
+function renderFfmpegWarning(): void {
+  if (!ffmpegCheck || ffmpegCheck.available) {
+    $ffmpegWarning.hidden = true;
+    $ffmpegWarning.replaceChildren();
+    return;
+  }
+  const message = document.createElement('span');
+  message.className = 'ffmpeg-warning-text';
+  message.textContent = ffmpegCheck.error ?? 'FFmpeg 未就绪：视频跑分前请先在设置页处理。';
+  const goSettings = document.createElement('button');
+  goSettings.type = 'button';
+  goSettings.className = 'add-btn ffmpeg-warning-btn';
+  goSettings.textContent = '前往设置';
+  goSettings.title = '打开设置页的 FFmpeg（视频跑分）区：应用内下载或指定本机路径';
+  goSettings.addEventListener('click', () => openSettings());
+  $ffmpegWarning.replaceChildren(message, goSettings);
+  $ffmpegWarning.hidden = false;
+}
+
+/** 创建入口的悬浮警告：新建跑分组的「视频跑分组」项 + 视频组下的「新建评测轮」。
+ * 只改 title 不禁用——图片流程不受影响，视频流程进入后另有明确报错指引。 */
+function updateEntryWarnings(): void {
+  const unready = ffmpegCheck !== null && !ffmpegCheck.available;
+  const videoItem = $newGroupMenu.querySelector<HTMLButtonElement>('[data-kind="video"]');
+  if (videoItem) {
+    videoItem.title = unready
+      ? '视频跑分组（提示：FFmpeg 未就绪，创建后请先到设置页下载或指定 ffmpeg 再跑分）'
+      : '';
+  }
+  const group = activeGroup();
+  if (group && group.kind === 'video' && unready) {
+    $addRound.title = '新建评测轮（提示：FFmpeg 未就绪，跑分前请先到设置页处理）';
+  } else if (group) {
+    $addRound.title = '新建评测轮';
+  }
+}
 
 function activeGroup(): Group | null {
   if (!ws || !ws.activeGroupId) return null;
@@ -238,7 +305,12 @@ function createGroup(kind: GroupKind): void {
   const name = `跑分组 ${ws ? ws.groups.length + 1 : 1}`;
   // fb3（issue #28）：类型来自下拉菜单点选的项（image / video），
   // 后端创建后不可更改，且自动附带一个同类型评测轮（核心库 create_group_with_round）
-  void apply(() => invoke('group_create', { name, kind }));
+  void apply(() => invoke('group_create', { name, kind })).then(() => {
+    // T29-4：创建视频组的入口警告——FFmpeg 未就绪时明确提示（不阻塞创建本身）
+    if (kind === 'video' && ffmpegCheck && !ffmpegCheck.available) {
+      setStatus('提示：FFmpeg 未就绪，视频跑分前请先在设置页「应用内下载」或指定路径', true);
+    }
+  });
 }
 
 // fb3（issue #28）：「新建跑分组」下拉菜单的开合与点选。
@@ -883,6 +955,9 @@ async function boot(): Promise<void> {
     setStatus(`恢复工作区失败: ${String(err)}`, true);
     render(); // 用空状态渲染，保证界面可用
   }
+  // T29-4：FFmpeg 检测（后台跑 ffmpeg -version，5s 超时）——不阻塞首屏，
+  // 结果回来后决定警告条与创建入口警告的显隐
+  void refreshFfmpegCheck();
 }
 
 // ---------- 渲染 ----------
@@ -891,6 +966,8 @@ function render(): void {
   renderTabs();
   renderRounds();
   renderContent();
+  // T29-4：创建入口警告随激活组类型刷新（视频组下提示 FFmpeg 状态）
+  updateEntryWarnings();
 }
 
 function renderTabs(): void {
@@ -1576,13 +1653,17 @@ function openAdvancedCreation(): void {
 }
 
 // T23：设置面板（挂在 body 的覆盖层，不受内容区整页重渲染影响）
-$openSettings.addEventListener('click', () => {
+// T29-4：面板关闭后重查 FFmpeg——设置页下载/清空路径的操作立即反映到主界面警告条
+function openSettings(): void {
   if (!settings) return;
   openSettingsPanel(settings, {
     save: saveSettings,
     // 主题变化需要重渲染：画布底色等从 CSS 变量/新挂载立即生效
     onApplied: () => render(),
+    onClosed: () => void refreshFfmpegCheck(),
   });
-});
+}
+
+$openSettings.addEventListener('click', openSettings);
 
 void boot();

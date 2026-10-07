@@ -32,6 +32,8 @@ export interface SettingsUiHost {
   save(next: SettingsData): Promise<SettingsData>;
   /** 保存成功后的界面刷新（主题变化需要重渲染画布）。 */
   onApplied(): void;
+  /** 面板关闭后的回调（T29-4：主界面据其重查 FFmpeg 检测、刷新警告条）。 */
+  onClosed?(): void;
 }
 
 const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
@@ -70,7 +72,11 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   const errorLine = document.createElement('p');
   errorLine.className = 'settings-error';
 
-  const close = (): void => overlay.remove();
+  // 关闭即销毁；T29-4：关闭后通知宿主（主界面重查 FFmpeg、刷新警告条）
+  const close = (): void => {
+    overlay.remove();
+    host.onClosed?.();
+  };
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close();
   });
@@ -268,8 +274,8 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   const ffmpegHint = document.createElement('p');
   ffmpegHint.className = 'settings-hint';
   ffmpegHint.textContent =
-    '视频跑分依赖含 libvmaf 的 ffmpeg。留空使用应用内下载的内置版本；也可手动指定本机已有' +
-    '的可执行文件（保存时校验存在、可执行且版本可读）。';
+    '视频跑分依赖含 libvmaf 的 ffmpeg，应用不自动下载。留空使用内置版本（需先在下方「应用内下载」安装）；' +
+    '也可手动指定本机已有的可执行文件（保存时校验存在、可执行且版本可读）。';
   ffmpegSection.append(ffmpegTitle, ffmpegHint);
 
   const ffmpegStatusLine = document.createElement('div');
@@ -314,7 +320,7 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     ffmpegInput.title = '';
     draft.ffmpegPath = null;
   });
-  // 应用内下载（决策 D1/D4：下载入口仅设置页）：锁定版本源装进 tools/，进度走状态行
+  // 应用内下载（T29-4：下载入口仅设置页）：锁定版本源装进 tools/，进度走状态行
   const ffmpegDownload = document.createElement('button');
   ffmpegDownload.className = 'settings-mini-btn';
   ffmpegDownload.textContent = '应用内下载';
@@ -328,7 +334,7 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
         channel.onmessage = (message) => {
           ffmpegStatusHint.textContent = message;
         };
-        await invoke('video_ensure_ffmpeg', { onProgress: channel });
+        await invoke('ffmpeg_download', { onProgress: channel });
         await refreshStatuses();
       } catch (err) {
         ffmpegStatusHint.textContent = `下载失败: ${String(err)}`;
@@ -355,8 +361,8 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   const encoderHint = document.createElement('p');
   encoderHint.className = 'settings-hint';
   encoderHint.textContent =
-    '留空使用内置自动下载的编码器；设置外部路径且有效时优先使用。保存后修改对后续' +
-    '新建评测轮立即生效，运行中的任务不受影响。';
+    '留空使用内置编码器（安装包已捆绑，标「内置 + 版本号」；捆绑缺失时首次使用自动下载）。' +
+    '设置外部路径且有效时优先使用。保存后修改对后续新建评测轮立即生效，运行中的任务不受影响。';
   encoder.append(encoderTitle, encoderHint);
 
   for (const field of ENCODER_FIELDS) {

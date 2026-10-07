@@ -264,10 +264,10 @@ async function pickVideoCandidates(ctx: VideoBlockCtx): Promise<void> {
 }
 
 /**
- * 触发视频跑分（T24 整轮并行）：先一次性确保 ffmpeg 就绪（首次会下载约 40MB，
- * 进度显示在状态栏），然后一次 IPC 提交整轮全部跑分视频——后端按设置的并发度
- * 同时起 ffmpeg 进程（同一上限约束），进度以 N/M 推回状态栏，跑分期间界面不阻塞。
- * 命令本身出错（如 ffmpeg 下载失败）时中止并亮状态栏。
+ * 触发视频跑分（T24 整轮并行）：一次 IPC 提交整轮全部跑分视频——后端按设置的
+ * 并发度同时起 ffmpeg 进程（同一上限约束），进度以 N/M 推回状态栏，跑分期间
+ * 界面不阻塞。T29-4：应用不再自动下载 ffmpeg——未配置（未应用内下载且无外部
+ * 路径）时命令报中文错误指引设置页，亮状态栏展示。
  */
 async function startVideoScoring(ctx: VideoBlockCtx): Promise<void> {
   const queue = ctx.round.videoCandidates.map((c) => c.path);
@@ -275,11 +275,6 @@ async function startVideoScoring(ctx: VideoBlockCtx): Promise<void> {
   ctx.setScoring(true, new Set(queue));
 
   try {
-    const readyChannel = new Channel<string>();
-    readyChannel.onmessage = (message) => ctx.setStatus(message);
-    ctx.setStatus('正在准备 ffmpeg（首次约 40MB，之后直接复用）…');
-    await invoke<string>('video_ensure_ffmpeg', { onProgress: readyChannel });
-
     const progressChannel = new Channel<{ completed: number; total: number }>();
     progressChannel.onmessage = (progress) => {
       ctx.setStatus(`视频跑分中 ${progress.completed}/${progress.total}`);

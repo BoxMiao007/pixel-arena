@@ -11,8 +11,12 @@
 # - Linux：deb + AppImage
 # - macOS：dmg + .app（目录，upload-artifact 自动打包成 zip）
 #
-# 注：编码器/ffmpeg 不捆绑进安装包（安装包保持约 15MB），三端均为首次使用时按
-# 决策 0009/0010/0012 的「下载 → sha256 校验 → 解包」机制取工具。
+# T29-4 修订（决策 0014）：四个内置编码器（cjpeg/cwebp/avifenc/cjxl 及 avifdec）
+# 捆绑进三端安装包（约 +10~20MB）：构建前由 scripts/bundle-encoders.* 按平台
+# 下载锁定工件（sha256 校验，与 encode.rs 清单同源）解到 src-tauri/resources/encoders/，
+# tauri.conf.json 的 bundle.resources 把它打进包（应用内只读，「内置 + 版本号」）。
+# ffmpeg 不捆绑（约 40MB）：下载入口收敛到设置页「应用内下载」（ffmpeg_download IPC）。
+# 捆绑缺失/损坏时应用仍可回退「下载到 tools/」路径（encoders-release job 维持）。
 
 name: release
 
@@ -55,7 +59,20 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev unzip ninja-build
+
+      # T29-4：捆绑编码器（下载/构建锁定工件 → 解出成员到 src-tauri/resources/encoders/）
+      - name: 捆绑编码器（Linux）
+        if: runner.os == 'Linux'
+        run: bash scripts/bundle-encoders.sh
+
+      - name: 捆绑编码器（Windows）
+        if: runner.os == 'Windows'
+        run: ./scripts/bundle-encoders.ps1
+
+      - name: 捆绑编码器（macOS）
+        if: runner.os == 'macOS'
+        run: bash scripts/bundle-encoders.sh
 
       - name: 安装前端依赖
         run: npm install
@@ -65,6 +82,32 @@ jobs:
       # 不是 src-tauri/target/——首次 CI 真跑时上传路径写错，三端产物上传全挂过。
       - name: 构建安装产物
         run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+
+      # T29-4：产物包含性验证——编码器必须随包（deb 解包核对；NSIS/MSI/AppImage
+      # 的资源由同一 resources 目录产出，此处核对源目录即可）
+      - name: 验证产物包含捆绑编码器（Linux）
+        if: runner.os == 'Linux'
+        run: |
+          dpkg-deb -c target/release/bundle/deb/*.deb | grep -E 'encoders/(cjpeg|cwebp|avifenc|avifdec|cjxl)$'
+          echo "---- 产物体积 ----"
+          ls -lh target/release/bundle/deb/*.deb target/release/bundle/appimage/*.AppImage
+
+      - name: 验证产物包含捆绑编码器（Windows）
+        if: runner.os == 'Windows'
+        run: |
+          if (-not (Test-Path 'src-tauri\resources\encoders\cjpeg.exe')) { throw 'cjpeg.exe 未捆绑' }
+          if (-not (Test-Path 'src-tauri\resources\encoders\cwebp.exe')) { throw 'cwebp.exe 未捆绑' }
+          if (-not (Test-Path 'src-tauri\resources\encoders\avifenc.exe')) { throw 'avifenc.exe 未捆绑' }
+          if (-not (Test-Path 'src-tauri\resources\encoders\avifdec.exe')) { throw 'avifdec.exe 未捆绑' }
+          if (-not (Test-Path 'src-tauri\resources\encoders\cjxl.exe')) { throw 'cjxl.exe 未捆绑' }
+          Get-ChildItem 'target\release\bundle\nsis\*.exe', 'target\release\bundle\msi\*.msi' | Format-Table Name, Length
+
+      - name: 验证产物包含捆绑编码器（macOS）
+        if: runner.os == 'macOS'
+        run: |
+          ls target/release/bundle/macos/*.app/Contents/Resources/encoders/ | grep -E '^(cjpeg|cwebp|avifenc|avifdec|cjxl)$'
+          echo "---- 产物体积 ----"
+          ls -lh target/release/bundle/dmg/*.dmg
 
       - name: 上传 Windows 产物
         if: runner.os == 'Windows'

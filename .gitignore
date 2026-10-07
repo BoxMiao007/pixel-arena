@@ -25,3 +25,7 @@ src-tauri/tauri.conf.dev.json
 # 本地工具状态文件（约定不提交）
 .zcodeignore
 skills-lock.json
+
+# 捆绑编码器资源（T29-4）：CI 打包前由 scripts/bundle-encoders 填充，二进制不入库
+/src-tauri/resources/encoders/*
+!/src-tauri/resources/encoders/README.md

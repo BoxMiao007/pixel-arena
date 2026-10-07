@@ -99,6 +99,33 @@ body {
   background: var(--bg-subtle);
 }
 
+/* ---------- FFmpeg 警告条（T29-4） ---------- */
+
+.ffmpeg-warning {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.45rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+  font-size: 0.88rem;
+}
+
+/* display:flex 会压过 UA 的 [hidden]，显式补回隐藏语义 */
+.ffmpeg-warning[hidden] {
+  display: none;
+}
+
+.ffmpeg-warning-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ffmpeg-warning-btn {
+  white-space: nowrap;
+}
+
 .roundbar-label {
   font-size: 0.85rem;
   color: var(--muted);

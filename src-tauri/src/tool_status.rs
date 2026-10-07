@@ -1,13 +1,15 @@
 // 工具状态与「关于」（T29-2 设置页扩展）：编码器 / ffmpeg 的来源状态检测
 //（内置 / 外部 / 未配置 / 不可用）与「关于」区块数据。
 //
-// 状态语义（票面 #36 + 决策 D18）：
+// 状态语义（票面 #36 + 决策 D18；T29-4 捆绑语义）：
 // - 外部优先：设置了路径覆盖且该文件可用 → external，检测版本一并展示；
 // - 无效提示并可回退内置：覆盖路径文件缺失或探测失败 → unavailable，hint 指引
 //   清空该项回退内置（保存时已被 validate 拦下，这里兜「保存之后文件被删/挪」）；
-// - 未配置：没有覆盖且内置尚未安装（编码器首次使用自动下载 / ffmpeg 待应用内下载）
-//   → unconfigured；
-// - 内置：内置已安装且探测可用 → builtin。
+// - 未配置：没有覆盖且内置尚未就位（安装包未捆绑该编码器且 tools/ 未下载 /
+//   ffmpeg 待应用内下载）→ unconfigured；
+// - 内置：随安装包捆绑（resource_dir/encoders/<member>）或已下载安装到 tools/ 且
+//   探测可用 → builtin，版本行展示锁定清单版本号（票面「内置+版本号」）；
+//   捆绑与 tools/ 安装同时在时以捆绑优先（与编码链 to_core_overrides 一致）。
 //
 // 版本探测一律运行可执行文件的 -version / --version（票面「检测结果」），不读
 // 任何缓存；「关于」库版本清单只读锁定清单（EncoderSource.version + ffmpeg 版本
@@ -98,7 +100,21 @@ pub fn probe_tool_version(path: &Path, tool: &str) -> Result<String, String> {
             continue;
         }
         let text = String::from_utf8_lossy(&output.stdout);
-        if let Some(line) = text.lines().map(str::trim).find(|line| !line.is_empty()) {
+        // mozjpeg 的 cjpeg 把版本写到 stderr（stdout 为空，T29-4 实测）：成功退出且
+        // stdout 无内容时回退读 stderr 首个非空行——仅限「执行成功」分支，失败退出
+        // 的 stderr（如 unknown option）不当作版本
+        let stderr_text = String::from_utf8_lossy(&output.stderr);
+        let line = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .or_else(|| {
+                stderr_text
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+            });
+        if let Some(line) = line {
             return Ok(line.to_string());
         }
         last_err = format!("{tool}（{}）执行成功但未输出版本信息", path.display());
@@ -107,14 +123,18 @@ pub fn probe_tool_version(path: &Path, tool: &str) -> Result<String, String> {
 }
 
 /// 单个工具的状态构建（`probe` 注入以便单测脱离真实可执行文件）。
+/// `builtin` = (内置路径, 是否随安装包捆绑)；捆绑优先于 tools/ 安装。
 #[allow(clippy::too_many_arguments)]
 fn build_status(
     key: &str,
     override_path: Option<String>,
-    builtin_path: Option<PathBuf>,
+    builtin: Option<(PathBuf, bool)>,
     builtin_version: Option<String>,
     probe: &dyn Fn(&Path, &str) -> Result<String, String>,
 ) -> ToolStatus {
+    let (builtin_path, builtin_bundled) = builtin
+        .map(|(path, bundled)| (Some(path), bundled))
+        .unwrap_or((None, false));
     let builtin_installed = builtin_path.as_deref().is_some_and(Path::is_file);
     let trimmed = override_path
         .as_deref()
@@ -138,7 +158,11 @@ fn build_status(
         hint: None,
     };
     let Some(effective) = effective else {
-        status.hint = Some("尚未安装：首次使用时自动下载，也可在设置页手动触发安装".to_string());
+        status.hint = Some(if key == "ffmpeg" {
+            "视频跑分前需要 FFmpeg：可在设置页点击「应用内下载」，或指定本机已有的 ffmpeg".to_string()
+        } else {
+            "安装包未捆绑该编码器且尚未下载：首次使用时自动下载，也可联网后检查".to_string()
+        });
         return status;
     };
     let path = PathBuf::from(&effective);
@@ -155,6 +179,8 @@ fn build_status(
             status.source = ToolSource::Unavailable;
             status.hint = Some(if trimmed.is_some() {
                 format!("{err}。请更正该路径，或清空该项回退内置")
+            } else if builtin_bundled {
+                format!("{err}。安装包捆绑的编码器似乎已损坏：请重新安装应用，或在设置页改用外部路径")
             } else {
                 format!("{err}。内置安装似乎已损坏，使用时会自动重新下载覆盖")
             });
@@ -164,35 +190,43 @@ fn build_status(
 }
 
 /// 全部工具的状态（FFmpeg + 四个内置编码器 + avifdec 代片解码器），顺序即设置页
-/// 展示顺序。`settings` 提供路径覆盖（改完保存后重调即刷新，改动立即生效）。
-pub fn tool_status_impl(settings: &Settings, tools_dir: &Path) -> Vec<ToolStatus> {
-    tool_status_with(
-        settings,
-        tools_dir,
-        &|path, tool| probe_tool_version(path, tool),
-    )
+/// 展示顺序。`settings` 提供路径覆盖（改完保存后重调即刷新，改动立即生效）；
+/// `bundled_encoders` = 安装包捆绑的编码器目录（resource_dir/encoders，T29-4），
+/// 目录不存在（未捆绑场景，如裸 debug 构建）时安全退化为只查 tools/ 安装。
+pub fn tool_status_impl(settings: &Settings, tools_dir: &Path, bundled_encoders: &Path) -> Vec<ToolStatus> {
+    tool_status_with(settings, tools_dir, bundled_encoders, &|path, tool| {
+        probe_tool_version(path, tool)
+    })
 }
 
 /// [`tool_status_impl`] 的 probe 注入版（pub 供不经 Tauri 运行时测试）。
 pub fn tool_status_with(
     settings: &Settings,
     tools_dir: &Path,
+    bundled_encoders: &Path,
     probe: &dyn Fn(&Path, &str) -> Result<String, String>,
 ) -> Vec<ToolStatus> {
     use crate::ffmpeg_setup;
     use pixel_arena_core::{decode, encode};
 
-    // 内置编码器安装路径：tools/<name>/<version>/<member>（与核心库安装布局一致）
+    // 内置编码器安装路径：捆绑（resource_dir/encoders/<member>，T29-4）优先，
+    // 捆绑缺失回落 tools/<name>/<version>/<member>（与核心库安装布局一致）
     let builtin_encoder_path = |source: &Result<encode::EncoderSource, _>, member: &str| {
         source.as_ref().ok().map(|src| {
-            tools_dir
-                .join(&src.name)
-                .join(&src.version)
-                .join(if cfg!(windows) {
-                    format!("{member}.exe")
-                } else {
-                    member.to_string()
-                })
+            let member = if cfg!(windows) {
+                format!("{member}.exe")
+            } else {
+                member.to_string()
+            };
+            let bundled = bundled_encoders.join(&member);
+            if bundled.is_file() {
+                (bundled, true)
+            } else {
+                (
+                    tools_dir.join(&src.name).join(&src.version).join(member),
+                    false,
+                )
+            }
         })
     };
     let version_of = |source: &Result<encode::EncoderSource, _>| {
@@ -207,7 +241,7 @@ pub fn tool_status_with(
     let mut statuses = vec![build_status(
         "ffmpeg",
         settings.ffmpeg_path.clone(),
-        Some(ffmpeg_setup::ffmpeg_path(tools_dir)),
+        Some((ffmpeg_setup::ffmpeg_path(tools_dir), false)),
         Some(ffmpeg_setup::pinned_ffmpeg_version().to_string()),
         probe,
     )];
@@ -228,10 +262,17 @@ pub fn tool_status_with(
     statuses.push(encoder("cwebp", over.cwebp.as_ref(), &webp, "cwebp"));
     statuses.push(encoder("avifenc", over.avifenc.as_ref(), &avif, "avifenc"));
     statuses.push(encoder("cjxl", over.cjxl.as_ref(), &jxl, "cjxl"));
+    // avifdec：捆绑目录优先，回落 tools/ 的确定性安装路径（平台无清单时无内置路径）
+    let avifdec_bundled = bundled_encoders.join(if cfg!(windows) { "avifdec.exe" } else { "avifdec" });
+    let avifdec_builtin = if avifdec_bundled.is_file() {
+        Some((avifdec_bundled, true))
+    } else {
+        decode::avif_decoder_path(tools_dir).map(|path| (path, false))
+    };
     statuses.push(build_status(
         "avifdec",
         over.avifdec.clone(),
-        decode::avif_decoder_path(tools_dir),
+        avifdec_builtin,
         version_of(&avif),
         probe,
     ));
@@ -245,10 +286,11 @@ pub fn tool_status_with(
 pub fn tool_status_for_keys(
     settings: &Settings,
     tools_dir: &Path,
+    bundled_encoders: &Path,
     keys: &[String],
     probe: &dyn Fn(&Path, &str) -> Result<String, String>,
 ) -> Vec<ToolStatus> {
-    let all = tool_status_with(settings, tools_dir, probe);
+    let all = tool_status_with(settings, tools_dir, bundled_encoders, probe);
     keys.iter()
         .filter_map(|key| all.iter().find(|status| &status.key == key).cloned())
         .collect()
@@ -330,7 +372,7 @@ mod tests {
     #[test]
     fn unconfigured_when_no_override_and_builtin_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let statuses = tool_status_with(&Settings::default(), dir.path(), &fake_probe);
+        let statuses = tool_status_with(&Settings::default(), dir.path(), Path::new("/未捆绑"), &fake_probe);
         let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
         assert_eq!(cjpeg.source, ToolSource::Unconfigured);
         assert!(!cjpeg.builtin_installed);
@@ -344,7 +386,7 @@ mod tests {
     fn builtin_when_installed_and_probe_ok() {
         let src = pixel_arena_core::encode::mozjpeg_source().unwrap();
         let (dir, path) = tools_with_builtin(&src.name, &src.version, "cjpeg");
-        let statuses = tool_status_with(&Settings::default(), dir.path(), &fake_probe);
+        let statuses = tool_status_with(&Settings::default(), dir.path(), Path::new("/未捆绑"), &fake_probe);
         let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
         assert_eq!(cjpeg.source, ToolSource::Builtin, "{:?}", cjpeg);
         assert_eq!(cjpeg.effective_path.as_deref(), Some(path.to_str().unwrap()));
@@ -358,7 +400,7 @@ mod tests {
         std::fs::write(&custom, b"placeholder").unwrap();
         let mut settings = Settings::default();
         settings.encoder_overrides.cjpeg = Some(custom.to_string_lossy().into_owned());
-        let statuses = tool_status_with(&settings, dir.path(), &fake_probe);
+        let statuses = tool_status_with(&settings, dir.path(), Path::new("/未捆绑"), &fake_probe);
         let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
         assert_eq!(cjpeg.source, ToolSource::External, "外部有效路径应优先");
         assert_eq!(cjpeg.detected_version.as_deref(), Some("cjpeg version 1.2.3"));
@@ -370,7 +412,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::default();
         settings.encoder_overrides.cjpeg = Some("/不存在/cjpeg".to_string());
-        let statuses = tool_status_with(&settings, dir.path(), &fake_probe);
+        let statuses = tool_status_with(&settings, dir.path(), Path::new("/未捆绑"), &fake_probe);
         let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
         assert_eq!(cjpeg.source, ToolSource::Unavailable);
         let hint = cjpeg.hint.as_deref().unwrap();
@@ -386,7 +428,7 @@ mod tests {
         std::fs::write(&custom, b"placeholder").unwrap();
         let mut settings = Settings::default();
         settings.encoder_overrides.cjpeg = Some(custom.to_string_lossy().into_owned());
-        let statuses = tool_status_with(&settings, dir.path(), &fake_probe);
+        let statuses = tool_status_with(&settings, dir.path(), Path::new("/未捆绑"), &fake_probe);
         let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
         assert_eq!(cjpeg.source, ToolSource::Unavailable);
         assert!(cjpeg.hint.as_deref().unwrap().contains("清空"));
@@ -400,7 +442,7 @@ mod tests {
         let failing = |_: &Path, tool: &str| -> Result<String, String> {
             Err(format!("{tool} 执行失败"))
         };
-        let statuses = tool_status_with(&Settings::default(), dir.path(), &failing);
+        let statuses = tool_status_with(&Settings::default(), dir.path(), Path::new("/未捆绑"), &failing);
         let cwebp = statuses.iter().find(|s| s.key == "cwebp").unwrap();
         assert_eq!(cwebp.source, ToolSource::Unavailable);
         let hint = cwebp.hint.as_deref().unwrap();
@@ -410,7 +452,7 @@ mod tests {
     #[test]
     fn ffmpeg_status_reads_settings_override_and_pinned_version() {
         let dir = tempfile::tempdir().unwrap();
-        let statuses = tool_status_with(&Settings::default(), dir.path(), &fake_probe);
+        let statuses = tool_status_with(&Settings::default(), dir.path(), Path::new("/未捆绑"), &fake_probe);
         let ffmpeg = statuses.iter().find(|s| s.key == "ffmpeg").unwrap();
         assert_eq!(ffmpeg.source, ToolSource::Unconfigured);
         assert_eq!(
@@ -423,12 +465,44 @@ mod tests {
     #[test]
     fn status_order_is_ffmpeg_then_encoders_then_avifdec() {
         let dir = tempfile::tempdir().unwrap();
-        let statuses = tool_status_with(&Settings::default(), dir.path(), &fake_probe);
+        let statuses = tool_status_with(&Settings::default(), dir.path(), Path::new("/未捆绑"), &fake_probe);
         let keys: Vec<&str> = statuses.iter().map(|s| s.key.as_str()).collect();
         assert_eq!(
             keys,
             ["ffmpeg", "cjpeg", "cwebp", "avifenc", "cjxl", "avifdec"]
         );
+    }
+
+    // ---------- T29-4：版本探测读得到 mozjpeg 风格的 stderr 版本输出 ----------
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_tool_version_reads_stderr_when_stdout_empty() {
+        // mozjpeg cjpeg 实测口径：--version 失败退出；-version 成功但版本写 stderr
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("cjpeg");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"unknown option\" >&2; exit 1; fi\necho \"mozjpeg version 4.1.5\" >&2\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let version = probe_tool_version(&fake, "cjpeg").unwrap();
+        assert_eq!(version, "mozjpeg version 4.1.5");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_tool_version_skips_stderr_of_failed_runs() {
+        // 失败退出的 stderr 不是版本（unknown option / 报错），不能当作探测结果
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("broken");
+        std::fs::write(&fake, "#!/bin/sh\necho \"报错信息\" >&2\nexit 2\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let message = probe_tool_version(&fake, "broken").unwrap_err();
+        assert!(message.contains("执行失败"), "{message}");
     }
 
     // ---------- T29-3：高级创建建轮前的批量可用性校验 ----------
@@ -437,7 +511,7 @@ mod tests {
     fn tool_status_for_keys_returns_only_requested_keys_in_request_order() {
         let dir = tempfile::tempdir().unwrap();
         let keys = ["cjxl".to_string(), "ffmpeg".to_string(), "cwebp".to_string()];
-        let statuses = tool_status_for_keys(&Settings::default(), dir.path(), &keys, &fake_probe);
+        let statuses = tool_status_for_keys(&Settings::default(), dir.path(), Path::new("/未捆绑"), &keys, &fake_probe);
         let got: Vec<&str> = statuses.iter().map(|s| s.key.as_str()).collect();
         assert_eq!(got, ["cjxl", "ffmpeg", "cwebp"], "键序按请求序，只含请求键");
     }
@@ -450,7 +524,7 @@ mod tests {
         let mut settings = Settings::default();
         settings.encoder_overrides.cjpeg = Some("/不存在/cjpeg".to_string());
         let keys = ["cjpeg".to_string(), "avifenc".to_string()];
-        let statuses = tool_status_for_keys(&settings, dir.path(), &keys, &fake_probe);
+        let statuses = tool_status_for_keys(&settings, dir.path(), Path::new("/未捆绑"), &keys, &fake_probe);
         let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
         assert_eq!(cjpeg.source, ToolSource::Unavailable);
         assert!(cjpeg.hint.as_deref().unwrap().contains("清空"));
@@ -462,8 +536,75 @@ mod tests {
     fn tool_status_for_keys_skips_unknown_keys() {
         let dir = tempfile::tempdir().unwrap();
         let keys = ["cwebp".to_string(), "不是工具".to_string()];
-        let statuses = tool_status_for_keys(&Settings::default(), dir.path(), &keys, &fake_probe);
+        let statuses = tool_status_for_keys(&Settings::default(), dir.path(), Path::new("/未捆绑"), &keys, &fake_probe);
         let got: Vec<&str> = statuses.iter().map(|s| s.key.as_str()).collect();
         assert_eq!(got, ["cwebp"], "未知键跳过不报错");
+    }
+
+    // ---------- T29-4：安装包捆绑编码器 → 「内置 + 版本号」 ----------
+
+    #[test]
+    fn bundled_encoder_reports_builtin_with_pinned_version() {
+        // 捆绑目录里有 cjpeg：状态为「内置」，版本行读锁定清单（票面「内置+版本号」）
+        let bundled = tempfile::tempdir().unwrap();
+        let member = if cfg!(windows) { "cjpeg.exe" } else { "cjpeg" };
+        std::fs::write(bundled.path().join(member), b"x").unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let statuses =
+            tool_status_with(&Settings::default(), tools.path(), bundled.path(), &fake_probe);
+        let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
+        assert_eq!(cjpeg.source, ToolSource::Builtin, "{:?}", cjpeg);
+        assert!(cjpeg.builtin_installed);
+        assert_eq!(
+            cjpeg.effective_path.as_deref(),
+            Some(bundled.path().join(member).to_str().unwrap()),
+            "生效路径应指向捆绑文件"
+        );
+        assert!(cjpeg.hint.is_none(), "可用时无需提示");
+    }
+
+    #[test]
+    fn bundled_missing_falls_back_to_tools_install() {
+        // 捆绑目录没有该成员（未捆绑/裸构建）：回落 tools/ 安装路径，语义不变
+        let bundled = tempfile::tempdir().unwrap();
+        let src = pixel_arena_core::encode::webp_source().unwrap();
+        let (tools, path) = tools_with_builtin(&src.name, &src.version, "cwebp");
+        let statuses =
+            tool_status_with(&Settings::default(), tools.path(), bundled.path(), &fake_probe);
+        let cwebp = statuses.iter().find(|s| s.key == "cwebp").unwrap();
+        assert_eq!(cwebp.source, ToolSource::Builtin);
+        assert_eq!(cwebp.effective_path.as_deref(), Some(path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn broken_bundled_encoder_hints_reinstall_or_external() {
+        // 捆绑文件存在但探测失败：不可用，提示重装应用或改外部路径（不能说「自动重下」——
+        // 资源目录只读，下载路径回不到捆绑目录）
+        let bundled = tempfile::tempdir().unwrap();
+        std::fs::write(bundled.path().join("cjpeg"), b"x").unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let failing = |_: &Path, tool: &str| -> Result<String, String> {
+            Err(format!("{tool} 执行失败"))
+        };
+        let statuses = tool_status_with(&Settings::default(), tools.path(), bundled.path(), &failing);
+        let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
+        assert_eq!(cjpeg.source, ToolSource::Unavailable);
+        let hint = cjpeg.hint.as_deref().unwrap();
+        assert!(hint.contains("重新安装"), "{hint}");
+        assert!(hint.contains("外部路径"), "{hint}");
+    }
+
+    #[test]
+    fn unconfigured_hint_directs_to_settings_or_download() {
+        // 全空（未捆绑 + 未安装）：ffmpeg 指引设置页下载/指定路径；编码器说明未捆绑可下载
+        let tools = tempfile::tempdir().unwrap();
+        let statuses =
+            tool_status_with(&Settings::default(), tools.path(), tools.path(), &fake_probe);
+        let ffmpeg = statuses.iter().find(|s| s.key == "ffmpeg").unwrap();
+        let hint = ffmpeg.hint.as_deref().unwrap();
+        assert!(hint.contains("应用内下载"), "{hint}");
+        let cjxl = statuses.iter().find(|s| s.key == "cjxl").unwrap();
+        assert_eq!(cjxl.source, ToolSource::Unconfigured);
+        assert!(cjxl.hint.as_deref().unwrap().contains("未捆绑"), "{:?}", cjxl.hint);
     }
 }

@@ -34,6 +34,10 @@ struct AppState {
     path: Arc<PathBuf>,
     /// 编码器安装目录（应用数据目录 tools/，一站式模式首次使用时自动下载）。
     tools_dir: Arc<PathBuf>,
+    /// T29-4：安装包捆绑的编码器目录（<resource_dir>/encoders，只读随包分发）。
+    /// 编码链定位顺序：设置覆盖 > 捆绑 > tools/ 下载安装。目录可能不存在
+    ///（未捆绑场景），所有读取都以 is_file 判定，缺失安全退化。
+    bundled_encoders: Arc<PathBuf>,
     /// 视频流服务（T15）：Linux 端 WebKitGTK 媒体引擎不走 asset 协议，视频元素从
     /// 127.0.0.1 回环地址拉流（见 video_server.rs）。
     video_stream: Arc<video_server::VideoStreamServer>,
@@ -75,8 +79,9 @@ async fn settings_tool_status(
 ) -> Result<Vec<tool_status::ToolStatus>, String> {
     let settings = state.settings.lock().expect("设置锁不应中毒").clone();
     let tools_dir = state.tools_dir.clone();
+    let bundled = state.bundled_encoders.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(tool_status::tool_status_impl(&settings, tools_dir.as_path()))
+        Ok(tool_status::tool_status_impl(&settings, tools_dir.as_path(), bundled.as_path()))
     })
     .await
     .map_err(|err| format!("工具状态检测任务执行失败: {err}"))?
@@ -99,16 +104,60 @@ async fn advanced_encoder_status(
 ) -> Result<Vec<tool_status::ToolStatus>, String> {
     let settings = state.settings.lock().expect("设置锁不应中毒").clone();
     let tools_dir = state.tools_dir.clone();
+    let bundled = state.bundled_encoders.clone();
     tauri::async_runtime::spawn_blocking(move || {
         Ok(tool_status::tool_status_for_keys(
             &settings,
             tools_dir.as_path(),
+            bundled.as_path(),
             &keys,
             &tool_status::probe_tool_version,
         ))
     })
     .await
     .map_err(|err| format!("编码器可用性检测任务执行失败: {err}"))?
+}
+
+/// IPC 命令（T29-4）：FFmpeg 检测（`ffmpeg -version`，5s 超时）。主界面警告条与
+/// 创建测评轮入口警告的数据源；定位口径与视频跑分同源（有效外部路径优先 → 内置
+/// 落位），纯只读不下载。结果不做缓存——设置页改动关闭后前端重调即刷新。
+/// 探测要跑子进程，放阻塞线程池执行。
+#[tauri::command]
+async fn ffmpeg_check(state: State<'_, AppState>) -> Result<ffmpeg_setup::FFmpegDetection, String> {
+    let tools_dir = state.tools_dir.clone();
+    let custom_ffmpeg = state
+        .settings
+        .lock()
+        .expect("设置锁不应中毒")
+        .ffmpeg_path
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(ffmpeg_setup::detect_ffmpeg(
+            tools_dir.as_path(),
+            custom_ffmpeg.as_deref(),
+        ))
+    })
+    .await
+    .map_err(|err| format!("FFmpeg 检测任务执行失败: {err}"))?
+}
+
+/// IPC 命令（T29-4）：应用内下载 ffmpeg（锁定版本源 + sha256 校验，复用
+/// ffmpeg_setup 既有安装流程）。T29-4 起这是唯一的下载入口，仅设置页调用；
+/// 后台线程执行，下载/校验/解压进度经 Channel 推给设置页状态行。
+#[tauri::command]
+async fn ffmpeg_download(
+    on_progress: Channel<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let tools_dir = state.tools_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg_setup::ensure_ffmpeg(&tools_dir, &mut |message| {
+            let _ = on_progress.send(message);
+        })
+        .map(|path| path.display().to_string())
+    })
+    .await
+    .map_err(|err| format!("ffmpeg 下载任务执行失败: {err}"))?
 }
 
 /// 一站式单档产物（onestop_encode 回传）：产物路径 + 编码参数文本。
@@ -547,6 +596,7 @@ async fn onestop_size_search(
     // 正式产物必须出自同一编码器（审查修复 A1）
     let overrides = to_core_overrides(
         &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+        state.bundled_encoders.as_path(),
     );
     tauri::async_runtime::spawn_blocking(move || {
         onestop_size_search_impl(&reference_path, &format, target_bytes, tools_dir.as_path(), &overrides)
@@ -598,6 +648,7 @@ async fn onestop_encode(
     // T23：设置中心的编码器路径覆盖随命令带入（None 项走内置自动安装路径）
     let overrides = to_core_overrides(
         &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+        state.bundled_encoders.as_path(),
     );
     tauri::async_runtime::spawn_blocking(move || {
         pixel_arena_core::encode::encode_onestop(
@@ -725,6 +776,7 @@ async fn advanced_encode(
     let tools_dir = state.tools_dir.clone();
     let overrides = to_core_overrides(
         &state.settings.lock().expect("设置锁不应中毒").encoder_overrides,
+        state.bundled_encoders.as_path(),
     );
     tauri::async_runtime::spawn_blocking(move || {
         pixel_arena_core::advanced::encode_advanced_image(
@@ -783,8 +835,8 @@ fn round_remove_video_candidate(
 /// IPC 命令（T24）：对评测轮的全部跑分视频整轮并行跑分（一次 IPC 提交整轮）。
 /// 同时打开的 ffmpeg 进程数受设置的同一并发上限约束（票面要求）；进度经 Channel
 /// 推给前端（N/M）；单段失败不报错——中文原因由核心库写进行内（含耗时）。
-/// 跑分前顺手确保 ffmpeg 就绪（已就绪零开销；正常路径下载进度由前端先调
-/// video_ensure_ffmpeg 展示，这里是兜底）。
+/// T29-4：ffmpeg 未配置（未下载且无外部路径）时 resolve_ffmpeg 直接报中文错误
+/// 指引设置页，不再自动下载（下载入口仅设置页）。
 #[tauri::command]
 async fn round_score_video_candidates(
     group_id: String,
@@ -821,27 +873,9 @@ async fn round_score_video_candidates(
     .map_err(|err| format!("视频跑分任务执行失败: {err}"))?
 }
 
-/// IPC 命令：确保视频跑分用的 ffmpeg 就绪。首次会下载锁定版本的静态构建（约 40MB，
-/// 一次性），下载/校验/解压进度经 Channel 推给前端显示在状态栏；返回 ffmpeg 路径。
-#[tauri::command]
-async fn video_ensure_ffmpeg(
-    on_progress: Channel<String>,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let tools_dir = state.tools_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        ffmpeg_setup::ensure_ffmpeg(&tools_dir, &mut |message| {
-            let _ = on_progress.send(message);
-        })
-        .map(|path| path.display().to_string())
-    })
-    .await
-    .map_err(|err| format!("ffmpeg 准备任务执行失败: {err}"))?
-}
-
 /// IPC 命令（T15）：用 ffprobe 读取视频元信息（宽高/帧率/时长），逐帧对比的时间轴与
-/// ±1 帧步进用。ffprobe 缺失时先走一次工具安装（与 ffmpeg 同一锁定来源，已就绪零开销），
-/// 下载进度经 Channel 推给前端状态栏；探测失败返回中文错误，前端降级不禁查看。
+/// ±1 帧步进用。T29-4：ffprobe 未配置时 resolve_ffprobe 返回中文错误（不再自动
+/// 下载），前端降级禁用逐帧对比，不崩应用。
 #[tauri::command]
 async fn video_probe_meta(
     path: String,
@@ -928,19 +962,41 @@ pub fn export_round_file(
 
 /// T23：设置里的编码器覆盖 → 核心库 EncoderOverrides（一次性编码调用携带，
 /// 不做进程级全局状态；CLI 侧恒为默认值，行为只由命令行参数决定）。
-fn to_core_overrides(over: &settings::EncoderOverrides) -> pixel_arena_core::encode::EncoderOverrides {
-    let to_path = |raw: &Option<String>| raw.as_deref().map(std::path::PathBuf::from);
+/// T29-4 捆绑语义：覆盖为空的项优先解析安装包捆绑的编码器
+///（bundled/encoders/<member>，只读随包分发），捆绑也缺失才留 None 走核心库
+///「下载 → sha256 校验 → 安装到 tools/」既有路径。捆绑与 tools/ 同时存在时
+/// 捆绑优先，与设置页状态徽标（tool_status）口径一致。
+fn to_core_overrides(
+    over: &settings::EncoderOverrides,
+    bundled_encoders: &Path,
+) -> pixel_arena_core::encode::EncoderOverrides {
+    let member = |name: &str| -> String {
+        if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        }
+    };
+    // 覆盖（非空文本）优先；否则捆绑文件存在即用捆绑
+    let resolve = |raw: &Option<String>, name: &str| -> Option<PathBuf> {
+        if let Some(path) = raw.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            return Some(PathBuf::from(path));
+        }
+        let bundled = bundled_encoders.join(member(name));
+        bundled.is_file().then_some(bundled)
+    };
     pixel_arena_core::encode::EncoderOverrides {
-        cjpeg: to_path(&over.cjpeg),
-        cwebp: to_path(&over.cwebp),
-        avifenc: to_path(&over.avifenc),
-        cjxl: to_path(&over.cjxl),
+        cjpeg: resolve(&over.cjpeg, "cjpeg"),
+        cwebp: resolve(&over.cwebp, "cwebp"),
+        avifenc: resolve(&over.avifenc, "avifenc"),
+        cjxl: resolve(&over.cjxl, "cjxl"),
     }
 }
 
 /// T23：把 AVIF 代片解码器（avifdec）的定位注入 PIXEL_ARENA_AVIFDEC 环境变量
-///（decode.rs 按它分派）。设置中心的自定义路径优先；清空时回落内置安装路径。
-/// 启动与每次保存设置后调用；decode 侧逐次读取环境变量，改动即时生效。
+///（decode.rs 按它分派）。优先级：设置中心自定义路径 > 安装包捆绑的 avifdec
+///（T29-4）> tools/ 内置安装路径。启动与每次保存设置后调用；decode 侧逐次读取
+/// 环境变量，改动即时生效。
 fn apply_avifdec_env(state: &AppState) {
     let custom = state
         .settings
@@ -953,11 +1009,20 @@ fn apply_avifdec_env(state: &AppState) {
         std::env::set_var("PIXEL_ARENA_AVIFDEC", path);
         return;
     }
-    // 未设置覆盖：保持既有行为——内置安装路径存在时注入（已注入则不动）
-    if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_none() {
-        if let Some(avifdec) = pixel_arena_core::decode::avif_decoder_path(state.tools_dir.as_path()) {
-            std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
-        }
+    // 未设置覆盖：先看安装包捆绑的 avifdec（只在真实存在时注入——资源目录不存在
+    // 的场景安全退化），再保持既有行为——内置安装路径存在时注入（已注入则不动）
+    if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_some() {
+        return;
+    }
+    let bundled = state
+        .bundled_encoders
+        .join(if cfg!(windows) { "avifdec.exe" } else { "avifdec" });
+    if bundled.is_file() {
+        std::env::set_var("PIXEL_ARENA_AVIFDEC", bundled);
+        return;
+    }
+    if let Some(avifdec) = pixel_arena_core::decode::avif_decoder_path(state.tools_dir.as_path()) {
+        std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
     }
 }
 
@@ -1048,10 +1113,18 @@ pub fn run() {
             let settings = Settings::load_from_file(&dir.join("settings.json"));
             let video_stream = video_server::VideoStreamServer::spawn()
                 .expect("视频流服务启动失败");
+            // T29-4：安装包捆绑的编码器目录（tauri.conf.json bundle.resources 打包，
+            // 本地/裸构建可能不存在，读取处均以 is_file 判定安全退化）
+            let bundled_encoders = app
+                .path()
+                .resource_dir()
+                .map(|dir| dir.join("encoders"))
+                .unwrap_or_else(|_| dir.join(".不存在的捆绑目录"));
             app.manage(AppState {
                 workspace: Arc::new(Mutex::new(Workspace::new())),
                 path: Arc::new(dir.join("workspace.json")),
                 tools_dir: Arc::new(tools_dir),
+                bundled_encoders: Arc::new(bundled_encoders),
                 video_stream: Arc::new(video_stream),
                 settings: Arc::new(Mutex::new(settings.clone())),
                 settings_path: Arc::new(dir.join("settings.json")),
@@ -1105,7 +1178,9 @@ pub fn run() {
             round_add_video_candidates,
             round_remove_video_candidate,
             round_score_video_candidates,
-            video_ensure_ffmpeg,
+            // T29-4：FFmpeg 检测（主界面警告）与应用内下载（下载入口仅设置页）
+            ffmpeg_check,
+            ffmpeg_download,
             // T15 视频逐帧对比（ffprobe 元信息 + 回环流服务）
             video_probe_meta,
             video_stream_url,

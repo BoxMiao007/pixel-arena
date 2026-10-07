@@ -102,6 +102,7 @@
 - 为什么：小安装包分发快，工具升级只改清单条目不动应用发版；「工件入库 + CI 原样上传」让安装包内的清单哈希与 Release 资产同源，消除「CI 重新构建哈希漂移 → 回填代码 → 重打 tag 重出安装包」的循环（Linux 的 MozJPEG/libavif 与 Windows 的 MozJPEG 三条适用）；libwebp/libjxl/ffmpeg 官方直连已有「版本化 URL + sha256 双锚」，供应链等价，不引入本项目转传环节；解包扩 zip 是 Windows 官方工件格式的最小适配（同一套 sha256 校验与暂存目录逻辑复用）。
 - 放弃了：捆绑工具进安装包（体积涨到 200MB+，编码器升级被迫重发版，违背决策 0009 的解耦初衷）；CI 从源码构建全部编码器工件（MozJPEG/libavif 的 CI 重建哈希与本机锚定值必然不同，首次发布即陷入回填循环）；gyan.dev 作 Windows ffmpeg 源（版本化老包已下架，最老保留 8.1.2，无法锁 7.0.2 附近版本）；BtbN「latest」滚动 tag（URL 固定但内容随构建变动，不满足版本锁定）；macOS 本票强行补条目（无官方工件可锚定，硬凑要引入 vcpkg/osxexperts 等不可控来源）。
 - 工件登记：Windows 清单条目与哈希记录在 `crates/pixel-arena-core/src/encode.rs`（Windows ffmpeg 在 `src-tauri/src/ffmpeg_setup.rs`）；入库工件在 `assets/encoders/`（CI 上传 encoders-v1 的即此目录内容）；构建配方（mingw 交叉编译命令）见 pixel-arena-shared/notes/T16.md。
+- T29-4 修订（2026-10-07，issue #38）：**编码器改为捆绑进三端安装包**（cjpeg / cwebp / avifenc / cjxl 及 avifdec，约 +10~20MB），本条「不捆绑」的决策就此推翻——实际使用中「开箱即用」比小安装包更重要：新装用户装完就能一站式跑分，不再被首次联网下载卡住；编码器锁定来源与 sha256 清单不变（encode.rs），CI 打包前由 `scripts/bundle-encoders.*` 按平台取工件解到 `src-tauri/resources/encoders/`，tauri `bundle.resources` 打进安装包（应用内资源目录只读，「内置 + 版本号」）；捆绑缺失/损坏标「未配置/不可用」，仍可回退「下载到 tools/」路径（encoders-release job 与下载机制保留）。**ffmpeg 不捆绑**（约 40MB，装包体积收益不大）且**不再自动下载**：视频跑分遇未配置报中文错误指引设置页，下载入口收敛到设置页「应用内下载」（`ffmpeg_download` IPC）；启动与用前检测 `ffmpeg -version`（5s 超时），未配置时主界面与创建轮入口显示警告 + 「前往设置」。定位优先级统一为「设置覆盖 > 捆绑 > tools/ 下载安装」，改动只影响后续新任务，运行中任务不受影响。放弃了 ffmpeg 捆绑（体积 +40MB 起步，视频功能占比小、设置页下载一次即可）与运行期自动下载兜底（静默联网不符合「下载入口仅设置页」的票面预期）。
 
 ## 0015 · 跑分组分类型（图片/视频）与旧工作区自动归类（已确认）
 

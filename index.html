@@ -40,6 +40,10 @@
         </div>
       </nav>
 
+      <!-- T29-4：FFmpeg 未就绪时的全局警告条（检测失败/未配置时显示，带「前往设置」；
+           只影响视频跑分，不阻塞图片评测流程） -->
+      <div id="ffmpeg-warning" class="ffmpeg-warning" role="alert" hidden></div>
+
       <section id="content" class="content"></section>
     </main>
     <script type="module" src="/src/main.ts"></script>

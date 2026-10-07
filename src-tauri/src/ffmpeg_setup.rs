@@ -73,12 +73,18 @@ pub fn ffmpeg_source_note() -> &'static str {
     FFMPEG_SOURCE_NOTE
 }
 
+/// FFmpeg 未配置时的中文指引（T29-4：下载入口收敛到设置页，本条是 resolve/detect
+/// 报错文案的单一来源，票面要求「缺失时显示明确警告 + 前往设置」）。
+const FFMPEG_UNCONFIGURED_HINT: &str =
+    "FFmpeg 未配置：视频跑分依赖 ffmpeg。请到「设置 → FFmpeg（视频跑分）」点击「应用内下载」，或指定本机已有的 ffmpeg 可执行文件";
+
 /// 解析视频跑分实际使用的 ffmpeg（T29-2 设置页覆盖）：有效的外部路径优先，
-/// 缺失/空串回落 tools/ 内置安装（不在则走既有下载流程）。
+/// 空串回落 tools/ 内置落位。T29-4 起不再自动下载：内置也不在时报中文错误
+/// 指引设置页（下载入口仅设置页，见 FFMPEG_UNCONFIGURED_HINT）。
 pub fn resolve_ffmpeg(
     tools_dir: &Path,
     custom: Option<&str>,
-    progress: &mut dyn FnMut(String),
+    _progress: &mut dyn FnMut(String),
 ) -> Result<PathBuf, String> {
     match custom.map(str::trim).filter(|value| !value.is_empty()) {
         Some(raw) => {
@@ -87,21 +93,29 @@ pub fn resolve_ffmpeg(
                 Ok(path)
             } else {
                 Err(format!(
-                    "FFmpeg 自定义路径无效：{raw}（文件不存在）。请在设置中更正或清空该路径（清空后使用应用内下载的内置 ffmpeg）"
+                    "FFmpeg 自定义路径无效：{raw}（文件不存在）。请在设置中更正或清空该路径（清空后使用内置 ffmpeg）"
                 ))
             }
         }
-        None => ensure_ffmpeg(tools_dir, progress),
+        None => {
+            let path = ffmpeg_path(tools_dir);
+            if path.is_file() {
+                Ok(path)
+            } else {
+                Err(FFMPEG_UNCONFIGURED_HINT.to_string())
+            }
+        }
     }
 }
 
 /// 解析视频跑分实际使用的 ffprobe：外部 ffmpeg 生效时优先取同目录的 ffprobe
-///（第三方目录通常成套提供）；同目录没有则回落 tools/ 内置安装（外部目录只有
-/// ffmpeg 单文件时不把用户堵死，内置 ffprobe 与其取帧能力等价）。
+///（第三方目录通常成套提供）；同目录没有则回落 tools/ 内置落位。T29-4 起不再
+/// 自动下载补装：内置缺失（含 T14 时代只装了 ffmpeg 的老安装）时报中文错误，
+/// 指引在设置页重新「应用内下载」（同版本幂等覆盖，一并补齐 ffprobe）。
 pub fn resolve_ffprobe(
     tools_dir: &Path,
     custom_ffmpeg: Option<&str>,
-    progress: &mut dyn FnMut(String),
+    _progress: &mut dyn FnMut(String),
 ) -> Result<PathBuf, String> {
     if let Some(raw) = custom_ffmpeg.map(str::trim).filter(|value| !value.is_empty()) {
         let sibling = ffprobe_path(Path::new(raw).parent().unwrap_or(Path::new(".")));
@@ -109,7 +123,14 @@ pub fn resolve_ffprobe(
             return Ok(sibling);
         }
     }
-    ensure_ffprobe(tools_dir, progress)
+    let path = ffprobe_path(tools_dir);
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "ffprobe 未配置：它与 ffmpeg 一同由「应用内下载」安装。请到「设置 → FFmpeg（视频跑分）」点击「应用内下载」（已装过旧版时重装一次即可补齐）"
+        ))
+    }
 }
 
 /// ffmpeg 可执行文件的落地路径（tools_dir/ffmpeg，Windows 为 ffmpeg.exe）。
@@ -122,7 +143,9 @@ pub fn ffprobe_path(tools_dir: &Path) -> PathBuf {
     tools_dir.join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" })
 }
 
-/// 确保 tools/ 里有可用的 ffmpeg，返回其路径。`progress` 收到面向用户的中文进度文本。
+/// 确保 tools/ 里有可用的 ffmpeg，缺失时下载安装。T29-4 起**只**由设置页的
+/// 「应用内下载」入口（ffmpeg_download IPC）调用；视频跑分路径走
+/// [`resolve_ffmpeg`]（未配置报错指引，不自动下载）。
 pub fn ensure_ffmpeg(
     tools_dir: &Path,
     progress: &mut dyn FnMut(String),
@@ -135,22 +158,141 @@ pub fn ensure_ffmpeg(
     Ok(ffmpeg_path(tools_dir))
 }
 
-/// 确保 tools/ 里有 ffprobe（T15 逐帧对比读帧率/时长用）。T14 时代的老安装只有 ffmpeg：
-/// 此时重走一次安装流程补齐——解压清单已同时含 ffmpeg 与 ffprobe，同版本幂等覆盖。
-pub fn ensure_ffprobe(
+// ffprobe 无独立安装函数：锁定工件一次解出 ffmpeg + ffprobe 两个成员
+//（T15 起），设置页「应用内下载」走 ensure_ffmpeg 即同时补齐两者；
+// 运行期定位一律走 resolve_ffprobe（T29-4 起不再自动补装）。
+
+// ---------- FFmpeg 检测（T29-4：主界面警告 / 创建轮入口警告 / 设置页共用一份口径） ----------
+
+/// FFmpeg 检测结果：可用性 + 生效路径 + 探测到的版本首行 + 中文原因。
+/// serde camelCase 与前端 FFmpegCheck 一一对应。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FFmpegDetection {
+    pub available: bool,
+    /// 实际生效（或尝试探测）的可执行文件路径；未配置为 None。
+    pub path: Option<String>,
+    /// `ffmpeg -version` 的首个非空输出行。
+    pub version: Option<String>,
+    /// 不可用/未配置时的中文原因与处理指引（指引设置页）。
+    pub error: Option<String>,
+}
+
+/// 检测超时（票面：`ffmpeg -version` 超时 5s）。
+pub const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 检测 FFmpeg 是否就绪：定位口径与 [`resolve_ffmpeg`] 同源（有效外部路径优先，
+/// 其次 tools/ 内置落位），找到后跑一次限时 `ffmpeg -version`（5s 超时）。纯只读，
+/// 不下载不安装；设置改动后重调即刷新。
+pub fn detect_ffmpeg(tools_dir: &Path, custom: Option<&str>) -> FFmpegDetection {
+    detect_with_timeout(tools_dir, custom, DETECT_TIMEOUT)
+}
+
+/// [`detect_ffmpeg`] 的超时注入版（pub 供测试缩短等待，不必真等 5s）。
+pub fn detect_with_timeout(
     tools_dir: &Path,
-    progress: &mut dyn FnMut(String),
-) -> Result<PathBuf, String> {
-    let existing = ffprobe_path(tools_dir);
-    if existing.is_file() {
-        return Ok(existing);
+    custom: Option<&str>,
+    timeout: std::time::Duration,
+) -> FFmpegDetection {
+    let located: Result<PathBuf, String> = match custom.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(raw) => {
+            let path = PathBuf::from(raw);
+            if path.is_file() {
+                Ok(path)
+            } else {
+                Err(format!(
+                    "FFmpeg 自定义路径无效：{raw}（文件不存在）。请在设置中更正或清空该路径（清空后使用内置 ffmpeg）"
+                ))
+            }
+        }
+        None => {
+            let path = ffmpeg_path(tools_dir);
+            if path.is_file() {
+                Ok(path)
+            } else {
+                Err(FFMPEG_UNCONFIGURED_HINT.to_string())
+            }
+        }
+    };
+    match located {
+        Err(error) => FFmpegDetection {
+            available: false,
+            path: None,
+            version: None,
+            error: Some(error),
+        },
+        Ok(path) => match probe_version_timed(&path, timeout) {
+            Ok(version) => FFmpegDetection {
+                available: true,
+                path: Some(path.display().to_string()),
+                version: Some(version),
+                error: None,
+            },
+            Err(error) => FFmpegDetection {
+                available: false,
+                path: Some(path.display().to_string()),
+                version: None,
+                error: Some(error),
+            },
+        },
     }
-    install(tools_dir, progress)?;
-    let installed = ffprobe_path(tools_dir);
-    if installed.is_file() {
-        Ok(installed)
-    } else {
-        Err("ffprobe 安装流程结束后仍不可见，请反馈此问题".to_string())
+}
+
+/// 限时运行 `<可执行文件> -version`：成功返回首个非空输出行；超时杀掉进程并报
+/// 中文错误（票面 5s 上限，防止挂起的可执行文件把检测卡死）。
+fn probe_version_timed(path: &Path, timeout: std::time::Duration) -> Result<String, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    if !path.is_file() {
+        return Err(format!("FFmpeg 路径无效：{}（文件不存在）", path.display()));
+    }
+    let mut child = Command::new(path)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("无法执行 ffmpeg（{}）：{err}", path.display()))?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "FFmpeg 检测超时（{} 秒无响应），该路径可能不是可用的 ffmpeg。请在设置页更正路径或应用内下载",
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(err) => return Err(format!("ffmpeg 进程状态读取失败：{err}")),
+        }
+    }
+    // 进程已退出（循环确认过）：先读管道残余输出再收尸，避免管道满的罕见死锁窗口
+    //（-version 输出只有几行，正常路径远不会触及上限）
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    let status = child
+        .wait()
+        .map_err(|err| format!("ffmpeg 进程收尾失败：{err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "ffmpeg（{}）执行失败（退出码 {}），请确认它是对应工具的可执行文件",
+            path.display(),
+            status.code().unwrap_or(-1)
+        ));
+    }
+    match stdout.lines().map(str::trim).find(|line| !line.is_empty()) {
+        Some(line) => Ok(line.to_string()),
+        None => Err(format!(
+            "ffmpeg（{}）执行成功但未输出版本信息，无法确认可用性",
+            path.display()
+        )),
     }
 }
 
@@ -494,18 +636,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn existing_ffprobe_is_reused_without_network() {
-        // tools/ 里已有 ffprobe（哪怕是个占位文件）时直接复用，不触发下载
-        let dir = tempfile::tempdir().unwrap();
-        let marker = ffprobe_path(dir.path());
-        std::fs::write(&marker, b"placeholder").unwrap();
-        let mut messages: Vec<String> = Vec::new();
-        let resolved = ensure_ffprobe(dir.path(), &mut |msg| messages.push(msg)).unwrap();
-        assert_eq!(resolved, marker);
-        assert!(messages.is_empty(), "已就绪时不应有进度消息: {messages:?}");
-    }
-
     /// 手动跑一次真实下载安装（网络 + 约 40MB）：`cargo test -p pixel-arena -- --ignored`。
     /// 跑之前把临时 tools 目录清掉，结束后目录里应有 ffmpeg、ffprobe 与来源记录。
     #[cfg(target_os = "linux")]
@@ -604,5 +734,93 @@ mod tests {
         let resolved =
             resolve_ffprobe(tools.path(), Some(&custom.to_string_lossy()), &mut |_| {}).unwrap();
         assert_eq!(resolved, builtin, "同目录没有 ffprobe 时回落内置安装");
+    }
+
+    // ---------- T29-4：不再自动下载 + 检测（5s 超时） ----------
+
+    #[test]
+    fn resolve_ffmpeg_missing_builtin_reports_guidance_instead_of_downloading() {
+        // tools/ 空目录：resolve 不再触发下载，报中文错误指引设置页（fail-fast）
+        let tools = tempfile::tempdir().unwrap();
+        let message = resolve_ffmpeg(tools.path(), None, &mut |_| {}).unwrap_err();
+        assert!(message.contains("FFmpeg 未配置"), "{message}");
+        assert!(message.contains("设置"), "应指引到设置页: {message}");
+        assert!(message.contains("应用内下载"), "{message}");
+    }
+
+    #[test]
+    fn resolve_ffprobe_missing_builtin_reports_guidance_instead_of_downloading() {
+        let tools = tempfile::tempdir().unwrap();
+        let message = resolve_ffprobe(tools.path(), None, &mut |_| {}).unwrap_err();
+        assert!(message.contains("ffprobe"), "{message}");
+        assert!(message.contains("应用内下载"), "应指引设置页下载入口: {message}");
+    }
+
+    #[cfg(unix)]
+    fn write_exec(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_reports_version_for_working_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let ffmpeg = write_exec(
+            dir.path(),
+            "ffmpeg",
+            "#!/bin/sh\necho \"ffmpeg version 7.0.2-test\"\n",
+        );
+        let detection = detect_with_timeout(dir.path(), None, std::time::Duration::from_secs(1));
+        assert!(detection.available, "{:?}", detection);
+        assert_eq!(
+            detection.version.as_deref(),
+            Some("ffmpeg version 7.0.2-test")
+        );
+        assert_eq!(detection.path.as_deref(), Some(ffmpeg.to_str().unwrap()));
+        assert!(detection.error.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_times_out_unresponsive_executable() {
+        // 挂起不退出的假 ffmpeg：短超时内必须被杀掉并报中文超时错误（不真等 5s）
+        let dir = tempfile::tempdir().unwrap();
+        write_exec(dir.path(), "ffmpeg", "#!/bin/sh\nsleep 30\n");
+        let started = std::time::Instant::now();
+        let detection =
+            detect_with_timeout(dir.path(), None, std::time::Duration::from_millis(200));
+        assert!(!detection.available, "{:?}", detection);
+        assert!(detection.error.as_deref().unwrap().contains("超时"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "超时应在注入时限内返回，不应等满默认 5s"
+        );
+    }
+
+    #[test]
+    fn detect_reports_unconfigured_with_settings_guidance() {
+        let tools = tempfile::tempdir().unwrap();
+        let detection = detect_with_timeout(tools.path(), None, std::time::Duration::from_secs(1));
+        assert!(!detection.available);
+        assert_eq!(detection.path, None);
+        let error = detection.error.as_deref().unwrap();
+        assert!(error.contains("FFmpeg 未配置"), "{error}");
+        assert!(error.contains("设置"), "应指引到设置页: {error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_invalid_external_path_reports_locatable_error() {
+        let tools = tempfile::tempdir().unwrap();
+        let detection =
+            detect_with_timeout(tools.path(), Some("/不存在/ffmpeg"), std::time::Duration::from_secs(1));
+        assert!(!detection.available);
+        let error = detection.error.as_deref().unwrap();
+        assert!(error.contains("/不存在/ffmpeg"), "{error}");
+        assert!(error.contains("清空"), "应指引清空回退内置: {error}");
     }
 }
