@@ -25,6 +25,9 @@ pub mod naming;
 pub mod parallel;
 /// 共享的 HTTP 下载与文件哈希（决策 0009/0010）：编码器安装与 ffmpeg 安装同一套网络口径。
 pub mod net;
+/// 子进程派生的跨平台窗口抑制助手（issue #42）：Windows 上统一加 CREATE_NO_WINDOW，
+/// 编码/探测/跑分子进程不再闪 conhost 终端；其余平台 no-op。
+pub mod process;
 pub mod report;
 pub mod workspace;
 

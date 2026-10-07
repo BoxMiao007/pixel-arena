@@ -17,7 +17,9 @@ pub struct VideoMeta {
 
 /// 用 ffprobe 读取视频元信息。任何失败都返回面向用户的中文错误（fail-fast，不崩应用）。
 pub fn probe(ffprobe: &Path, video: &Path) -> Result<VideoMeta, String> {
-    let output = std::process::Command::new(ffprobe)
+    let mut command = std::process::Command::new(ffprobe);
+    pixel_arena_core::process::apply_no_window(&mut command);
+    let output = command
         .args([
             "-v",
             "error",
@@ -171,7 +173,9 @@ mod tests {
                 return Some(path);
             }
         }
-        let from_path = std::process::Command::new("which")
+        let mut which = std::process::Command::new("which");
+        pixel_arena_core::process::apply_no_window(&mut which);
+        let from_path = which
             .arg("ffprobe")
             .output()
             .ok()

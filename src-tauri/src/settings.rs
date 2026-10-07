@@ -184,8 +184,17 @@ impl Settings {
     /// 保存前的一致性校验：非空的路径必须真实存在，错误中文且指到具体项。
     /// 存在性只在保存时查——设置之后文件被删/挪由编码/解码时的报错兜底。
     /// FFmpeg 路径额外要求「可执行 + 版本可读」（T29-2 票面：保存后立即校验，
-    /// 保存成功即可放心用于视频跑分）。
+    /// 保存成功即可放心用于视频跑分）。版本探测带 5s 有界超时（与 ffmpeg_check
+    /// 同口径，issue #42：外部路径挂起时保存不再无限阻塞）。
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_probe_timeout(crate::ffmpeg_setup::DETECT_TIMEOUT)
+    }
+
+    /// [`validate`] 的探测超时注入版（issue #42）：测试注入短超时避免真等 5s。
+    pub fn validate_with_probe_timeout(
+        &self,
+        ffmpeg_probe_timeout: std::time::Duration,
+    ) -> Result<(), String> {
         let over = &self.encoder_overrides;
         for (tool, path) in [
             ("cjpeg", &over.cjpeg),
@@ -209,7 +218,12 @@ impl Settings {
             }
         }
         if let Some(ffmpeg) = &self.ffmpeg_path {
-            probe_executable_version(std::path::Path::new(ffmpeg), "ffmpeg").map_err(|err| {
+            probe_executable_version_timed(
+                std::path::Path::new(ffmpeg),
+                "ffmpeg",
+                Some(ffmpeg_probe_timeout),
+            )
+            .map_err(|err| {
                 format!("FFmpeg 自定义路径校验失败：{err}。请更正或清空（清空后使用应用内下载的内置 ffmpeg）")
             })?;
         }
@@ -219,17 +233,11 @@ impl Settings {
 
 /// 运行 `<可执行文件> -version` 探测版本（T29-2）：成功返回输出的首个非空行。
 /// 「可执行」与「版本可读」一并验证——能跑起来且有输出才算可用。
-/// 设置页保存校验（FFmpeg）与 ffmpeg_setup 检测共用同一实现（见
-/// [`probe_executable_version_timed`]）；tool_status 的编码器探测口径不同
+/// 设置页保存校验（FFmpeg）与 ffmpeg_setup 检测共用同一实现；`timeout` 为 None
+/// 时阻塞等待到底，Some 时超时杀进程报中文错误（票面 5s 上限，防止挂起的
+/// 可执行文件把检测/保存卡死）。tool_status 的编码器探测口径不同
 ///（--version/-version 双试、stdout 空回退读 stderr、单次失败续试下一标志），
 /// 独立实现在 [`crate::tool_status::probe_tool_version`]。
-pub fn probe_executable_version(path: &std::path::Path, tool: &str) -> Result<String, String> {
-    probe_executable_version_timed(path, tool, None)
-}
-
-/// [`probe_executable_version`] 的超时注入版（ffmpeg_setup 检测用）：
-/// `timeout` 为 None 时阻塞等待到底（保存校验场景），Some 时超时杀进程报中文
-/// 错误（票面 5s 上限，防止挂起的可执行文件把检测卡死）。
 pub fn probe_executable_version_timed(
     path: &std::path::Path,
     tool: &str,
@@ -240,7 +248,9 @@ pub fn probe_executable_version_timed(
     if !path.is_file() {
         return Err(format!("{tool} 路径无效：{}（文件不存在）", path.display()));
     }
-    let mut child = Command::new(path)
+    let mut command = Command::new(path);
+    pixel_arena_core::process::apply_no_window(&mut command);
+    let mut child = command
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -624,12 +634,35 @@ mod tests {
     fn probe_executable_version_returns_first_output_line() {
         let dir = tempfile::tempdir().unwrap();
         let fake = write_exec(dir.path(), "tool", "#!/bin/sh\necho \"\"\necho \"tool version 1.2.3\"\n");
-        let version = probe_executable_version(&fake, "tool").unwrap();
+        let version = probe_executable_version_timed(&fake, "tool", None).unwrap();
         assert_eq!(version, "tool version 1.2.3", "应返回首个非空输出行");
         // 执行失败（非零退出）报中文错误
         let bad = write_exec(dir.path(), "bad", "#!/bin/sh\nexit 3\n");
-        let message = probe_executable_version(&bad, "tool").unwrap_err();
+        let message = probe_executable_version_timed(&bad, "tool", None).unwrap_err();
         assert!(message.contains("执行失败"), "{message}");
         assert!(message.contains("退出码 3"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_times_out_unresponsive_ffmpeg_within_injected_limit() {
+        // 挂起不退出的假 ffmpeg（issue #42：外部路径挂起曾把保存卡死）：
+        // 注入 200ms 超时必须返回中文超时错误，且远小于默认 5s——与
+        // ffmpeg_setup::detect_times_out_unresponsive_executable 同一测试模式。
+        let dir = tempfile::tempdir().unwrap();
+        let fake = write_exec(dir.path(), "ffmpeg", "#!/bin/sh\nsleep 30\n");
+        let settings = Settings {
+            ffmpeg_path: Some(fake.to_string_lossy().into_owned()),
+            ..Settings::default()
+        };
+        let started = std::time::Instant::now();
+        let message = settings
+            .validate_with_probe_timeout(std::time::Duration::from_millis(200))
+            .unwrap_err();
+        assert!(message.contains("超时"), "{message}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "注入超时应立即返回，不应等满默认 5s"
+        );
     }
 }

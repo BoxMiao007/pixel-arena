@@ -56,7 +56,9 @@ pub fn score_videos(
         }
     }
 
-    let output = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    crate::process::apply_no_window(&mut command);
+    let output = command
         .args([
             "-y",
             "-hide_banner",

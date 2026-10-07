@@ -63,13 +63,25 @@ fn settings_load(state: State<'_, AppState>) -> Settings {
 
 /// IPC 命令（T23）：整体保存设置。空串路径先收成 None（清空恢复内置），
 /// 再校验存在性（假路径当场报中文错误、不落盘），成功后返回保存后的设置。
+/// 校验可能运行 `ffmpeg -version` 子进程探测（外部路径场景，探测本身带 5s 有界
+/// 超时），连同写盘放阻塞线程池执行——issue #42：此前同步命令在主线程跑探测，
+/// 每次选图触发的保存都会卡住界面数秒。
 #[tauri::command]
-fn settings_save(settings: Settings, state: State<'_, AppState>) -> Result<Settings, String> {
+async fn settings_save(
+    settings: Settings,
+    state: State<'_, AppState>,
+) -> Result<Settings, String> {
     let settings = settings.normalized();
-    settings.validate()?;
-    settings.save_to_file(&state.settings_path)?;
-    *state.settings.lock().expect("设置锁不应中毒") = settings.clone();
-    Ok(settings)
+    let settings_path = state.settings_path.clone();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        settings.validate()?;
+        settings.save_to_file(&settings_path)?;
+        Ok::<Settings, String>(settings)
+    })
+    .await
+    .map_err(|err| format!("设置保存任务执行失败: {err}"))??;
+    *state.settings.lock().expect("设置锁不应中毒") = saved.clone();
+    Ok(saved)
 }
 
 /// IPC 命令（T29-2 设置页扩展）：检测 FFmpeg + 编码器的来源状态（内置/外部/
@@ -812,7 +824,9 @@ pub fn advanced_video_catalog_impl(
     let specs = pixel_arena_core::advanced::video_specs();
     match ffmpeg_setup::resolve_ffmpeg(tools_dir, custom_ffmpeg) {
         Ok(ffmpeg) => {
-            let encoder_names = match std::process::Command::new(&ffmpeg)
+            let mut command = std::process::Command::new(&ffmpeg);
+            pixel_arena_core::process::apply_no_window(&mut command);
+            let encoder_names = match command
                 .arg("-hide_banner")
                 .arg("-encoders")
                 .output()

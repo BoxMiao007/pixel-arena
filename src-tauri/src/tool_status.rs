@@ -18,6 +18,8 @@
 use crate::settings::Settings;
 use std::path::{Path, PathBuf};
 
+use pixel_arena_core::process::apply_no_window;
+
 /// 来源状态四态（serde 小写与前端 ToolSourceState 一一对应）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -88,7 +90,9 @@ pub fn probe_tool_version(path: &Path, tool: &str) -> Result<String, String> {
         if !path.is_file() {
             return Err(format!("{tool} 路径无效：{}（文件不存在）", path.display()));
         }
-        let output = match std::process::Command::new(path).arg(flag).output() {
+        let mut command = std::process::Command::new(path);
+        apply_no_window(&mut command);
+        let output = match command.arg(flag).output() {
             Ok(output) => output,
             Err(err) => {
                 last_err = format!("无法执行 {tool}（{}）：{err}", path.display());
