@@ -349,6 +349,19 @@ mod tests {
     use super::*;
     use crate::settings::Settings;
 
+    /// 写测试用假可执行脚本。写完 fsync + 短缓冲再返回：
+    /// WSL/CI 上 close 后立刻 exec 偶发 ETXTBSY（Text file busy），fsync 推掉回写可关掉竞态窗口。
+    #[cfg(unix)]
+    fn write_exec(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::File::open(&path).and_then(|f| f.sync_all()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        path
+    }
+
     /// 假探测：文件存在即视为可用并回显版本；名字含 "silent" 模拟「存在但探测失败」；
     /// 不存在报中文路径错误。
     fn fake_probe(path: &Path, tool: &str) -> Result<String, String> {
@@ -479,15 +492,12 @@ mod tests {
     #[test]
     fn probe_tool_version_reads_stderr_when_stdout_empty() {
         // mozjpeg cjpeg 实测口径：--version 失败退出；-version 成功但版本写 stderr
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("cjpeg");
-        std::fs::write(
-            &fake,
+        let fake = write_exec(
+            dir.path(),
+            "cjpeg",
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"unknown option\" >&2; exit 1; fi\necho \"mozjpeg version 4.1.5\" >&2\nexit 0\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let version = probe_tool_version(&fake, "cjpeg").unwrap();
         assert_eq!(version, "mozjpeg version 4.1.5");
     }
@@ -496,11 +506,8 @@ mod tests {
     #[test]
     fn probe_tool_version_skips_stderr_of_failed_runs() {
         // 失败退出的 stderr 不是版本（unknown option / 报错），不能当作探测结果
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("broken");
-        std::fs::write(&fake, "#!/bin/sh\necho \"报错信息\" >&2\nexit 2\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fake = write_exec(dir.path(), "broken", "#!/bin/sh\necho \"报错信息\" >&2\nexit 2\n");
         let message = probe_tool_version(&fake, "broken").unwrap_err();
         assert!(message.contains("执行失败"), "{message}");
     }

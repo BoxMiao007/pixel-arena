@@ -541,15 +541,25 @@ mod tests {
         assert!(message.contains("FFmpeg 自定义路径校验失败"), "{message}");
     }
 
+    /// 写测试用假可执行脚本。写完 fsync + 短缓冲再返回：
+    /// WSL/CI 上 close 后立刻 exec 偶发 ETXTBSY（Text file busy），fsync 推掉回写可关掉竞态窗口。
+    #[cfg(unix)]
+    fn write_exec(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::File::open(&path).and_then(|f| f.sync_all()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        path
+    }
+
     #[cfg(unix)]
     #[test]
     fn validate_accepts_ffmpeg_with_readable_version() {
         // 能执行且输出版本：校验通过（用 shell 脚本冒充 ffmpeg，-version 输出一行）
         let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("ffmpeg");
-        std::fs::write(&fake, "#!/bin/sh\necho \"ffmpeg version 7.0.2-test\"\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fake = write_exec(dir.path(), "ffmpeg", "#!/bin/sh\necho \"ffmpeg version 7.0.2-test\"\n");
         let settings = Settings {
             ffmpeg_path: Some(fake.to_string_lossy().into_owned()),
             ..Settings::default()
@@ -561,16 +571,11 @@ mod tests {
     #[test]
     fn probe_executable_version_returns_first_output_line() {
         let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("tool");
-        std::fs::write(&fake, "#!/bin/sh\necho \"\"\necho \"tool version 1.2.3\"\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fake = write_exec(dir.path(), "tool", "#!/bin/sh\necho \"\"\necho \"tool version 1.2.3\"\n");
         let version = probe_executable_version(&fake, "tool").unwrap();
         assert_eq!(version, "tool version 1.2.3", "应返回首个非空输出行");
         // 执行失败（非零退出）报中文错误
-        let bad = dir.path().join("bad");
-        std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
-        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bad = write_exec(dir.path(), "bad", "#!/bin/sh\nexit 3\n");
         let message = probe_executable_version(&bad, "tool").unwrap_err();
         assert!(message.contains("执行失败"), "{message}");
         assert!(message.contains("退出码 3"), "{message}");
