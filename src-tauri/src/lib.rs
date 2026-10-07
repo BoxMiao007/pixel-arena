@@ -36,9 +36,10 @@ struct AppState {
     /// 可用；运行期下载已移除，决策 0025）。
     tools_dir: Arc<PathBuf>,
     /// T29-4：安装包捆绑的编码器目录（<resource_dir>/encoders，只读随包分发）。
-    /// 编码链定位顺序：设置覆盖 > 捆绑 > tools/ 既有安装；都缺失 → 编码时报错
-    /// 指引官方发布页（决策 0025）。目录可能不存在
-    ///（未捆绑场景），所有读取都以 is_file 判定，缺失安全退化。
+    /// 编码链定位顺序：设置覆盖 > 捆绑 resource_dir > 便携 exe 同目录 encoders/
+    /// > tools/ 既有安装；都缺失 → 编码时报错指引官方发布页（决策 0025）。
+    /// 目录可能不存在（未捆绑场景），所有读取都以 is_file 判定，缺失安全退化。
+    /// 便携兜底解析见 [`resolve_bundled_encoders_dir`]（票 #43）。
     bundled_encoders: Arc<PathBuf>,
     /// 视频流服务（T15）：Linux 端 WebKitGTK 媒体引擎不走 asset 协议，视频元素从
     /// 127.0.0.1 回环地址拉流（见 video_server.rs）。
@@ -263,6 +264,75 @@ mod conflict_protocol_tests {
         assert!(!parse_conflict_decision(None).unwrap());
         assert!(parse_conflict_decision(Some("overwrite")).unwrap());
         assert!(parse_conflict_decision(Some("跳过")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod portable_encoders_tests {
+    use super::*;
+
+    /// 在目录里造一个假捆绑成员（内容无所谓，消费端只看 is_file）。
+    fn make_member(dir: &Path, name: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let member = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        let path = dir.join(&member);
+        std::fs::write(&path, b"placeholder").unwrap();
+        path
+    }
+
+    #[test]
+    fn resource_dir_with_members_wins() {
+        // resource_dir/encoders 有效捆绑：即使 exe 同目录也有 encoders/ 也以 resource_dir 优先
+        let resource = tempfile::tempdir().unwrap();
+        let exe = tempfile::tempdir().unwrap();
+        let resource_encoders = resource.path().join("encoders");
+        make_member(&resource_encoders, "cjpeg");
+        make_member(&exe.path().join("encoders"), "cjpeg");
+        let resolved = resolve_bundled_encoders_dir(Some(&resource_encoders), Some(exe.path()));
+        assert_eq!(resolved, resource_encoders);
+    }
+
+    #[test]
+    fn portable_exe_dir_fallback_when_resource_missing() {
+        // 票 #43 主场景：resource_dir 无捆绑成员（Err 或目录为空都算），exe 同目录
+        // encoders/ 有成员 → 便携 zip 解压形态命中
+        let resource = tempfile::tempdir().unwrap();
+        let exe = tempfile::tempdir().unwrap();
+        let portable_encoders = exe.path().join("encoders");
+        make_member(&portable_encoders, "cjxl");
+        // resource_dir 解析失败（None）
+        let resolved = resolve_bundled_encoders_dir(None, Some(exe.path()));
+        assert_eq!(resolved, portable_encoders);
+        // resource_dir 存在但没有成员（目录/空目录）
+        let resolved = resolve_bundled_encoders_dir(Some(&resource.path().join("encoders")), Some(exe.path()));
+        assert_eq!(resolved, portable_encoders);
+    }
+
+    #[test]
+    fn both_missing_returns_nonexistent_sentinel() {
+        // 两处都没有编码器：返回标记性不存在路径（消费端 is_file 判定退化到 tools/）
+        let resource = tempfile::tempdir().unwrap();
+        let exe = tempfile::tempdir().unwrap();
+        let resolved = resolve_bundled_encoders_dir(
+            Some(&resource.path().join("encoders")),
+            Some(exe.path()),
+        );
+        assert!(!resolved.is_file(), "哨兵路径不应命中任何文件：{}", resolved.display());
+        // 单独验证 exe 同目录没有 encoders/ 时也不会误判（目录存在但无成员）
+        std::fs::create_dir_all(exe.path().join("encoders")).unwrap();
+        let resolved = resolve_bundled_encoders_dir(None, Some(exe.path()));
+        assert!(!resolved.is_file());
+    }
+
+    #[test]
+    fn sentinel_path_is_same_as_legacy_fallback_shape() {
+        // 哨兵路径与旧 fallback 同形（相对不存在路径），消费端行为不变
+        let resolved = resolve_bundled_encoders_dir(None, None);
+        assert_eq!(resolved, PathBuf::from(".不存在的捆绑目录"));
     }
 }
 
@@ -1103,12 +1173,49 @@ pub fn export_round_file(
     Ok(path.to_string())
 }
 
+/// 票 #43 便携兜底：目录里是否存在任一捆绑编码器成员（五成员同进同出，由
+/// bundle-encoders.* 整体就位，故「任一存在」即可认定该目录是有效捆绑目录；
+/// 平台后缀按编译目标判断）。
+fn has_encoder_members(dir: &Path) -> bool {
+    ["cjpeg", "cwebp", "avifenc", "avifdec", "cjxl"].iter().any(|name| {
+        let member = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        dir.join(member).is_file()
+    })
+}
+
+/// 票 #43 便携兜底：捆绑编码器目录解析。优先级（整目录二选一，逐成员消费端
+/// 不变）：resource_dir/encoders（NSIS/MSI 等安装形态）> exe 同目录 encoders/
+///（便携 zip 解压形态）> 返回标记性不存在路径（消费端 is_file 判定安全退化，
+/// 再落到 tools/ 既有安装）。Windows 裸跑 resource_dir 的实际落点无法在本机
+/// 实测，故无论其命中与否都保留该回落；两个路径均由调用方注入，单测不依赖
+/// 真实 exe 位置。
+fn resolve_bundled_encoders_dir(
+    resource_encoders: Option<&Path>,
+    exe_dir: Option<&Path>,
+) -> PathBuf {
+    if let Some(dir) = resource_encoders.filter(|dir| has_encoder_members(dir)) {
+        return dir.to_path_buf();
+    }
+    if let Some(portable) = exe_dir
+        .map(|dir| dir.join("encoders"))
+        .filter(|dir| has_encoder_members(dir))
+    {
+        return portable;
+    }
+    PathBuf::from(".不存在的捆绑目录")
+}
+
 /// T23：设置里的编码器覆盖 → 核心库 EncoderOverrides（一次性编码调用携带，
 /// 不做进程级全局状态；CLI 侧恒为默认值，行为只由命令行参数决定）。
 /// T29-4 捆绑语义：覆盖为空的项优先解析安装包捆绑的编码器
 ///（bundled/encoders/<member>，只读随包分发），捆绑也缺失才留 None（核心库按
 /// tools/ 既有落位解析，都没有则报错指引官方发布页，决策 0025）。捆绑与 tools/
 /// 同时存在时捆绑优先，与设置页状态徽标（tool_status）口径一致。
+/// bundled_encoders 已由 [`resolve_bundled_encoders_dir`] 做 portable 兜底（票 #43）。
 fn to_core_overrides(
     over: &settings::EncoderOverrides,
     bundled_encoders: &Path,
@@ -1257,12 +1364,17 @@ pub fn run() {
             let video_stream = video_server::VideoStreamServer::spawn()
                 .expect("视频流服务启动失败");
             // T29-4：安装包捆绑的编码器目录（tauri.conf.json bundle.resources 打包，
-            // 本地/裸构建可能不存在，读取处均以 is_file 判定安全退化）
-            let bundled_encoders = app
-                .path()
-                .resource_dir()
-                .map(|dir| dir.join("encoders"))
-                .unwrap_or_else(|_| dir.join(".不存在的捆绑目录"));
+            // 本地/裸构建可能不存在，读取处均以 is_file 判定安全退化）。
+            // 票 #43：resource_dir/encoders 缺成员时回落 exe 同目录 encoders/
+            //（便携 zip 解压形态），两个候选目录任一有效即用。
+            let resource_encoders = app.path().resource_dir().ok().map(|dir| dir.join("encoders"));
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(Path::to_path_buf));
+            let bundled_encoders = resolve_bundled_encoders_dir(
+                resource_encoders.as_deref(),
+                exe_dir.as_deref(),
+            );
             app.manage(AppState {
                 workspace: Arc::new(Mutex::new(Workspace::new())),
                 path: Arc::new(dir.join("workspace.json")),
