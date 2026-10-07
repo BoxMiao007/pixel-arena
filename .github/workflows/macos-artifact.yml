@@ -60,6 +60,7 @@ jobs:
         run: |
           curl -sL -o libjxl.tar.gz https://github.com/libjxl/libjxl/archive/refs/tags/v0.11.1.tar.gz
           tar -xzf libjxl.tar.gz
+          git clone --depth 1 https://github.com/google/skcms libjxl-0.11.1/third_party/skcms
           cmake -S libjxl-0.11.1 -B libjxl-build -G Ninja \
             -DBUILD_SHARED_LIBS=OFF -DJPEGXL_ENABLE_TOOLS=ON \
             -DJPEGXL_ENABLE_BENCHMARK=OFF -DJPEGXL_ENABLE_EXAMPLES=OFF \
