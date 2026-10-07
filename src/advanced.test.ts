@@ -392,10 +392,14 @@ describe('buildEntryArgsLenient（预览宽松合并）', () => {
 // ---------- availabilityErrors（票面 AC5：建轮前的编码器可执行文件批量校验） ----------
 
 describe('availabilityErrors（建轮前批量可用性校验）', () => {
-  const ok = (key: string, source: ToolStatusLite['source'] = 'builtin'): ToolStatusLite => ({
+  const ok = (
+    key: string,
+    source: ToolStatusLite['source'] = 'builtin',
+    hint: string | null = null,
+  ): ToolStatusLite => ({
     key,
     source,
-    hint: null,
+    hint,
   });
   const broken = (key: string): ToolStatusLite => ({
     key,
@@ -416,12 +420,26 @@ describe('availabilityErrors（建轮前批量可用性校验）', () => {
     expect(message).toContain('设置');
   });
 
-  it('unconfigured 放行（内置未安装时首次使用自动下载）', () => {
+  it('unconfigured（内置缺失）报错红标并指引发布页与外部路径（T32，决策 0025）', () => {
     const errors = availabilityErrors(
-      [entry({})],
+      [entry({ id: 'e-jpeg' })],
       () => 'cjpeg',
-      [ok('cjpeg', 'unconfigured')],
+      [ok('cjpeg', 'unconfigured', '内置文件缺失（可能被安全软件移除）：请从官方发布页下载编码器')],
     );
+    expect(errors.size).toBe(1);
+    const message = errors.get('e-jpeg')!;
+    expect(message).toContain('cjpeg');
+    expect(message).toContain('未就绪');
+    expect(message).toContain('官方发布页');
+    expect(message).toContain('设置');
+    expect(message).toContain('外部路径');
+  });
+
+  it('ffmpeg 的 unconfigured 放行（就位方式是设置页应用内下载，不在建轮入口拦）', () => {
+    const videoEntry = entry({ id: 'v1', kind: 'video', encoderId: 'libx264' });
+    const errors = availabilityErrors([videoEntry], () => 'ffmpeg', [
+      ok('ffmpeg', 'unconfigured'),
+    ]);
     expect(errors.size).toBe(0);
   });
 

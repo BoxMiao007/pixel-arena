@@ -808,8 +808,9 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
       addFirstBtn.disabled = true;
       try {
         // AC5：建轮前批量校验条目编码器的可执行文件是否可用（含设置页外部路径
-        // 覆盖）。unavailable = 明确报错（条目红标 + 汇总提示去设置页）；
-        // unconfigured 放行（内置编码器首次使用时自动下载）。
+        // 覆盖）。unavailable / unconfigured = 明确报错（条目红标 + 汇总提示去
+        // 设置页，T32 起内置缺失不再自动下载）；ffmpeg 的 unconfigured 放行
+        //（就位方式是设置页「应用内下载」，跑分时报错另有指引）。
         const keys = [
           ...new Set(session.entries.map(toolKeyOf).filter((key): key is string => key !== null)),
         ];

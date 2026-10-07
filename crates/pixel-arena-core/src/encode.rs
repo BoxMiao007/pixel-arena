@@ -3,12 +3,14 @@
 // T10 第一条竖切片：JPEG × MozJPEG。T11 补全默认编码阶梯（决策 0003）：
 // 有损 JPEG/WebP/AVIF/JPEG-XL × 质量 60/75/90 + 无损对照组 PNG/无损 WebP/无损 JXL。
 //
-// 编码器分发方案（docs/decisions.md 0009）：权威参考编码器不随应用捆绑，首次使用时
-// 按「编码器来源清单」（EncoderSource：编码器名 + 版本锁定的 URL + sha256）下载
-// 压缩包工件（tar.gz；T16 起官方 Windows zip 亦同）→ sha256 校验（不符报中文错误且不落盘）→ 解包出可执行文件到
-// <tools_dir>/<编码器名>/<版本>/<member> → 旁边写 <member>.sha256（解包后文件哈希）。
-// 之后每次使用先验本地哈希，损坏/被改自动重下覆盖；哈希一致直接复用、不联网。
-// libavif 工件一次下载解出 avifenc + avifdec 两个成员（avifdec 供产物解码用）。
+// 编码器分发方案（docs/decisions.md 0009 → 0014/T29-4 修订 → 0025 定稿）：权威参考
+// 编码器随安装包捆绑（CI 打包前由 scripts/bundle-encoders.* 解到资源目录 encoders/，
+// 应用壳把捆绑文件折进 EncoderOverrides；捆绑缺失报错并指引官方发布页），不在运行期
+// 下载。核心库侧的「内置」落位为 <tools_dir>/<编码器名>/<版本>/<member>（旧版本
+// 自动下载时代的既有安装继续可用）；两处都没有 → 中文报错含官方发布页 URL（单一
+// 数据源：EncoderSource.release_page）与「设置页指定外部路径」指引。
+// libavif 的 avifdec（产物代片解码）不在此解析：解码侧走 PIXEL_ARENA_AVIFDEC
+// 环境变量注入的既有机制，由应用壳/CLI 负责。
 //
 // 编码链路：image crate 解码原图（与跑分同一套 decode_srgb 口径）→ 按编码器口味写
 // 中间临时文件（cjpeg/cwebp/cjxl 吃 P6 PPM，avifenc 吃 PNG）→ 子进程编码 →
@@ -16,31 +18,30 @@
 // 去重与输出目录的单一来源）。AVIF/JXL 产物写完自检解码并旁路一份 PNG 代片供查看器
 // 显示（WebView 原生解不了这两种格式，见决策 0012）。
 //
-// CLI（T12）复用 encode_onestop / install_encoder_members，无需新逻辑。
+// CLI（T12）复用 encode_onestop，无需新逻辑。
 
 use crate::error::CoreError;
 use crate::metrics::decode_srgb;
 use crate::naming::{product_file_name, unique_file_name, ConflictPolicy, QualitySegment};
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, ImageBuffer, Rgb};
-use sha2::{Digest, Sha256};
 use std::io::{Read, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// 每平台一份的编码器来源条目：编码器名、版本、下载地址、sha256、压缩包内可执行文件名。
+/// 每平台一份的编码器来源条目：编码器名、版本、捆绑/内置落位的可执行文件名、
+/// 官方发布页 URL（单一数据源：核心库缺失报错、设置页跳转链接与「关于」库链接
+/// 共用）。运行期下载已移除（决策 0025），不再携带下载 URL 与 sha256。
 #[derive(Debug, Clone)]
 pub struct EncoderSource {
-    /// 编码器名（安装目录名：tools/<编码器名>/<版本>/）。
+    /// 编码器名（内置落位目录名：tools/<编码器名>/<版本>/）。
     pub name: String,
-    /// 编码器版本（安装目录名的一部分）。
+    /// 编码器版本（内置落位目录名的一部分；设置页版本行与「关于」同源展示）。
     pub version: String,
-    /// 压缩包（tar.gz 或 zip）工件下载地址。
-    pub url: String,
-    /// 工件 sha256（小写十六进制）。升级版本 = 换 URL + 换哈希，一起改。
-    pub sha256: String,
-    /// 工件内可执行文件的文件名（按文件名匹配，容忍包内多一层目录）。
+    /// 可执行文件名（捆绑目录与 tools/ 落位同名；Windows 带 .exe）。
     pub member: String,
+    /// 该编码器项目的官方发布页（https）。缺失时的报错指引与设置页链接用它。
+    pub release_page: String,
 }
 
 /// 编码器可执行文件路径覆盖（T23 设置中心）：某项为 Some 时一站式编码跳过内置
@@ -182,7 +183,7 @@ impl OnestopFormat {
 fn unsupported_platform(encoder: &str) -> CoreError {
     CoreError::Encode {
         message: format!(
-            "{os}-{arch} 平台暂无分发的 {encoder} 编码器（同一套下载机制，清单条目由打包票补齐），请先用外部导入模式",
+            "{os}-{arch} 平台暂无分发的 {encoder} 编码器（清单条目由打包票补齐），请先用外部导入模式",
             os = std::env::consts::OS,
             arch = std::env::consts::ARCH,
         ),
@@ -191,40 +192,15 @@ fn unsupported_platform(encoder: &str) -> CoreError {
 
 /// 当前平台的 MozJPEG 来源清单。没有分发的平台返回中文错误（清单条目随打包票补齐）。
 pub fn mozjpeg_source() -> Result<EncoderSource, CoreError> {
+    let release_page = "https://github.com/mozilla/mozjpeg/releases".to_string();
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => Ok(EncoderSource {
+        ("linux", "x86_64") | ("windows", "x86_64") | ("darwin", "aarch64") => Ok(EncoderSource {
             name: "mozjpeg".to_string(),
+            // 三端工件同源码（4.1.5）同配置（无 SIMD、静态），由 CI 打包脚本
+            // bundle-encoders.* 取自 encoders-v1 Release 解进安装包资源目录（决策 0014）。
             version: "4.1.5".to_string(),
-            // 工件与本仓 CI 源码构建同配置（无 SIMD、静态，仅依赖 libc/libm），已上传
-            // encoders-v1（T31 补齐，此前 URL 404）；测试可用 PIXEL_ARENA_ENCODER_MIRROR
-            // =<目录URL> 覆盖下载主机（同名工件）。
-            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/mozjpeg-v4.1.5-linux-x86_64.tar.gz"
-                .to_string(),
-            sha256: "9b3fad009be16f6c826f219ed6e2e608f13c8cdeff2e11efa63a88eab2c576bf".to_string(),
-            member: "cjpeg".to_string(),
-        }),
-        ("windows", "x86_64") => Ok(EncoderSource {
-            name: "mozjpeg".to_string(),
-            version: "4.1.5".to_string(),
-            // Windows 版与 Linux 版同源码（4.1.5）同配置（无 SIMD、全静态），在 Linux 上
-            // 用 mingw-w64 交叉编译（仅依赖 KERNEL32/msvcrt 系统库），工件入库
-            // assets/encoders/ 由 CI 原样上传 Release；哈希锚定打包时的工件（T16，决策 0014）。
-            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/mozjpeg-v4.1.5-windows-x86_64.tar.gz"
-                .to_string(),
-            sha256: "ded15725f25ff321de1cf56b5faa6a0bd6389111ed3a56faf72016aaa5b6713b".to_string(),
-            member: "cjpeg.exe".to_string(),
-        }),
-        ("darwin", "aarch64") => Ok(EncoderSource {
-            name: "mozjpeg".to_string(),
-            version: "4.1.5".to_string(),
-            // 官方无 macOS 工件（2026-10-07 核实，Release 无资产）：工件由 CI macos
-            // runner 原生构建（无 SIMD、静态，与 Linux/Windows 工件同配置；
-            // macos-artifact workflow，用户机器性能不足本地构建被排除），工件入库
-            // assets/encoders/ 由 CI 原样上传 Release；哈希锚定入库工件（决策 0014）。
-            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/mozjpeg-v4.1.5-macos-arm64.tar.gz"
-                .to_string(),
-            sha256: "bf8cceff4444716868c3b45acb3937a1e317219be376fafdd7e686093ed088d3".to_string(),
-            member: "cjpeg".to_string(),
+            member: if cfg!(windows) { "cjpeg.exe" } else { "cjpeg" }.to_string(),
+            release_page,
         }),
         (_os, _arch) => Err(unsupported_platform("MozJPEG")),
     }
@@ -232,81 +208,32 @@ pub fn mozjpeg_source() -> Result<EncoderSource, CoreError> {
 
 /// 当前平台的 libwebp（cwebp）来源清单：官方预编译静态二进制。
 pub fn webp_source() -> Result<EncoderSource, CoreError> {
+    let release_page = "https://github.com/webmproject/libwebp/releases".to_string();
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => Ok(EncoderSource {
+        ("linux", "x86_64") | ("windows", "x86_64") | ("darwin", "aarch64") => Ok(EncoderSource {
             name: "libwebp".to_string(),
+            // macOS 无官方工件（2026-10-07 核实），由 CI macos runner 原生构建；
+            // 三端一起由 bundle-encoders.* 打进安装包资源目录（决策 0014）。
             version: "1.6.0".to_string(),
-            // libwebp 官方发布的 linux x86-64 静态构建（GitHub Releases 不放工件，
-            // 官方下载站在 storage.googleapis.com/downloads.webmproject.org）
-            url: "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0-linux-x86-64.tar.gz"
-                .to_string(),
-            sha256: "1c5ffab71efecefa0e3c23516c3a3a1dccb45cc310ae1095c6f14ae268e38067".to_string(),
-            member: "cwebp".to_string(),
-        }),
-        ("windows", "x86_64") => Ok(EncoderSource {
-            name: "libwebp".to_string(),
-            version: "1.6.0".to_string(),
-            // Windows 官方工件只有 zip（T16 起解包机制支持）；cwebp.exe 仅依赖系统 DLL
-            //（导入表核对过），包内唯一 DLL（freeglut）只有 vwebp 预览用、与我们无关
-            url: "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0-windows-x64.zip"
-                .to_string(),
-            sha256: "48886f506b21f62e4661f0f4cbfca19800897c385128e8902542d29a950c93f1".to_string(),
-            member: "cwebp.exe".to_string(),
-        }),
-        ("darwin", "aarch64") => Ok(EncoderSource {
-            name: "libwebp".to_string(),
-            version: "1.6.0".to_string(),
-            // 官方下载站无 macOS 包（2026-10-07 核实）：工件由 CI macos runner 原生构建
-            //（静态，macos-artifact workflow），入库 assets/encoders/ 由 CI 原样上传。
-            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/libwebp-1.6.0-macos-arm64.tar.gz"
-                .to_string(),
-            sha256: "2ad04ce464327245f0a49dda0ccaf7791e438a2f3331f7f9bbab892c0df7789c".to_string(),
-            member: "cwebp".to_string(),
+            member: if cfg!(windows) { "cwebp.exe" } else { "cwebp" }.to_string(),
+            release_page,
         }),
         (_os, _arch) => Err(unsupported_platform("libwebp")),
     }
 }
 
-/// 当前平台的 libavif（avifenc + avifdec）来源清单：三端直连官方 Release 工件（T28）。
+/// 当前平台的 libavif（avifenc + avifdec）来源清单：三端官方 v1.4.2 Release 工件（T28）。
 pub fn avif_source() -> Result<EncoderSource, CoreError> {
+    let release_page = "https://github.com/AOMediaCodec/libavif/releases".to_string();
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => Ok(EncoderSource {
+        ("linux", "x86_64") | ("windows", "x86_64") | ("darwin", "aarch64") => Ok(EncoderSource {
             name: "libavif".to_string(),
+            // 官方 v1.4.2 Release 附带预编译工件（libaom 3.14.1 静态链接），
+            // 由 bundle-encoders.* 打进安装包资源目录；avifdec 与 avifenc 同包
+            //（产物代片解码用，经 PIXEL_ARENA_AVIFDEC 注入解码链）。
             version: "1.4.2".to_string(),
-            // 官方 v1.4.2 Release 工件（T28 换官方直连，替代本机自建——官方开始发
-            // 预编译后自建不再必要）：linux-artifacts.zip 内 avifenc/avifdec/avifgainmaputil，
-            // libaom 3.14.1 + libpng + zlib 静态链接，动态依赖仅 libc/libm/libstdc++/libgcc
-            //（系统基础库，ldd 核对过）。哈希锚定官方 zip（版本化 tag 不可变）。
-            url: "https://github.com/AOMediaCodec/libavif/releases/download/v1.4.2/linux-artifacts.zip"
-                .to_string(),
-            sha256: "faf58a670ffbfdc0e3559e6d37592cff277c447dd39453f1cd1d7d7f5a20b8ef".to_string(),
-            member: "avifenc".to_string(),
-        }),
-        ("windows", "x86_64") => Ok(EncoderSource {
-            name: "libavif".to_string(),
-            version: "1.4.2".to_string(),
-            // 官方 v1.4.2 Release 开始附带预编译工件（T28 核实，此前「官方只发源码」的
-            // 记录过时）：windows-artifacts.zip 内含 avifenc/avifdec/avifgainmaputil，
-            // libaom 3.14.1 + libpng + zlib 全静态链接（导入表仅 KERNEL32/VCRUNTIME140/UCRT，
-            // 核对过；本机试跑 --version 正常）。哈希锚定官方 zip（版本化 tag 不可变）。
-            // 用户机器性能不足，本地构建被明确排除；CI 自建方案（avif-artifact workflow）
-            // 因官方工件可用而删除。
-            url: "https://github.com/AOMediaCodec/libavif/releases/download/v1.4.2/windows-artifacts.zip"
-                .to_string(),
-            sha256: "cb2d9fea43dcbab1d0707e3b37eb7b08070ad2fb60a2c188c39ec12382c0484a".to_string(),
-            member: "avifenc.exe".to_string(),
-        }),
-        ("darwin", "aarch64") => Ok(EncoderSource {
-            name: "libavif".to_string(),
-            version: "1.4.2".to_string(),
-            // 官方 v1.4.2 Release 工件（T28）：macOS-artifacts.zip 内 avifenc/avifdec
-            //（arm64 Mach-O，Apple Silicon；Intel macOS 无官方工件仍报暂无分发）。
-            // 应用内 HTTP 下载不设 quarantine 属性，Gatekeeper 不拦（官方 README 的
-            // xattr 说明针对浏览器手动下载场景）。哈希锚定官方 zip。
-            url: "https://github.com/AOMediaCodec/libavif/releases/download/v1.4.2/macOS-artifacts.zip"
-                .to_string(),
-            sha256: "41f9a3db7b7697aa4f9c83d5e07a1b2e00f28f23676d3f27698eef766689a6b6".to_string(),
-            member: "avifenc".to_string(),
+            member: if cfg!(windows) { "avifenc.exe" } else { "avifenc" }.to_string(),
+            release_page,
         }),
         (_os, _arch) => Err(unsupported_platform("libavif")),
     }
@@ -314,37 +241,15 @@ pub fn avif_source() -> Result<EncoderSource, CoreError> {
 
 /// 当前平台的 libjxl（cjxl）来源清单：官方预编译静态构建。
 pub fn jxl_source() -> Result<EncoderSource, CoreError> {
+    let release_page = "https://github.com/libjxl/libjxl/releases".to_string();
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => Ok(EncoderSource {
+        ("linux", "x86_64") | ("windows", "x86_64") | ("darwin", "aarch64") => Ok(EncoderSource {
             name: "libjxl".to_string(),
+            // 锁 0.11.1：之后的版本官方工件改为 .zip/.tar.l 格式（见 T11 笔记）；
+            // macOS 无官方工件，由 CI macos runner 原生构建，随安装包捆绑（决策 0014）。
             version: "0.11.1".to_string(),
-            // libjxl 官方 linux 静态构建；锁 0.11.1：之后的版本工件改为 .zip/.tar.lz，
-            // 现有「下载 → 校验 → 解包」机制只认 .tar.gz（升级需先扩机制，见 T11 笔记）
-            url: "https://github.com/libjxl/libjxl/releases/download/v0.11.1/jxl-linux-x86_64-static-v0.11.1.tar.gz"
-                .to_string(),
-            sha256: "7ba87d09f220568a7e84c2a62e9fa8be608443930dec10b2799271d4cf032293".to_string(),
-            member: "cjxl".to_string(),
-        }),
-        ("windows", "x86_64") => Ok(EncoderSource {
-            name: "libjxl".to_string(),
-            version: "0.11.1".to_string(),
-            // Windows 官方静态构建只有 zip（vcpkg /MT 产物，静态 CRT 无 VC redist 依赖；
-            // 导入表核对过）。50MB 在下载上限内；macOS 官方无工件（暂无分发）。
-            url: "https://github.com/libjxl/libjxl/releases/download/v0.11.1/jxl-x64-windows-static.zip"
-                .to_string(),
-            sha256: "8f53ebce91820c30c9fc9294f06380213c1e2e66b361718880580246b2be008e".to_string(),
-            member: "cjxl.exe".to_string(),
-        }),
-        ("darwin", "aarch64") => Ok(EncoderSource {
-            name: "libjxl".to_string(),
-            version: "0.11.1".to_string(),
-            // 官方各版本只有 linux/windows 工件（2026-10-07 核实）：工件由 CI macos
-            // runner 原生构建（静态，macos-artifact workflow），入库 assets/encoders/
-            // 由 CI 原样上传。锁 0.11.1 与 Linux/Windows 同版本。
-            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/libjxl-v0.11.1-macos-arm64.tar.gz"
-                .to_string(),
-            sha256: "2b53e626b2747c50841712672b3f9391238f47d3babcd2cc333e3567eb0f62a8".to_string(),
-            member: "cjxl".to_string(),
+            member: if cfg!(windows) { "cjxl.exe" } else { "cjxl" }.to_string(),
+            release_page,
         }),
         (_os, _arch) => Err(unsupported_platform("libjxl")),
     }
@@ -394,7 +299,8 @@ pub fn onestop_product_name(
 ///   `<原图名>_<编码器小写>_q<质量>.<扩展名>`；
 /// - 无损组（png/webp-lossless/jxl-lossless）：quality 必须为 None，产物名
 ///   `<原图名>_png.png` / `<原图名>_webp_lossless.webp` / `<原图名>_jpegxl_lossless.jxl`；
-/// - 编码器需要时自动下载安装（tools_dir）；同名冲突按 `conflict` 处理（D9 +
+/// - 编码器按「设置覆盖 > 内置落位」解析，缺失报中文错误并指引官方发布页（决策 0025）；
+///   同名冲突按 `conflict` 处理（D9 +
 ///   T30）：AutoAppend 自动追加 `_1/_2` 不覆盖，Overwrite 用确切名落位覆盖
 ///  （编码先进产物目录下的暂存子目录完成——暂存内必然无冲突，成功后一次 rename
 ///   覆盖已有文件；中途失败暂存目录整体丢弃，已有文件不受影响）；
@@ -503,56 +409,31 @@ pub fn write_view_proxy(product: impl AsRef<Path>) -> Result<PathBuf, CoreError>
     Ok(proxy)
 }
 
-/// 按格式解析一站式编码所用的编码器可执行文件：设置中心覆盖优先，缺省走内置自动
-/// 安装。[`encode_onestop`]（正式产物）与 [`probe_onestop_size`]（大小优先探测）
-/// 共用同一份「格式 → 编码器」分派，保证「搜出的大小」与「真实产物」出自同一个
-/// 编码器（探测旁路设置中心覆盖曾是缺陷：搜索结果与最终产物可能不一致）。
+/// 按格式解析一站式编码所用的编码器可执行文件：设置中心覆盖优先（应用壳已把安装包
+/// 捆绑文件折进覆盖），缺省回落核心库内置落位 `<tools_dir>/<名>/<版本>/<member>`。
+/// [`encode_onestop`]（正式产物）与 [`probe_onestop_size`]（大小优先探测）共用同一份
+/// 「格式 → 编码器」分派，保证「搜出的大小」与「真实产物」出自同一个编码器（探测旁路
+/// 设置中心覆盖曾是缺陷：搜索结果与最终产物可能不一致）。
 /// 无损 PNG 为进程内编码、无外部二进制，返回 `None`（两个调用方各自处理）。
 pub(crate) fn resolve_onestop_encoder(
     format: OnestopFormat,
     tools_dir: &Path,
     overrides: &EncoderOverrides,
 ) -> Result<Option<PathBuf>, CoreError> {
-    let (over, tool, install): (
-        Option<&Path>,
-        &str,
-        Box<dyn FnOnce() -> Result<PathBuf, CoreError> + '_>,
-    ) = match format {
-        OnestopFormat::Jpeg => (
-            overrides.cjpeg.as_deref(),
-            "cjpeg",
-            Box::new(|| install_encoder(&mozjpeg_source()?, tools_dir)),
-        ),
-        OnestopFormat::Webp | OnestopFormat::WebpLossless => (
-            overrides.cwebp.as_deref(),
-            "cwebp",
-            Box::new(|| install_encoder(&webp_source()?, tools_dir)),
-        ),
-        OnestopFormat::Avif => (
-            overrides.avifenc.as_deref(),
-            "avifenc",
-            // libavif 工件一次下载解出 avifenc 与 avifdec（后者供产物解码/代片用；
-            // 探测路径装上 avifdec 无额外下载成本，换来两侧分派完全一致）
-            Box::new(|| {
-                // libavif 工件一次下载解出 avifenc 与 avifdec（后者供产物解码/代片用；
-                // 探测路径装上 avifdec 无额外下载成本，换来两侧分派完全一致）。
-                // Windows 官方工件包内成员带 .exe（T28）
-                let members: [&str; 2] = if std::env::consts::OS == "windows" {
-                    ["avifenc.exe", "avifdec.exe"]
-                } else {
-                    ["avifenc", "avifdec"]
-                };
-                Ok(install_encoder_members(&avif_source()?, tools_dir, &members)?.remove(0))
-            }),
-        ),
-        OnestopFormat::Jxl | OnestopFormat::JxlLossless => (
-            overrides.cjxl.as_deref(),
-            "cjxl",
-            Box::new(|| install_encoder(&jxl_source()?, tools_dir)),
-        ),
+    let (over, source): (Option<&Path>, EncoderSource) = match format {
+        OnestopFormat::Jpeg => (overrides.cjpeg.as_deref(), mozjpeg_source()?),
+        OnestopFormat::Webp | OnestopFormat::WebpLossless => {
+            (overrides.cwebp.as_deref(), webp_source()?)
+        }
+        // libavif 的 avifdec（产物代片解码）不在此解析：解码侧走 PIXEL_ARENA_AVIFDEC
+        // 环境变量注入的既有机制，编码侧只需 avifenc。
+        OnestopFormat::Avif => (overrides.avifenc.as_deref(), avif_source()?),
+        OnestopFormat::Jxl | OnestopFormat::JxlLossless => {
+            (overrides.cjxl.as_deref(), jxl_source()?)
+        }
         OnestopFormat::Png => return Ok(None),
     };
-    resolve_encoder(over, tool, install).map(Some)
+    resolve_encoder(over, &source, tools_dir).map(Some)
 }
 
 /// 大小优先搜索的探测缝（T21）：把原图按格式 + 质量编码到 scratch_dir，返回产物字节数。
@@ -593,7 +474,8 @@ pub fn probe_onestop_size(
 
 // ---------- 各格式编码（*_using 为可注入缝，测试用） ----------
 
-/// 一站式有损 JPEG：确保 MozJPEG 就位（需要时自动下载校验），再把原图编码为指定质量。
+/// 一站式有损 JPEG：确保 MozJPEG 就位（设置覆盖 > 内置落位，缺失报错指引发布页），
+/// 再把原图编码为指定质量。
 ///
 /// 产物写到 `output_dir/<原图名>-q<quality>.jpg`（评测轮工作目录），同名覆盖（幂等）。
 pub fn encode_jpeg(
@@ -603,7 +485,7 @@ pub fn encode_jpeg(
     tools_dir: impl AsRef<Path>,
 ) -> Result<PathBuf, CoreError> {
     validate_quality(quality)?;
-    let encoder = install_encoder(&mozjpeg_source()?, tools_dir)?;
+    let encoder = resolve_encoder(None, &mozjpeg_source()?, tools_dir.as_ref())?;
     encode_jpeg_using(encoder, source, quality, output_dir)
 }
 
@@ -936,145 +818,47 @@ fn validate_quality(quality: u8) -> Result<(), CoreError> {
 
 // ---------- 编码器路径覆盖（T23 设置中心） ----------
 
-/// 解析一次编码所用的编码器可执行文件：设置中心覆盖优先，其次内置自动安装路径。
-/// 覆盖路径必须指向已存在的文件——假路径在启动编码器前 fail-fast，报错点名工具、
-/// 路径与处理办法，用户能直接定位到设置中心去改。
+/// 解析一次编码所用的编码器可执行文件：设置中心覆盖优先，其次内置落位
+/// `<tools_dir>/<名>/<版本>/<member>`（应用壳把安装包捆绑文件折进覆盖后，内置落位
+/// 只兜旧版本自动下载时代的既有安装；两处都没有 → 中文报错含官方发布页 URL 与
+/// 「设置页指定外部路径」指引，决策 0025）。覆盖路径必须指向已存在的文件——假路径
+/// 在启动编码器前 fail-fast，报错点名工具、路径与处理办法，用户能直接定位到设置中心去改。
 fn resolve_encoder(
     over: Option<&Path>,
-    tool: &str,
-    builtin: impl FnOnce() -> Result<PathBuf, CoreError>,
+    source: &EncoderSource,
+    tools_dir: &Path,
 ) -> Result<PathBuf, CoreError> {
-    match over {
-        None => builtin(),
-        Some(path) => {
-            if !path.is_file() {
-                return Err(CoreError::Encode {
-                    message: format!(
-                        "编码器 {tool} 使用了设置中心指定的自定义路径，但该文件不存在：{}。\
-                         请在设置中心更正或清空该路径（清空后恢复内置编码器）",
-                        path.display()
-                    ),
-                });
-            }
-            Ok(path.to_path_buf())
+    if let Some(path) = over {
+        if !path.is_file() {
+            return Err(CoreError::Encode {
+                message: format!(
+                    "编码器 {} 使用了设置中心指定的自定义路径，但该文件不存在：{}。\
+                     请在设置中心更正或清空该路径（清空后恢复内置编码器）",
+                    source.member,
+                    path.display()
+                ),
+            });
         }
+        return Ok(path.to_path_buf());
     }
+    let builtin = tools_dir
+        .join(&source.name)
+        .join(&source.version)
+        .join(&source.member);
+    if builtin.is_file() {
+        return Ok(builtin);
+    }
+    Err(CoreError::Encode {
+        message: format!(
+            "编码器 {member} 的内置文件缺失（可能被安全软件移除，或旧版本安装包未捆绑，运行期不再自动下载）：\
+             请从官方发布页下载安装后重试：{page}；或在设置页指定该编码器的外部路径",
+            member = source.member,
+            page = source.release_page,
+        ),
+    })
 }
 
-// ---------- 编码器安装（下载 → sha256 → 解包 → 复用） ----------
-
-/// 确保来源清单指向的编码器已安装在 `<tools_dir>/<编码器名>/<版本>/<member>` 并返回其路径。
-///
-/// - 本地已有且与安装时写下的 `<member>.sha256` 吻合 → 直接复用（不联网）；
-/// - 本地没有、或文件与安装时哈希不符（损坏/被改）→ 重新下载、校验、解包覆盖；
-/// - 下载内容与登记 sha256 不符 → 报错且不落盘（杜绝损坏或被篡改的编码器进入执行）。
-///
-/// 两处哈希职责不同：来源清单的 sha256 锚定「下载的压缩包工件」；
-/// 安装目录里的 `<member>.sha256` 锚定「解包后的可执行文件」，供下次启动免下载校验。
-pub fn install_encoder(
-    encode_source: &EncoderSource,
-    tools_dir: impl AsRef<Path>,
-) -> Result<PathBuf, CoreError> {
-    let member = encode_source.member.clone();
-    Ok(install_encoder_members(encode_source, tools_dir, &[member.as_str()])?.remove(0))
-}
-
-/// [`install_encoder`] 的多成员版：libavif 工件一次下载校验，同时解出 avifenc 与 avifdec。
-/// 任一成员缺失或校验失败都不落盘（整体失败，不留半套安装）。
-pub fn install_encoder_members(
-    encode_source: &EncoderSource,
-    tools_dir: impl AsRef<Path>,
-    members: &[&str],
-) -> Result<Vec<PathBuf>, CoreError> {
-    let tools_dir = tools_dir.as_ref();
-    let dest_dir = tools_dir.join(&encode_source.name).join(&encode_source.version);
-
-    // 复用检查：全部成员就位且哈希吻合 → 不联网
-    let mut reused = Vec::with_capacity(members.len());
-    let mut all_valid = true;
-    for member in members {
-        let dest = dest_dir.join(member);
-        let sidecar = dest_dir.join(format!("{member}.sha256"));
-        let valid = dest.is_file()
-            && sidecar.is_file()
-            && sha256_file(&dest)? == std::fs::read_to_string(&sidecar).unwrap_or_default().trim();
-        if !valid {
-            all_valid = false;
-            break;
-        }
-        reused.push(dest);
-    }
-    if all_valid {
-        return Ok(reused);
-    }
-
-    std::fs::create_dir_all(&dest_dir).map_err(|err| CoreError::Encode {
-        message: format!("无法创建编码器目录 {}：{err}", dest_dir.display()),
-    })?;
-
-    let url = resolve_url(&encode_source.url);
-    let archive = download(&url)?;
-    let actual = format!("{:x}", Sha256::digest(&archive));
-    if !actual.eq_ignore_ascii_case(&encode_source.sha256) {
-        return Err(CoreError::Encode {
-            message: format!(
-                "下载的编码器 sha256 校验失败（登记 {}，实际 {actual}），已拒绝安装。来源：{url}",
-                &encode_source.sha256
-            ),
-        });
-    }
-
-    // 先解到暂存目录再整体搬入：缺成员/半截失败不留下一套坏安装
-    let staging = tempfile::tempdir().map_err(|err| CoreError::Encode {
-        message: format!("无法创建编码器暂存目录：{err}"),
-    })?;
-    extract_archive_members(&archive, members, staging.path())?;
-    for member in members {
-        let staged = staging.path().join(member);
-        let dest = dest_dir.join(member);
-        std::fs::rename(&staged, &dest).map_err(|err| CoreError::Encode {
-            message: format!("无法安装编码器 {}：{err}", dest.display()),
-        })?;
-        // 记下解包后文件的哈希，作为后续启动免下载校验的锚点
-        std::fs::write(dest_dir.join(format!("{member}.sha256")), sha256_file(&dest)?).map_err(
-            |err| CoreError::Encode {
-                message: format!("无法写入编码器校验文件 {}：{err}", dest.display()),
-            },
-        )?;
-    }
-    Ok(members.iter().map(|member| dest_dir.join(member)).collect())
-}
-
-/// 下载地址解析：PIXEL_ARENA_ENCODER_MIRROR 环境变量可把下载主机换成镜像目录
-/// （拼上原工件文件名），用于离线/内网环境与本票的分发机制测试。
-fn resolve_url(url: &str) -> String {
-    match std::env::var("PIXEL_ARENA_ENCODER_MIRROR") {
-        Ok(mirror) if !mirror.trim().is_empty() => {
-            let file = url.rsplit('/').next().unwrap_or(url);
-            format!("{}/{}", mirror.trim_end_matches('/'), file)
-        }
-        _ => url.to_string(),
-    }
-}
-
-/// 编码器工件大小上限：超出即视为异常（防劫持/误配把巨物拉进内存）。
-const ENCODER_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
-
-fn download(url: &str) -> Result<Vec<u8>, CoreError> {
-    let mut bytes = Vec::new();
-    {
-        let sink = &mut |chunk: &[u8]| -> std::io::Result<()> {
-            bytes.extend_from_slice(chunk);
-            Ok(())
-        };
-        crate::net::download(url, ENCODER_ARCHIVE_MAX_BYTES, &mut |_, _| {}, sink).map_err(
-            |reason| CoreError::Encode {
-                message: format!("下载编码器失败（{url}）：{reason}"),
-            },
-        )?;
-    }
-    Ok(bytes)
-}
+// ---------- 压缩包解包（应用壳 ffmpeg 应用内安装复用；编码器运行期下载已移除） ----------
 
 /// 从压缩包里按文件名解出全部成员到 dest（暂存目录），缺任一成员即报错。
 /// 按 magic number 分流：`PK\x03\x04` 走 zip（T16：Windows 的 libwebp/libjxl 官方
@@ -1188,13 +972,6 @@ fn report_missing(members: &[&str], found: &[bool]) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// 文件哈希下沉到 net 模块（与 ffmpeg 安装同一口径），这里包上编码器场景的中文错误。
-fn sha256_file(path: &Path) -> Result<String, CoreError> {
-    crate::net::sha256_file(path).map_err(|err| CoreError::Encode {
-        message: format!("无法读取已安装的编码器 {}：{err}", path.display()),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1241,35 +1018,49 @@ mod tests {
         );
     }
 
-    // ---------- 编码器路径覆盖（T23）----------
+    // ---------- 编码器路径解析（T23 覆盖 + T32 缺失指引发布页）----------
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name)
     }
 
+    /// 在临时目录按内置落位规则预置一个编码器文件，返回（目录, 文件路径）。
+    fn preseed_builtin(source: &EncoderSource) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(&source.name)
+            .join(&source.version)
+            .join(&source.member);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"stub").unwrap();
+        (dir, path)
+    }
+
     #[test]
-    fn resolve_encoder_without_override_falls_back_to_builtin() {
-        let path =
-            resolve_encoder(None, "cjpeg", || Ok(PathBuf::from("/内置/cjpeg"))).expect("无覆盖应走内置路径");
-        assert_eq!(path, PathBuf::from("/内置/cjpeg"));
+    fn resolve_encoder_without_override_uses_builtin_install() {
+        let source = mozjpeg_source().unwrap();
+        let (dir, path) = preseed_builtin(&source);
+        let resolved = resolve_encoder(None, &source, dir.path()).expect("内置落位存在应被采用");
+        assert_eq!(resolved, path);
     }
 
     #[test]
     fn resolve_encoder_with_existing_override_uses_it() {
-        let dir = std::env::temp_dir().join(format!("pixel-arena-t23-ov-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let custom = dir.join("my-cjpeg");
+        let source = mozjpeg_source().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("my-cjpeg");
         std::fs::write(&custom, b"stub").unwrap();
-        let path = resolve_encoder(Some(&custom), "cjpeg", || Ok(PathBuf::from("/内置/cjpeg")))
-            .expect("存在的覆盖路径应被采用");
-        assert_eq!(path, custom);
-        std::fs::remove_dir_all(&dir).ok();
+        let resolved =
+            resolve_encoder(Some(&custom), &source, dir.path()).expect("存在的覆盖路径应被采用");
+        assert_eq!(resolved, custom);
     }
 
     #[test]
     fn resolve_encoder_with_missing_override_reports_locatable_error() {
         let fake = Path::new("/不存在/fake-cjpeg");
-        let message = resolve_encoder(Some(fake), "cjpeg", || Ok(PathBuf::from("/内置/cjpeg")))
+        let source = mozjpeg_source().unwrap();
+        let message = resolve_encoder(Some(fake), &source, Path::new("/tmp"))
             .err()
             .expect("假覆盖路径应报错")
             .to_string();
@@ -1279,6 +1070,41 @@ mod tests {
             "错误应包含自定义路径本身: {message}"
         );
         assert!(message.contains("设置"), "错误应提示去设置中心处理: {message}");
+    }
+
+    #[test]
+    fn missing_builtin_encoder_error_directs_to_release_page_and_override() {
+        // 决策 0025：运行期不再自动下载——内置缺失的报错必须中文、含官方发布页 URL
+        //（单一数据源 release_page）与「设置页指定外部路径」指引，且不落任何文件
+        let source = mozjpeg_source().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let message = resolve_encoder(None, &source, tools.path())
+            .err()
+            .expect("内置缺失应报错")
+            .to_string();
+        assert!(message.contains(&source.release_page), "报错应含官方发布页 URL: {message}");
+        assert!(message.contains("设置页"), "报错应指引设置页指定外部路径: {message}");
+        assert!(message.contains("内置文件缺失"), "报错应说明缺失原因: {message}");
+        assert!(
+            !tools.path().join(&source.name).exists(),
+            "缺失报错不得创建安装目录"
+        );
+    }
+
+    #[test]
+    fn encoder_sources_pin_official_release_pages() {
+        // 发布页 URL 的单一数据源钉死（票面 #41 指定的四个官方地址）：
+        // 核心库报错、设置页跳转链接与「关于」库链接都从这里读
+        let cases = [
+            (mozjpeg_source().unwrap(), "https://github.com/mozilla/mozjpeg/releases"),
+            (webp_source().unwrap(), "https://github.com/webmproject/libwebp/releases"),
+            (avif_source().unwrap(), "https://github.com/AOMediaCodec/libavif/releases"),
+            (jxl_source().unwrap(), "https://github.com/libjxl/libjxl/releases"),
+        ];
+        for (source, page) in cases {
+            assert_eq!(source.release_page, page, "{} 的发布页应单一来源", source.name);
+            assert!(source.release_page.starts_with("https://"));
+        }
     }
 
     #[cfg(unix)]

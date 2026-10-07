@@ -32,10 +32,12 @@ pub use tool_status::{about_info_impl, tool_status_impl};
 struct AppState {
     workspace: Arc<Mutex<Workspace>>,
     path: Arc<PathBuf>,
-    /// 编码器安装目录（应用数据目录 tools/，一站式模式首次使用时自动下载）。
+    /// 编码器内置落位目录（应用数据目录 tools/，旧版本自动下载时代的既有安装继续
+    /// 可用；运行期下载已移除，决策 0025）。
     tools_dir: Arc<PathBuf>,
     /// T29-4：安装包捆绑的编码器目录（<resource_dir>/encoders，只读随包分发）。
-    /// 编码链定位顺序：设置覆盖 > 捆绑 > tools/ 下载安装。目录可能不存在
+    /// 编码链定位顺序：设置覆盖 > 捆绑 > tools/ 既有安装；都缺失 → 编码时报错
+    /// 指引官方发布页（决策 0025）。目录可能不存在
     ///（未捆绑场景），所有读取都以 is_file 判定，缺失安全退化。
     bundled_encoders: Arc<PathBuf>,
     /// 视频流服务（T15）：Linux 端 WebKitGTK 媒体引擎不走 asset 协议，视频元素从
@@ -1104,9 +1106,9 @@ pub fn export_round_file(
 /// T23：设置里的编码器覆盖 → 核心库 EncoderOverrides（一次性编码调用携带，
 /// 不做进程级全局状态；CLI 侧恒为默认值，行为只由命令行参数决定）。
 /// T29-4 捆绑语义：覆盖为空的项优先解析安装包捆绑的编码器
-///（bundled/encoders/<member>，只读随包分发），捆绑也缺失才留 None 走核心库
-///「下载 → sha256 校验 → 安装到 tools/」既有路径。捆绑与 tools/ 同时存在时
-/// 捆绑优先，与设置页状态徽标（tool_status）口径一致。
+///（bundled/encoders/<member>，只读随包分发），捆绑也缺失才留 None（核心库按
+/// tools/ 既有落位解析，都没有则报错指引官方发布页，决策 0025）。捆绑与 tools/
+/// 同时存在时捆绑优先，与设置页状态徽标（tool_status）口径一致。
 fn to_core_overrides(
     over: &settings::EncoderOverrides,
     bundled_encoders: &Path,

@@ -16,6 +16,7 @@ import { applyTheme } from './theme';
 import {
   defaultSettings,
   isSafeLibraryUrl,
+  releasePageHref,
   sourceLabel,
   ENCODER_FIELDS,
   type AboutData,
@@ -392,7 +393,8 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   const encoderHint = document.createElement('p');
   encoderHint.className = 'settings-hint';
   encoderHint.textContent =
-    '留空使用内置编码器（安装包已捆绑，标「内置 + 版本号」；捆绑缺失时首次使用自动下载）。' +
+    '留空使用内置编码器（安装包已捆绑，标「内置 + 版本号」；捆绑缺失时不会自动下载，' +
+    '请从各条目的「官方发布页」下载后把可执行文件路径填到下方输入框接入）。' +
     '设置外部路径且有效时优先使用。保存后修改对后续新建评测轮立即生效，运行中的任务不受影响。';
   encoder.append(encoderTitle, encoderHint);
 
@@ -403,9 +405,22 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     badge.className = 'settings-badge';
     const lineHint = document.createElement('span');
     lineHint.className = 'settings-status-hint';
-    statusLine.append(badge, lineHint);
+    // 「官方发布页」链接（决策 0025）：地址来自后端锁定清单（release_page 单一数据源，
+    // 与核心库缺失报错、关于页库链接同源），渲染前过 isSafeLibraryUrl 白名单——
+    // 非 https 时不设 href（<a> 无 href 即纯文本，不产生可点击链接）。
+    const releaseLink = document.createElement('a');
+    releaseLink.className = 'settings-link';
+    releaseLink.textContent = '官方发布页';
+    releaseLink.title = '从编码器官方发布页下载可执行文件，保存后在下方指定其路径';
+    statusLine.append(badge, lineHint, releaseLink);
     statusRenderers.push(() => {
       renderStatus(statuses.get(field.key), badge, lineHint);
+      const href = statuses.has(field.key) ? releasePageHref(statuses.get(field.key)!) : null;
+      if (href) {
+        releaseLink.href = href;
+      } else {
+        releaseLink.removeAttribute('href');
+      }
     });
 
     const label = document.createElement('span');

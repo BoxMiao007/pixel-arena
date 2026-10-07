@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use pixel_arena_core::encode::{encode_onestop, probe_onestop_size, EncoderOverrides, EncoderSource, OnestopFormat};
+use pixel_arena_core::encode::{encode_onestop, probe_onestop_size, EncoderOverrides, OnestopFormat};
 use pixel_arena_core::ladder::{quality_ladder, size_search, LadderItem, LOSSLESS_FORMATS, LOSSY_FORMATS};
 use pixel_arena_core::parallel::{concurrency_limit, logical_cores, run_parallel};
 use pixel_arena_core::{score_images, CoreError};
@@ -77,7 +77,7 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
 
-        /// 编码器安装目录（默认应用数据目录 tools/，与桌面应用共用；首次使用自动下载）。
+        /// 编码器内置落位目录（默认应用数据目录 tools/，与桌面应用共用；缺失时报错指引官方发布页）。
         #[arg(long, value_name = "DIR")]
         tools_dir: Option<PathBuf>,
 
@@ -503,25 +503,6 @@ fn parse_format_selection(
     Ok(selected)
 }
 
-/// 编码器首次使用预告（大小优先搜索与正式生成前都会调用；每个编码器只提示一次）。
-fn announce_encoder_download(item_format: &str, tools_dir: &Path, announced: &mut Vec<String>) {
-    if let Some((source, members)) = encoder_source_for(item_format) {
-        if !announced.contains(&source.name) {
-            announced.push(source.name.clone());
-            let installed = members.iter().all(|member| {
-                tools_dir
-                    .join(&source.name)
-                    .join(&source.version)
-                    .join(member)
-                    .is_file()
-            });
-            if !installed {
-                eprintln!("正在下载编码器 {}…", source.name);
-            }
-        }
-    }
-}
-
 /// 展开编码阶梯：取点数据源 = 核心库 ladder 模块（单一实现，GUI 目录同源）。
 fn build_run_ladder(
     mode: &LadderMode,
@@ -529,7 +510,6 @@ fn build_run_ladder(
     lossless_sel: &[OnestopFormat],
     reference: &Path,
     tools_dir: &Path,
-    announced: &mut Vec<String>,
 ) -> Result<BuiltLadder, String> {
     let mut ladder: Vec<LadderItem> = Vec::new();
     let mut notes = std::collections::HashMap::new();
@@ -563,7 +543,6 @@ fn build_run_ladder(
             let scratch = tempfile::tempdir()
                 .map_err(|error| format!("无法创建探测暂存目录：{error}"))?;
             for format in lossy_sel {
-                announce_encoder_download(format.as_str(), tools_dir, announced);
                 eprintln!("正在搜索 {} 逼近目标大小…", format.display_name());
                 let result = size_search(*format, *target_bytes, &mut |quality| {
                     // CLI 不读 GUI 设置：覆盖恒为默认值，探测与正式生成同一约定
@@ -636,21 +615,6 @@ fn dedup(values: Vec<String>) -> Vec<String> {
         }
     }
     seen
-}
-
-/// 格式 → 编码器来源与所需成员（PNG 走进程内编码，无外部编码器）。
-/// 仅用于「正在下载编码器」预告；真正的下载/复用由核心库 encode_onestop 内部完成。
-fn encoder_source_for(format: &str) -> Option<(EncoderSource, Vec<&'static str>)> {
-    use pixel_arena_core::encode::{avif_source, jxl_source, mozjpeg_source, webp_source};
-    match format {
-        "jpeg" => mozjpeg_source().ok().map(|source| (source, vec!["cjpeg"])),
-        "webp" | "webp-lossless" => webp_source().ok().map(|source| (source, vec!["cwebp"])),
-        "avif" => avif_source()
-            .ok()
-            .map(|source| (source, vec!["avifenc", "avifdec"])),
-        "jxl" | "jxl-lossless" => jxl_source().ok().map(|source| (source, vec!["cjxl"])),
-        _ => None,
-    }
 }
 
 /// 编码器安装目录默认值：与桌面端共用（Tauri app_data_dir + tools/，见 src-tauri/src/lib.rs）。
@@ -751,12 +715,11 @@ fn run_run(args: RunArgs) -> ExitCode {
     }
 
     // 阶梯构建：大小优先模式在此完成逼近搜索（探测 = 真实编码，标注/失败在此结算）
-    let mut announced: Vec<String> = Vec::new();
     let BuiltLadder {
         items: ladder,
         notes,
         mut any_failed,
-    } = match build_run_ladder(&mode, &lossy_sel, &lossless_sel, &reference, &tools_dir, &mut announced)
+    } = match build_run_ladder(&mode, &lossy_sel, &lossless_sel, &reference, &tools_dir)
     {
         Ok(built) => built,
         Err(message) => return fail_message(&message),
@@ -789,8 +752,6 @@ fn run_run(args: RunArgs) -> ExitCode {
     // 生成阶段：沿用桌面端一站式语义，单项失败继续其余档位，结束统一结算
     let mut products: Vec<(String, String, Option<u8>, Option<String>, PathBuf)> = Vec::new();
     for (index, item) in ladder.iter().enumerate() {
-        // 编码器首次使用预告：成员文件缺失即会触发下载（每个编码器只提示一次）
-        announce_encoder_download(&item.format, &tools_dir, &mut announced);
         eprintln!("正在生成 {}（{}/{}）", item.label, index + 1, ladder.len());
         // CLI 行为只由命令行参数决定，不读 GUI 设置：编码器覆盖恒为空（T23）
         match encode_onestop(

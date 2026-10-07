@@ -10,6 +10,7 @@ import {
   defaultSettings,
   sourceLabel,
   isSafeLibraryUrl,
+  releasePageHref,
   ENCODER_FIELDS,
   type SettingsData,
 } from './settings';
@@ -172,5 +173,18 @@ describe('isSafeLibraryUrl（关于区块库名超链接的白名单校验）', 
     expect(isSafeLibraryUrl('javascript:alert(1)')).toBe(false);
     expect(isSafeLibraryUrl('data:text/html,hi')).toBe(false);
     expect(isSafeLibraryUrl('')).toBe(false);
+  });
+});
+
+describe('releasePageHref（编码器条目「官方发布页」链接，决策 0025）', () => {
+  it('https 发布页返回地址供渲染超链接', () => {
+    expect(releasePageHref({ releasePage: 'https://github.com/mozilla/mozjpeg/releases' }))
+      .toBe('https://github.com/mozilla/mozjpeg/releases');
+  });
+
+  it('非 https / null（如 ffmpeg 无发布页条目）返回 null，渲染纯文本', () => {
+    expect(releasePageHref({ releasePage: 'http://example.com/releases' })).toBeNull();
+    expect(releasePageHref({ releasePage: 'javascript:alert(1)' })).toBeNull();
+    expect(releasePageHref({ releasePage: null })).toBeNull();
   });
 });

@@ -3,13 +3,12 @@
 // 编码器以桩脚本代替真实 MozJPEG（离线可跑、CI 稳定）；真实 MozJPEG 的端到端
 // 验证由环境变量 PIXEL_ARENA_CJPEG_PATH 门控的本机测试承担（见 T10 笔记）。
 // 桩编码器用 shell 脚本实现，故涉及子进程的用例仅 POSIX 可跑。
+// 编码器运行期下载已移除（T32，决策 0025）：内置缺失走中文报错 + 官方发布页指引。
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use pixel_arena_core::encode::{encode_jpeg_using, encode_onestop, EncoderOverrides};
+use pixel_arena_core::naming::ConflictPolicy;
 
-use pixel_arena_core::encode::{encode_jpeg_using, install_encoder, EncoderSource};
+use std::io::Read as _;
 
 fn data(name: &str) -> String {
     format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"))
@@ -119,133 +118,37 @@ fn missing_source_file_reports_chinese_io_error() {
     assert!(message.contains("无法读取"), "应是中文 IO 错误: {message}");
 }
 
-// ---------- 编码器安装（下载 → sha256 校验 → 解包 → 复用） ----------
-
-/// 起一个只服务指定字节的本地 HTTP 服务器，返回（base URL, 请求计数）。
-/// 每个连接读掉请求头后回一个 200 + Content-Length，随即关闭。
-fn serve_bytes(body: &'static [u8]) -> (String, Arc<AtomicUsize>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let hits = Arc::new(AtomicUsize::new(0));
-    let hits_for_thread = hits.clone();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            hits_for_thread.fetch_add(1, Ordering::SeqCst);
-            // 读掉请求头（读到 \r\n\r\n 或流结束为止）
-            let mut buf = [0u8; 4096];
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                }
-            }
-            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
-            let _ = stream.write_all(head.as_bytes());
-            let _ = stream.write_all(body);
-            let _ = stream.flush();
-        }
-    });
-    (format!("http://{addr}"), hits)
-}
-
-/// 打一个 tar.gz：内含 nested/<member>，内容 = content，权限 755。
-fn tar_gz(member: &str, content: &[u8]) -> Vec<u8> {
-    let mut tar_builder = tar::Builder::new(Vec::new());
-    let mut header = tar::Header::new_gnu();
-    header.set_size(content.len() as u64);
-    header.set_mode(0o755);
-    header.set_cksum();
-    tar_builder.append_data(&mut header, member, content).unwrap();
-    let tar_bytes = tar_builder.into_inner().unwrap();
-    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    gz.write_all(&tar_bytes).unwrap();
-    gz.finish().unwrap()
-}
-
-fn source_for(url: String, sha256: String, member: &'static str) -> EncoderSource {
-    EncoderSource {
-        name: "mozjpeg".to_string(),
-        version: "test".to_string(),
-        url,
-        sha256,
-        member: member.to_string(),
-    }
-}
+// ---------- 编码器缺失：中文报错 + 官方发布页指引（T32，决策 0025） ----------
 
 #[test]
-fn install_encoder_downloads_verifies_installs_and_reuses() {
-    let script = b"#!/bin/sh\nprintf 'FAKEJPEG' > \"$4\"\n";
-    let archive = tar_gz("mozjpeg-test/cjpeg", script);
-    let expected_sha = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(&archive))
-    };
-    let (base, hits) = serve_bytes(Box::leak(archive.into_boxed_slice()));
-    let source = source_for(format!("{base}/mozjpeg-test.tar.gz"), expected_sha, "cjpeg");
-
-    let tools = std::env::temp_dir().join(format!("pixel-arena-tools-{}", std::process::id()));
-    let installed = install_encoder(&source, &tools).expect("安装应成功");
-
-    // 落位：<tools>/mozjpeg/<version>/<member>
-    assert_eq!(
-        installed,
-        tools.join("mozjpeg").join("test").join("cjpeg"),
-        "安装路径规则: {installed:?}"
+fn onestop_with_missing_builtin_encoder_reports_release_page_and_override_guidance() {
+    // 空工具目录（无覆盖、无内置落位）：编码必须在启动子进程前报错，
+    // 错误含官方发布页 URL（单一数据源）与「设置页指定外部路径」指引
+    let tools = std::env::temp_dir().join(format!("pixel-arena-t32-missing-{}", std::process::id()));
+    let out_dir = std::env::temp_dir().join(format!("pixel-arena-t32-missing-out-{}", std::process::id()));
+    let message = encode_onestop(
+        data("photo-ref.png"),
+        "jpeg",
+        Some(75),
+        &out_dir,
+        &tools,
+        &EncoderOverrides::default(),
+        ConflictPolicy::AutoAppend,
+    )
+    .err()
+    .expect("内置编码器缺失应报错")
+    .to_string();
+    assert!(
+        message.contains("https://github.com/mozilla/mozjpeg/releases"),
+        "报错应含 MozJPEG 官方发布页 URL: {message}"
     );
-    assert_eq!(std::fs::read(&installed).unwrap(), script, "安装内容 = 压缩包内的成员文件");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&installed).unwrap().permissions().mode();
-        assert!(mode & 0o111 != 0, "安装出的编码器必须可执行: mode={mode:o}");
-    }
-
-    // 二次调用：本地哈希校验通过，直接复用，不再发起下载
-    let again = install_encoder(&source, &tools).expect("二次安装应成功");
-    assert_eq!(again, installed);
-    assert_eq!(hits.load(Ordering::SeqCst), 1, "第二次安装不应重新下载");
-
-    std::fs::remove_dir_all(&tools).ok();
-}
-
-#[test]
-fn install_encoder_rejects_corrupted_download() {
-    // 压缩包真身是 A，来源清单里登记的是 B 的哈希 → 校验必须失败且不落盘
-    let archive = tar_gz("mozjpeg-test/cjpeg", b"real-bytes");
-    let wrong_sha = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(b"something-else"))
-    };
-    let (base, hits) = serve_bytes(Box::leak(archive.into_boxed_slice()));
-    let source = source_for(format!("{base}/mozjpeg-test.tar.gz"), wrong_sha, "cjpeg");
-
-    let tools = std::env::temp_dir().join(format!("pixel-arena-tools-corrupt-{}", std::process::id()));
-    let message = install_encoder(&source, &tools).err().expect("哈希不符应报错").to_string();
-    assert!(message.contains("sha256"), "错误应点名 sha256 校验: {message}");
-    assert!(!tools.join("mozjpeg").join("test").join("cjpeg").exists(), "校验失败不得安装");
-    assert_eq!(hits.load(Ordering::SeqCst), 1);
-    std::fs::remove_dir_all(&tools).ok();
-}
-
-#[test]
-fn install_encoder_reports_missing_member() {
-    let archive = tar_gz("other/file.txt", b"not the encoder");
-    let sha = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(&archive))
-    };
-    let (base, _hits) = serve_bytes(Box::leak(archive.into_boxed_slice()));
-    let source = source_for(format!("{base}/mozjpeg-test.tar.gz"), sha, "cjpeg");
-
-    let tools = std::env::temp_dir().join(format!("pixel-arena-tools-nomember-{}", std::process::id()));
-    let message = install_encoder(&source, &tools).err().expect("缺成员应报错").to_string();
-    assert!(message.contains("cjpeg"), "错误应点名缺的成员: {message}");
-    std::fs::remove_dir_all(&tools).ok();
+    assert!(message.contains("设置页"), "报错应指引设置页指定外部路径: {message}");
+    assert!(message.contains("内置文件缺失"), "报错应说明缺失: {message}");
+    assert!(
+        !tools.join("mozjpeg").exists(),
+        "缺失路径不得创建安装目录（运行期不再下载）"
+    );
+    std::fs::remove_dir_all(&out_dir).ok();
 }
 
 // ---------- 真实 MozJPEG 端到端（本机手动触发，CI 离线自动跳过） ----------

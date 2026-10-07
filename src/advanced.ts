@@ -312,10 +312,12 @@ export interface ToolStatusLite {
 
 /**
  * 建轮前批量校验条目编码器的可执行文件是否可用（含设置页外部路径覆盖）。判定
- * 与设置页 tool_status 同源：external/builtin = 可用；unconfigured = 内置未安装
- * 但首次使用自动下载，放行；unavailable（外部路径失效/探测失败/内置损坏）=
- * 明确报错并指向设置页。toolKeyOf 返回 null 的条目（表外视频编码器没有独立
- * 可执行文件）跳过，交给创建时后端报错。返回 entryId → 错误文本（空 = 全部可用）。
+ * 与设置页 tool_status 同源：external/builtin = 可用；unconfigured（内置文件缺失，
+ * 运行期不再自动下载，决策 0025）与 unavailable（外部路径失效/探测失败/内置损坏）
+ * = 明确报错并指向设置页。ffmpeg 的 unconfigured 例外放行：它的就位方式是设置页
+ * 「应用内下载」，跑分时报错已有专门指引，不在建轮入口拦。toolKeyOf 返回 null 的
+ * 条目（表外视频编码器没有独立可执行文件）跳过，交给创建时后端报错。
+ * 返回 entryId → 错误文本（空 = 全部可用）。
  */
 export function availabilityErrors(
   entries: AdvancedEntry[],
@@ -335,6 +337,12 @@ export function availabilityErrors(
         entry.id,
         `编码器 ${key} 不可用：${status.hint ?? '可执行文件无法执行'}。` +
           '请到「设置」更正或清空该工具的路径并保存后重试',
+      );
+    } else if (status.source === 'unconfigured' && key !== 'ffmpeg') {
+      errors.set(
+        entry.id,
+        `编码器 ${key} 未就绪：${status.hint ?? '内置编码器文件缺失，运行期不再自动下载'}。` +
+          '请到「设置 → 编码器」从官方发布页获取后指定外部路径，或重新安装应用',
       );
     }
   }

@@ -1,10 +1,9 @@
-// 手工验证一站式编码链路（T10）：编码一张图为 JPEG，编码器缺失时自动走
-// 「下载 → sha256 校验 → 安装」机制。与 examples/dump_metrics.rs 同为手工核对工具。
+// 手工验证一站式编码链路（T10）：编码一张图为 JPEG。编码器按「内置落位
+// tools/<名>/<版本>/<member>」解析，缺失时报中文错误并指引官方发布页（T32 起不再
+// 运行期下载）。与 examples/dump_metrics.rs 同为手工核对工具。
 //
 // 用法：
 //   cargo run -p pixel-arena-core --example encode_jpeg_sample -- <原图> <质量> [输出目录] [工具目录]
-// 离线测试分发机制（镜像覆盖下载主机，工件同名）：
-//   PIXEL_ARENA_ENCODER_MIRROR=http://127.0.0.1:8010 cargo run ...
 use pixel_arena_core::encode::encode_jpeg;
 
 fn main() {

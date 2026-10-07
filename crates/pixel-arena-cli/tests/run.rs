@@ -3,15 +3,13 @@
 //
 // 分层策略（沿 T10/T11 先例，全部离线可跑）：
 // - 无损 PNG 组不需要外部编码器：正常路径的主断言（CSV/JSON/产物落盘）用它做全链路验证；
-// - 有损格式依赖编码器：用「预置桩编码器 + 哈希 sidecar」验证已装复用路径，
-//   用「本地 HTTP 镜像服务 shared/encoders 工件」验证首次下载与下载失败路径；
+// - 有损格式依赖编码器：用「预置桩编码器」验证内置落位复用路径（T32 起不再检查
+//   哈希 sidecar——运行期下载与校验链已移除），用「缺失 + 空工具目录」验证中文
+//   报错含官方发布页指引（决策 0025），真实编码器用 shared/encoders 工件直接解包预置；
 // - 完整默认阶梯（15 项）依赖本机已装的真实编码器（T11 留下），未装则自动跳过。
 // 样例图复用核心库黄金基准样例（crates/pixel-arena-core/tests/data/）。
 
 use assert_cmd::Command;
-use sha2::{Digest, Sha256};
-use std::io::{Read as _, Write as _};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 /// 黄金基准样例图路径。
@@ -21,56 +19,8 @@ fn sample(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// 起一个把请求路径映射到目录内文件的本地 HTTP 服务器（镜像测试用），返回 base URL。
-fn serve_dir(dir: &Path) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let dir = dir.to_path_buf();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            let mut head = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                match stream.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        head.extend_from_slice(&chunk[..n]);
-                        if head.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                }
-            }
-            let request = String::from_utf8_lossy(&head);
-            let file = request
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("/")
-                .trim_start_matches('/');
-            match std::fs::read(dir.join(file)) {
-                Ok(body) => {
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    let _ = stream.write_all(&body);
-                }
-                Err(_) => {
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    );
-                }
-            }
-            let _ = stream.flush();
-        }
-    });
-    format!("http://{addr}")
-}
-
-/// 预置一个桩 cwebp：复用检查只看「成员文件存在 + sidecar 哈希吻合」，
-/// 桩被调用时把入库的真实 WebP 样例拷成产物，保证跑分环节能解码。
+/// 预置一个桩 cwebp 到内置落位（T32：复用只看「成员文件存在」，哈希 sidecar 已随
+/// 下载链路移除），桩被调用时把入库的真实 WebP 样例拷成产物，保证跑分环节能解码。
 /// 参数契约（encode_webp_using）：$1=-quiet $2=-q $3=质量 $4=输入 $5=-o $6=产物临时文件。
 fn preseed_stub_cwebp(tools: &Path, fixture_webp: &Path) {
     let dir = tools.join("libwebp").join("1.6.0");
@@ -82,8 +32,6 @@ fn preseed_stub_cwebp(tools: &Path, fixture_webp: &Path) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&encoder, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let digest = format!("{:x}", Sha256::digest(std::fs::read(&encoder).unwrap()));
-    std::fs::write(dir.join("cwebp.sha256"), digest).unwrap();
 }
 
 // ---------- 正常路径：无损 PNG 组（无需外部编码器，全链路真实） ----------
@@ -411,7 +359,7 @@ fn run_缺必填参数时退出码2() {
 // ---------- 有损格式：已装复用（桩编码器预置 tools 目录，离线确定性） ----------
 
 #[test]
-fn run_已装编码器直接复用_webp有损档_输出真实跑分行_无下载提示() {
+fn run_内置落位编码器直接复用_webp有损档_输出真实跑分行() {
     let tools = tempfile::tempdir().unwrap();
     preseed_stub_cwebp(tools.path(), &sample("photo-dis.webp"));
     let out = tempfile::tempdir().unwrap();
@@ -443,11 +391,6 @@ fn run_已装编码器直接复用_webp有损档_输出真实跑分行_无下载
         "stderr：{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        !stderr.contains("正在下载编码器"),
-        "已装编码器不应提示下载：{stderr}"
-    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     let fields: Vec<&str> = stdout.lines().nth(1).unwrap().split(',').collect();
     assert_eq!(fields[2], "webp", "format 列应为规范格式字符串");
@@ -460,81 +403,12 @@ fn run_已装编码器直接复用_webp有损档_输出真实跑分行_无下载
     );
 }
 
-// ---------- 有损格式：首次下载（本地镜像，不依赖外网） ----------
+// ---------- 有损格式：内置编码器缺失（T32：运行期下载已移除，报错指引官方发布页） ----------
 
 #[test]
-fn run_首次使用自动下载_本地镜像_提示一次_二次直接复用() {
-    let mirror_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../pixel-arena-shared/encoders");
-    let Ok(mirror_root) = mirror_root.canonicalize() else {
-        eprintln!("跳过：未找到 pixel-arena-shared/encoders 工件目录");
-        return;
-    };
-    let base = serve_dir(&mirror_root);
-    let tools = tempfile::tempdir().unwrap();
-    let out = tempfile::tempdir().unwrap();
-    let reference = sample("photo-ref.png");
-
-    let run_once = || {
-        Command::cargo_bin("pixel-arena-cli")
-            .unwrap()
-            .args([
-                "run",
-                "--reference",
-                reference.to_str().unwrap(),
-                "--formats",
-                "jpeg",
-                "--qualities",
-                "75",
-                "--out",
-                out.path().to_str().unwrap(),
-                "--tools-dir",
-                tools.path().to_str().unwrap(),
-            ])
-            .env("PIXEL_ARENA_ENCODER_MIRROR", &base)
-            .env_remove("HTTPS_PROXY")
-            .env_remove("https_proxy")
-            .env_remove("ALL_PROXY")
-            .env_remove("all_proxy")
-            .output()
-            .unwrap()
-    };
-
-    let first = run_once();
-    assert_eq!(
-        first.status.code(),
-        Some(0),
-        "stderr：{}",
-        String::from_utf8_lossy(&first.stderr)
-    );
-    let stderr = String::from_utf8(first.stderr).unwrap();
-    assert!(
-        stderr.contains("正在下载编码器") && stderr.contains("mozjpeg"),
-        "首次使用应提示下载并点名编码器：{stderr}"
-    );
-
-    let second = run_once();
-    assert_eq!(
-        second.status.code(),
-        Some(0),
-        "stderr：{}",
-        String::from_utf8_lossy(&second.stderr)
-    );
-    let stderr = String::from_utf8(second.stderr).unwrap();
-    assert!(
-        !stderr.contains("正在下载编码器"),
-        "已装后二次运行不应提示下载：{stderr}"
-    );
-    let stdout = String::from_utf8(second.stdout).unwrap();
-    let fields: Vec<&str> = stdout.lines().nth(1).unwrap().split(',').collect();
-    assert_eq!(fields[2], "jpeg");
-    assert_eq!(fields[3], "75");
-}
-
-#[test]
-fn run_镜像无工件下载失败_退出码1_中文报错_stdout空() {
-    let empty = tempfile::tempdir().unwrap();
-    let base = serve_dir(empty.path());
+fn run_内置编码器缺失_退出码1_中文报错含官方发布页与外部路径指引() {
+    // 空工具目录（无内置落位）：不再自动下载，必须报中文错误并给出
+    // 官方发布页 URL（单一数据源）与「设置页指定外部路径」指引
     let tools = tempfile::tempdir().unwrap();
     let reference = sample("photo-ref.png");
 
@@ -548,24 +422,28 @@ fn run_镜像无工件下载失败_退出码1_中文报错_stdout空() {
             "jpeg",
             "--qualities",
             "75",
+            // 无损组显式清空：只跑有损 JPEG 一档（缺失编码器 → 全部失败）
             "--lossless",
             "--tools-dir",
             tools.path().to_str().unwrap(),
         ])
-        .env("PIXEL_ARENA_ENCODER_MIRROR", &base)
-        .env_remove("HTTPS_PROXY")
-        .env_remove("https_proxy")
-        .env_remove("ALL_PROXY")
-        .env_remove("all_proxy")
         .output()
         .unwrap();
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("正在下载编码器"), "下载前应提示：{stderr}");
     assert!(
-        stderr.contains("下载编码器失败"),
-        "下载失败应透传核心库中文错误：{stderr}"
+        stderr.contains("内置文件缺失"),
+        "报错应说明内置文件缺失：{stderr}"
+    );
+    assert!(
+        stderr.contains("https://github.com/mozilla/mozjpeg/releases"),
+        "报错应含官方发布页 URL（单一数据源）：{stderr}"
+    );
+    assert!(stderr.contains("设置页"), "报错应指引设置页指定外部路径：{stderr}");
+    assert!(
+        !tools.path().join("mozjpeg").exists(),
+        "缺失路径不得创建安装目录（运行期不再下载）"
     );
     assert!(output.stdout.is_empty(), "全部失败时 stdout 应为空");
 }
@@ -752,7 +630,6 @@ fn run_默认阶梯_本机已装编码器时_15行_格式质量序与无损锚�
 
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("（15/15）"), "生成进度应走到最后一项：{stderr}");
-    assert!(!stderr.contains("正在下载编码器"), "本机已装不应提示下载：{stderr}");
 }
 
 #[test]
@@ -809,28 +686,18 @@ fn run_png对照组_html报告_自包含_格式质量列齐全_退出码0() {
 
 // ---------- T21：基准质量（质量优先自动取点）与目标大小（大小优先搜索） ----------
 
-/// 用本地镜像服务真实 cjpeg 跑一轮 run（ mozjpeg 工件仅 170KB，秒级），
-/// 返回 (退出码, stdout, stderr)。工件目录缺失时返回 None（调用方跳过）。
+/// 从共享工件目录解出真实 cjpeg 预置到 tools 内置落位，跑一轮 run，
+/// 返回 (退出码, stdout, stderr)。工件缺失时返回 None（调用方跳过）。
+/// T32 起运行期下载已移除：测试改用与安装包捆绑同源的 shared/encoders 工件
+/// 直接解包预置（mozjpeg 工件仅 170KB，秒级）。
 fn run_with_real_cjpeg(extra_args: &[&str]) -> Option<(Option<i32>, String, String)> {
-    let mirror_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../pixel-arena-shared/encoders");
-    let Ok(mirror_root) = mirror_root.canonicalize() else {
-        eprintln!("跳过：未找到 pixel-arena-shared/encoders 工件目录");
-        return None;
-    };
-    let base = serve_dir(&mirror_root);
-    let tools = tempfile::tempdir().unwrap();
+    let tools = preseed_real_cjpeg()?;
     let reference = sample("photo-ref.png");
     let output = Command::cargo_bin("pixel-arena-cli")
         .unwrap()
         .args(["run", "--reference", reference.to_str().unwrap()])
         .args(extra_args)
         .args(["--tools-dir", tools.path().to_str().unwrap()])
-        .env("PIXEL_ARENA_ENCODER_MIRROR", &base)
-        .env_remove("HTTPS_PROXY")
-        .env_remove("https_proxy")
-        .env_remove("ALL_PROXY")
-        .env_remove("all_proxy")
         .output()
         .unwrap();
     Some((
@@ -838,6 +705,65 @@ fn run_with_real_cjpeg(extra_args: &[&str]) -> Option<(Option<i32>, String, Stri
         String::from_utf8(output.stdout).unwrap(),
         String::from_utf8(output.stderr).unwrap(),
     ))
+}
+
+/// 在目录树里按文件名找文件（工件包内可能多一层版本目录）。
+fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    let direct = dir.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    let mut queue: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+    while let Some(path) = queue.pop() {
+        if path.is_file() && path.file_name().is_some_and(|n| n == name) {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                queue.extend(entries.filter_map(|entry| entry.ok()).map(|entry| entry.path()));
+            }
+        }
+    }
+    None
+}
+
+/// 解包 shared/encoders 的 mozjpeg 工件到 tools/mozjpeg/4.1.5/（内置落位规则）。
+/// 工件缺失返回 None；解包/归位失败 panic（环境异常应当暴露而不是静默跳过）。
+#[allow(unused_variables)]
+fn preseed_real_cjpeg() -> Option<tempfile::TempDir> {
+    let artifact = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../pixel-arena-shared/encoders/mozjpeg-v4.1.5-linux-x86_64.tar.gz");
+    let Ok(artifact) = artifact.canonicalize() else {
+        eprintln!("跳过：未找到 pixel-arena-shared/encoders 的 mozjpeg 工件");
+        return None;
+    };
+    let tools = tempfile::tempdir().unwrap();
+    let dest = tools.path().join("mozjpeg").join("4.1.5");
+    std::fs::create_dir_all(&dest).unwrap();
+    let ok = std::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(&artifact)
+        .arg("-C")
+        .arg(&dest)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    assert!(ok, "解包 mozjpeg 工件失败：{}", artifact.display());
+    let cjpeg = find_file(&dest, "cjpeg").expect("工件内应有 cjpeg");
+    let member = dest.join("cjpeg");
+    if cjpeg != member {
+        std::fs::rename(&cjpeg, &member).expect("cjpeg 应能归位到落位路径");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&member, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    Some(tools)
 }
 
 fn quality_columns(stdout: &str) -> Vec<&str> {

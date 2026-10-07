@@ -5,8 +5,8 @@
 // - 外部优先：设置了路径覆盖且该文件可用 → external，检测版本一并展示；
 // - 无效提示并可回退内置：覆盖路径文件缺失或探测失败 → unavailable，hint 指引
 //   清空该项回退内置（保存时已被 validate 拦下，这里兜「保存之后文件被删/挪」）；
-// - 未配置：没有覆盖且内置尚未就位（安装包未捆绑该编码器且 tools/ 未下载 /
-//   ffmpeg 待应用内下载）→ unconfigured；
+// - 未配置：没有覆盖且内置尚未就位（安装包未捆绑该编码器且无旧版 tools/ 安装 /
+//   ffmpeg 待应用内下载）→ unconfigured，hint 指引官方发布页 + 外部路径（决策 0025）；
 // - 内置：随安装包捆绑（resource_dir/encoders/<member>）或已下载安装到 tools/ 且
 //   探测可用 → builtin，版本行展示锁定清单版本号（票面「内置+版本号」）；
 //   捆绑与 tools/ 安装同时在时以捆绑优先（与编码链 to_core_overrides 一致）。
@@ -49,6 +49,10 @@ pub struct ToolStatus {
     pub builtin_installed: bool,
     /// 运行 -version/--version 探测到的版本首行；探测失败为 None。
     pub detected_version: Option<String>,
+    /// 该编码器项目的官方发布页（https，决策 0025 单一数据源 = 核心库
+    /// EncoderSource.release_page；前端经 isSafeLibraryUrl 白名单渲染超链接）。
+    /// ffmpeg 走应用内下载、无发布页条目 → None。
+    pub release_page: Option<String>,
     /// 中文提示（不可用原因与处理办法、未配置说明等）。
     pub hint: Option<String>,
 }
@@ -130,6 +134,7 @@ fn build_status(
     override_path: Option<String>,
     builtin: Option<(PathBuf, bool)>,
     builtin_version: Option<String>,
+    release_page: Option<String>,
     probe: &dyn Fn(&Path, &str) -> Result<String, String>,
 ) -> ToolStatus {
     let (builtin_path, builtin_bundled) = builtin
@@ -155,13 +160,16 @@ fn build_status(
         builtin_version,
         builtin_installed,
         detected_version: None,
+        release_page,
         hint: None,
     };
     let Some(effective) = effective else {
         status.hint = Some(if key == "ffmpeg" {
             "视频跑分前需要 FFmpeg：可在设置页点击「应用内下载」，或指定本机已有的 ffmpeg".to_string()
         } else {
-            "内置文件缺失（可能被安全软件移除，或旧版本安装包未捆绑）：首次使用时自动下载补装，也可指定外部路径".to_string()
+            // 决策 0025：运行期不再自动下载——指引官方发布页（条目的「官方发布页」
+            // 链接与报错共用 release_page 单一数据源）+ 外部路径接入
+            "内置文件缺失（可能被安全软件移除，或旧版本安装包未捆绑）：请从官方发布页下载编码器，保存后在下方指定其路径，或重新安装应用".to_string()
         });
         return status;
     };
@@ -182,7 +190,7 @@ fn build_status(
             } else if builtin_bundled {
                 format!("{err}。安装包捆绑的编码器似乎已损坏：请重新安装应用，或在设置页改用外部路径")
             } else {
-                format!("{err}。内置安装似乎已损坏，使用时会自动重新下载覆盖")
+                format!("{err}。内置安装似乎已损坏：请重新下载安装（见官方发布页），或在设置页改用外部路径")
             });
         }
     }
@@ -243,6 +251,8 @@ pub fn tool_status_with(
         settings.ffmpeg_path.clone(),
         Some((ffmpeg_setup::ffmpeg_path(tools_dir), false)),
         Some(ffmpeg_setup::pinned_ffmpeg_version().to_string()),
+        // ffmpeg 不捆绑、走应用内下载（决策 0014/D1），无编码器发布页条目
+        None,
         probe,
     )];
     let encoder = |key: &str,
@@ -254,6 +264,7 @@ pub fn tool_status_with(
             over.cloned(),
             builtin_encoder_path(source, member),
             version_of(source),
+            source.as_ref().ok().map(|src| src.release_page.clone()),
             probe,
         )
     };
@@ -274,6 +285,8 @@ pub fn tool_status_with(
         over.avifdec.clone(),
         avifdec_builtin,
         version_of(&avif),
+        // avifdec 与 avifenc 同属 libavif：发布页同源（决策 0025）
+        avif.as_ref().ok().map(|src| src.release_page.clone()),
         probe,
     ));
     statuses
@@ -296,18 +309,19 @@ pub fn tool_status_for_keys(
         .collect()
 }
 
-/// 「关于」区块数据（决策 D18）：项目信息 + 引用的库版本清单，版本一律读锁定清单
-///（EncoderSource.version + ffmpeg 版本常量），库名超链接到各自项目主页。
+/// 「关于」区块数据（决策 D18 + 0025）：项目信息 + 引用的库版本清单，版本一律读锁定
+/// 来源（EncoderSource.version + ffmpeg 版本常量），库链接用来源清单的官方发布页
+///（release_page 单一数据源，与核心库缺失报错、设置页编码器条目链接共用）。
 pub fn about_info_impl() -> AboutInfo {
     use pixel_arena_core::encode;
-    let library = |name: &str, source: &Result<encode::EncoderSource, _>, url: &str| {
+    let library = |name: &str, source: &Result<encode::EncoderSource, _>| {
         source
             .as_ref()
             .ok()
             .map(|src| AboutLibrary {
                 name: name.to_string(),
                 version: src.version.clone(),
-                url: url.to_string(),
+                url: src.release_page.clone(),
             })
     };
     let mut libraries = Vec::new();
@@ -315,16 +329,16 @@ pub fn about_info_impl() -> AboutInfo {
     let webp = encode::webp_source();
     let avif = encode::avif_source();
     let jxl = encode::jxl_source();
-    if let Some(entry) = library("MozJPEG", &mozjpeg, "https://github.com/mozilla/mozjpeg") {
+    if let Some(entry) = library("MozJPEG", &mozjpeg) {
         libraries.push(entry);
     }
-    if let Some(entry) = library("libwebp", &webp, "https://developers.google.com/speed/webp") {
+    if let Some(entry) = library("libwebp", &webp) {
         libraries.push(entry);
     }
-    if let Some(entry) = library("libavif", &avif, "https://github.com/AOMediaCodec/libavif") {
+    if let Some(entry) = library("libavif", &avif) {
         libraries.push(entry);
     }
-    if let Some(entry) = library("libjxl", &jxl, "https://github.com/libjxl/libjxl") {
+    if let Some(entry) = library("libjxl", &jxl) {
         libraries.push(entry);
     }
     libraries.push(AboutLibrary {
@@ -389,7 +403,18 @@ mod tests {
         let cjpeg = statuses.iter().find(|s| s.key == "cjpeg").unwrap();
         assert_eq!(cjpeg.source, ToolSource::Unconfigured);
         assert!(!cjpeg.builtin_installed);
-        assert!(cjpeg.hint.as_deref().unwrap().contains("自动下载"));
+        assert!(
+            cjpeg.hint.as_deref().unwrap().contains("官方发布页"),
+            "未配置 hint 应指引官方发布页（决策 0025）：{:?}",
+            cjpeg.hint
+        );
+        assert_eq!(
+            cjpeg.release_page.as_deref(),
+            Some("https://github.com/mozilla/mozjpeg/releases"),
+            "编码器条目应带官方发布页（单一数据源）"
+        );
+        let ffmpeg = statuses.iter().find(|s| s.key == "ffmpeg").unwrap();
+        assert_eq!(ffmpeg.release_page, None, "ffmpeg 走应用内下载，无发布页条目");
         assert_eq!(cjpeg.effective_path, None);
         // 锁定清单版本照报（关于与状态行同源）
         assert!(cjpeg.builtin_version.is_some(), "cjpeg 应带内置锁定版本");
@@ -459,7 +484,7 @@ mod tests {
         let cwebp = statuses.iter().find(|s| s.key == "cwebp").unwrap();
         assert_eq!(cwebp.source, ToolSource::Unavailable);
         let hint = cwebp.hint.as_deref().unwrap();
-        assert!(hint.contains("重新下载"), "内置损坏应说明会自动重下: {hint}");
+        assert!(hint.contains("重新下载"), "内置损坏应指引重新下载安装: {hint}");
     }
 
     #[test]
@@ -526,7 +551,7 @@ mod tests {
     #[test]
     fn tool_status_for_keys_keeps_unavailability_semantics() {
         // 与设置页同源：外部路径失效 → unavailable + 指引；未配置（内置未装）→
-        // unconfigured（编码器首次使用自动下载，建轮前不算不可用）
+        // unconfigured（T32 起建轮前由前端 availabilityErrors 报错红标）
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::default();
         settings.encoder_overrides.cjpeg = Some("/不存在/cjpeg".to_string());

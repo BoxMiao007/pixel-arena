@@ -17,7 +17,8 @@ export interface WindowSize {
   height: number;
 }
 
-/** 编码器可执行文件路径覆盖；null = 使用内置自动安装的编码器（清空恢复）。 */
+/** 编码器可执行文件路径覆盖；null = 使用内置编码器（安装包捆绑或 tools/ 既有
+ * 安装；运行期下载已移除，缺失见条目「官方发布页」链接，决策 0025）。 */
 export interface EncoderOverrides {
   cjpeg: string | null;
   cwebp: string | null;
@@ -100,6 +101,9 @@ export interface ToolStatus {
   builtinVersion: string | null;
   builtinInstalled: boolean;
   detectedVersion: string | null;
+  /** 该编码器项目的官方发布页（https；与核心库缺失报错、关于页库链接同一数据源）。
+   * ffmpeg 走应用内下载，无发布页条目 → null。 */
+  releasePage: string | null;
   hint: string | null;
 }
 
@@ -113,6 +117,14 @@ const TOOL_SOURCE_LABELS: Record<ToolSourceState, string> = {
 
 export function sourceLabel(state: ToolSourceState): string {
   return TOOL_SOURCE_LABELS[state];
+}
+
+/** 编码器条目的「官方发布页」跳转地址（决策 0025）：与核心库缺失报错、关于页库
+ * 链接共用 release_page 单一数据源。走 isSafeLibraryUrl 白名单——https 返回地址
+ *（调用方渲染 <a>），否则 null（调用方渲染纯文本，不产生可点击链接）。 */
+export function releasePageHref(status: Pick<ToolStatus, 'releasePage'>): string | null {
+  const url = status.releasePage;
+  return url !== null && isSafeLibraryUrl(url) ? url : null;
 }
 
 /** 重置 = 恢复默认值（决策 D17）：清空全部外部路径（编码器覆盖 + FFmpeg）、
