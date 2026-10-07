@@ -189,6 +189,18 @@ pub fn mozjpeg_source() -> Result<EncoderSource, CoreError> {
             sha256: "ded15725f25ff321de1cf56b5faa6a0bd6389111ed3a56faf72016aaa5b6713b".to_string(),
             member: "cjpeg.exe".to_string(),
         }),
+        ("darwin", "aarch64") => Ok(EncoderSource {
+            name: "mozjpeg".to_string(),
+            version: "4.1.5".to_string(),
+            // 官方无 macOS 工件（2026-10-07 核实，Release 无资产）：工件由 CI macos
+            // runner 原生构建（无 SIMD、静态，与 Linux/Windows 工件同配置；
+            // macos-artifact workflow，用户机器性能不足本地构建被排除），工件入库
+            // assets/encoders/ 由 CI 原样上传 Release；哈希锚定入库工件（决策 0014）。
+            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/mozjpeg-v4.1.5-macos-arm64.tar.gz"
+                .to_string(),
+            sha256: "bf8cceff4444716868c3b45acb3937a1e317219be376fafdd7e686093ed088d3".to_string(),
+            member: "cjpeg".to_string(),
+        }),
         (_os, _arch) => Err(unsupported_platform("MozJPEG")),
     }
 }
@@ -215,6 +227,16 @@ pub fn webp_source() -> Result<EncoderSource, CoreError> {
                 .to_string(),
             sha256: "48886f506b21f62e4661f0f4cbfca19800897c385128e8902542d29a950c93f1".to_string(),
             member: "cwebp.exe".to_string(),
+        }),
+        ("darwin", "aarch64") => Ok(EncoderSource {
+            name: "libwebp".to_string(),
+            version: "1.6.0".to_string(),
+            // 官方下载站无 macOS 包（2026-10-07 核实）：工件由 CI macos runner 原生构建
+            //（静态，macos-artifact workflow），入库 assets/encoders/ 由 CI 原样上传。
+            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/libwebp-1.6.0-macos-arm64.tar.gz"
+                .to_string(),
+            sha256: "2ad04ce464327245f0a49dda0ccaf7791e438a2f3331f7f9bbab892c0df7789c".to_string(),
+            member: "cwebp".to_string(),
         }),
         (_os, _arch) => Err(unsupported_platform("libwebp")),
     }
@@ -287,6 +309,17 @@ pub fn jxl_source() -> Result<EncoderSource, CoreError> {
                 .to_string(),
             sha256: "8f53ebce91820c30c9fc9294f06380213c1e2e66b361718880580246b2be008e".to_string(),
             member: "cjxl.exe".to_string(),
+        }),
+        ("darwin", "aarch64") => Ok(EncoderSource {
+            name: "libjxl".to_string(),
+            version: "0.11.1".to_string(),
+            // 官方各版本只有 linux/windows 工件（2026-10-07 核实）：工件由 CI macos
+            // runner 原生构建（静态，macos-artifact workflow），入库 assets/encoders/
+            // 由 CI 原样上传。锁 0.11.1 与 Linux/Windows 同版本。
+            url: "https://github.com/BoxMiao007/pixel-arena/releases/download/encoders-v1/libjxl-v0.11.1-macos-arm64.tar.gz"
+                .to_string(),
+            sha256: "2b53e626b2747c50841712672b3f9391238f47d3babcd2cc333e3567eb0f62a8".to_string(),
+            member: "cjxl".to_string(),
         }),
         (_os, _arch) => Err(unsupported_platform("libjxl")),
     }

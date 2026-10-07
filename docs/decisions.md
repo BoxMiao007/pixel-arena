@@ -151,3 +151,11 @@
 - 决策：libavif 编码器三端条目全部直连官方 Release 工件（v1.4.2 的 linux/windows/macOS-artifacts.zip，内含 avifenc/avifdec/avifgainmaputil，libaom 3.14.1 + libpng + zlib 静态链接）——Linux 从本机自建换官方（动态依赖仅 libc/libm/libstdc++/libgcc 系统基础库，ldd 核对过；本机端到端编码→解码实测通过）、Windows 官方工件（导入表仅 KERNEL32/VCRUNTIME140/UCRT，试跑正常）、macOS 新增（arm64 Mach-O，Apple Silicon；Intel macOS 无官方工件仍报暂无分发；应用内 HTTP 下载不设 quarantine，Gatekeeper 不拦）。哈希锚定官方 zip（版本化 tag 不可变）；Windows 包内成员名带 .exe（encode.rs 成员列表与 decode.rs 的 avifdec 路径按平台分派）。升级 = 换 URL + 换哈希（现有机制）。
 - 为什么：用户指出官方已有构建好的文件（决策 0012「官方只发源码」的记录过时，T28 核实 v1.4.2 起官方 Release 附带三平台预编译工件）；直连官方 = 零构建（用户机器性能不足，本地交叉编译被明确排除）、供应链与 libwebp/libjxl 同级（版本化 URL + sha256 双锚）、三端来源一致。
 - 放弃了：CI windows runner 自建（avif-artifact workflow 已写好并跑过两轮，官方工件可用后删除）；本地 mingw 交叉编译（用户明确排除：电脑性能不足）；Linux 继续用本机自建工件（官方直连后自建不再必要，encoders-v1 的旧 Linux AVIF 资产作废留存）；「每次发布自动跟随官方最新版本」（自动追 latest 会让哈希锚定失效——下载内容随版本变、无预锚定值，供应链校验退化为只防损坏不防篡改；现有版本锁定机制升级只需改条目两处）。
+
+## 0022 · macOS 分发补齐：ffmpeg 直连 martin-riedl + 三编码器 CI 自建（已确认）
+
+- 日期：2026-10-07
+- 决策：macOS（Apple Silicon）的四个分发空缺全部落地——ffmpeg/ffprobe 直连 ffmpeg.martin-riedl.de 的版本化 release（arm64 9.0.2，时间戳+版本锁定目录 URL 不可变，--enable-libvmaf 3.2.0 已核对，官方 .sha256 与下载实测一致，两个独立 zip 分开下载校验）；MozJPEG/libwebp/libjxl 官方均无 macOS 工件（2026-10-07 核实），由 CI macos runner 原生构建（macos-artifact workflow，workflow_dispatch 手动触发；无 SIMD/静态与 Linux/Windows 工件同配置），工件入库 assets/encoders/ 由 CI 原样上传 Release encoders-v1，哈希锚定入库工件。应用版本号随发版同步升（tauri.conf.json + workspace Cargo.toml，v0.1.2 起）。
+- 为什么：用户点名解决缺口 2 剩余部分；ffmpeg 三条件（含 libvmaf + 版本化锁定 URL + 可锚定哈希）在 martin-riedl 齐备（evermeet 只有 Intel 且作者明确不做 ARM、osxexperts 无版本化锁定）；编码器官方无工件只能 CI 自建（用户机器性能不足本地构建被排除）；CI runner 原生编译免去交叉复杂度。
+- 放弃了：evermeet.cx（仅 Intel，Apple Silicon 要 Rosetta 转译，作者明确不做 ARM）；osxexperts.net（URL 不版本化）；Homebrew 运行期安装（决策 0010 放弃过的不可控来源）；vcpkg 装 mozjpeg（port 不装 cjpeg 工具）；libjxl 的 skcms（google/skcms 仓库已被清空，clone 不可得，走 lcms2）。
+- 构建配方：macos-artifact workflow（MozJPEG cmake 无 SIMD、libwebp cmake 静态、libjxl cmake 静态 + BUILD_TESTING=OFF + lcms2）；CI 调试迭代踩坑：CMake 4 需 -DCMAKE_POLICY_VERSION_MINIMUM=3.5、libjxl 需 BUILD_TESTING=OFF（GTest）+ highway（brew）+ skcms 替代。

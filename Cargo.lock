@@ -2951,7 +2951,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pixel-arena"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "pixel-arena-core",
  "serde",
@@ -2964,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "pixel-arena-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -2976,7 +2976,7 @@ dependencies = [
 
 [[package]]
 name = "pixel-arena-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "butteraugli",
  "flate2",

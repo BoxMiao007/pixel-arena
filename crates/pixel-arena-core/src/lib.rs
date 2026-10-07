@@ -34,7 +34,8 @@ mod tests {
 
     #[test]
     fn version_returns_current_core_version() {
-        // 独立事实来源：当前核心库版本就是 0.1.0（与 Cargo.toml 保持一致）。
-        assert_eq!(version(), "0.1.0");
+        // 独立事实来源：version() 读 Cargo.toml 的 package version，断言恒等——
+        // 版本号升级时本测试不用改。
+        assert_eq!(version(), env!("CARGO_PKG_VERSION"));
     }
 }
