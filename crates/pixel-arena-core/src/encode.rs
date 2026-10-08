@@ -42,7 +42,6 @@ pub struct EncoderSource {
     /// 可执行文件名（捆绑目录与 tools/ 落位同名；Windows 带 .exe）。
     pub member: String,
     /// 该编码器项目的官方发布页（https）。缺失时的报错指引与设置页链接用它。
-    /// 该编码器项目的官方发布页（https）。缺失时的报错指引与设置页链接用它。
     pub release_page: String,
     /// 开源许可证（「关于」页库清单展示，单一数据源）。各库按其锁定版本仓库的
     /// LICENSE 原文核实（2026-10）：MozJPEG 是 libjpeg-turbo 系三重 BSD 风格
