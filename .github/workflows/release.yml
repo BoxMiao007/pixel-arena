@@ -137,7 +137,9 @@ jobs:
           }
           echo "---- 便携包成员 ----"
           $zipEntries | ForEach-Object { echo $_ }
-          # NSIS / MSI 解包逐成员核对（windows-latest runner 自带 7-Zip）。
+          # NSIS / MSI 解包逐成员核对。NSIS 用 7z（能还原安装器文件名）；MSI 不能用
+          # 7z——实测（7-Zip 26.00）只还原 cabinet 内部键名（Path/PathFile_<GUID>），
+          # 不按 File 表还原安装路径，改用 Windows 原生 msiexec /a 管理镜像解包。
           # 路径级核对：成员必须落在某个 encoders 目录下、全树唯一且非空——
           # 按裸文件名在任意目录命中即过（「任一匹配即过」）是被禁止的写法。
           function Assert-EncoderMembers([string]$extractDir, [string]$artifact) {
@@ -154,10 +156,11 @@ jobs:
           $nsis = (Resolve-Path 'target\release\bundle\nsis\*.exe').Path
           7z x -y -o"_verify_nsis" $nsis | Out-Null
           Assert-EncoderMembers '_verify_nsis' 'NSIS 安装包'
-          # 7-Zip 支持按 MSI 文件表还原文件名
           $msi = (Resolve-Path 'target\release\bundle\msi\*.msi').Path
-          7z x -y -o"_verify_msi" $msi | Out-Null
-          Assert-EncoderMembers '_verify_msi' 'MSI 安装包'
+          $msiDir = Join-Path $env:RUNNER_TEMP 'verify-msi'
+          $proc = Start-Process msiexec.exe -ArgumentList "/a", "`"$msi`"", "TARGETDIR=`"$msiDir`"", "/qn" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "msiexec 管理镜像解包失败（ExitCode=$($proc.ExitCode)）" }
+          Assert-EncoderMembers $msiDir 'MSI 安装包'
           echo "---- 产物体积 ----"
           Get-ChildItem 'target\release\bundle\nsis\*.exe', 'target\release\bundle\msi\*.msi', 'PixelArena.zip' | Format-Table Name, Length
 
