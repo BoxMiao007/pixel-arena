@@ -105,39 +105,50 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
 
   // 状态行渲染：徽标（来源 + 探测版本）+ 提示小字。statusLoadError 置位时
   // 各行显示「检测失败」（IPC 异常不阻塞设置编辑，重开面板或保存成功后重试）。
-  // infoWrap（#45，编码器行专用）：有完整说明时行内只留版本号，说明进悬停气泡；
+  // info（#45，编码器行专用）：有完整说明时行内只留版本号，说明进悬停气泡；
   // 无说明（如内置正常态）或异常/加载中时图标整隐。FFmpeg 行不传则维持行内全文。
+  // ⓘ 图标收进徽标内部（#45 反馈）：徽标文案经 textContent 重写会连带清掉图标，
+  // 统一走 setBadge 重写后补回；wrap 现在包裹徽标，隐藏只能按图标/气泡各自控制。
   let statusLoadError: string | null = null;
   const renderStatus = (
     status: ToolStatus | undefined,
     badge: HTMLElement,
     hint: HTMLElement,
-    infoWrap?: { wrap: HTMLElement; bubble: HTMLElement },
+    info?: { wrap: HTMLElement; bubble: HTMLElement; icon: HTMLElement },
   ): void => {
+    const setBadge = (label: string, cls: string): void => {
+      badge.textContent = label;
+      badge.className = cls;
+      if (info) badge.append(info.icon);
+    };
+    const setInfoVisible = (visible: boolean): void => {
+      if (!info) return;
+      info.icon.style.display = visible ? '' : 'none';
+      // 气泡常态由 CSS :hover/:focus-within 接管；置 none 是为了无说明时
+      // 连悬停也不弹（内联样式优先级高于 CSS 规则）
+      info.bubble.style.display = visible ? '' : 'none';
+    };
     if (statusLoadError) {
-      badge.textContent = '检测失败';
-      badge.className = 'settings-badge settings-badge-unavailable';
+      setBadge('检测失败', 'settings-badge settings-badge-unavailable');
       hint.textContent = statusLoadError;
-      if (infoWrap) infoWrap.wrap.style.display = 'none';
+      setInfoVisible(false);
       return;
     }
     if (!status) {
-      badge.textContent = '检测中…';
-      badge.className = 'settings-badge';
+      setBadge('检测中…', 'settings-badge');
       hint.textContent = '';
-      if (infoWrap) infoWrap.wrap.style.display = 'none';
+      setInfoVisible(false);
       return;
     }
-    badge.textContent = sourceLabel(status.source);
-    badge.className = `settings-badge settings-badge-${status.source}`;
+    setBadge(sourceLabel(status.source), `settings-badge settings-badge-${status.source}`);
     const version = status.detectedVersion ?? status.builtinVersion;
-    if (infoWrap && status.hint) {
+    if (info && status.hint) {
       hint.textContent = version ?? '';
-      infoWrap.bubble.textContent = status.hint;
-      infoWrap.wrap.style.display = '';
+      info.bubble.textContent = status.hint;
+      setInfoVisible(true);
     } else {
       hint.textContent = [version, status.hint].filter(Boolean).join(' · ');
-      if (infoWrap) infoWrap.wrap.style.display = 'none';
+      setInfoVisible(false);
     }
   };
 
@@ -433,14 +444,16 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     // 「官方发布页」图标按钮（决策 0025；v0.1.4 反馈由文本链接改图标）：地址来自后端
     // 锁定清单（release_page 单一数据源，与核心库缺失报错、关于页库链接同源），渲染前过
     // isSafeLibraryUrl 白名单——非 https 时不设 href 并转禁用态。
+    // #45 反馈：按钮排到「清空」后面（与路径框同行），不再放状态行。
     const releaseLink = document.createElement('a');
     releaseLink.className = 'settings-icon-btn';
-    releaseLink.title = '从编码器官方发布页下载可执行文件，保存后在下方指定其路径';
+    releaseLink.title = '从编码器官方发布页下载可执行文件，保存后在左侧路径框指定其路径';
     releaseLink.setAttribute('aria-label', '官方发布页');
     setExternalTarget(releaseLink);
     releaseLink.append(externalLinkIcon());
     // 详文气泡（#45）：状态行只留版本号，完整说明悬停/聚焦「圆圈叹号」图标时
-    // 气泡展开；图标是否显示由 renderStatus 按有无说明控制，FFmpeg 行不走此机制
+    // 气泡展开；ⓘ 图标收进「未配置」徽标内部（#45 反馈），气泡锚定包裹徽标的
+    // wrap；图标是否显示由 renderStatus 按有无说明控制，FFmpeg 行不走此机制
     const infoBubble = document.createElement('span');
     infoBubble.className = 'settings-bubble';
     const infoIcon = document.createElement('span');
@@ -451,9 +464,10 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     infoIcon.append(infoIconSvg());
     const infoWrap = document.createElement('span');
     infoWrap.className = 'settings-status-info';
-    infoWrap.append(infoIcon, infoBubble);
-    statusLine.append(badge, infoWrap, lineHint, releaseLink);
-    const info = { wrap: infoWrap, bubble: infoBubble };
+    infoWrap.append(badge, infoBubble);
+    badge.append(infoIcon);
+    statusLine.append(infoWrap, lineHint);
+    const info = { wrap: infoWrap, bubble: infoBubble, icon: infoIcon };
     statusRenderers.push(() => {
       renderStatus(statuses.get(field.key), badge, lineHint, info);
       const href = statuses.has(field.key) ? releasePageHref(statuses.get(field.key)!) : null;
@@ -510,7 +524,7 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     });
     const row = document.createElement('div');
     row.className = 'settings-row';
-    row.append(label, input, browse, clearBtn);
+    row.append(label, input, browse, clearBtn, releaseLink);
     encoder.append(statusLine, row);
     syncFns.push(() => {
       input.value = draft.encoderOverrides[field.key] ?? '';

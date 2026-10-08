@@ -1240,7 +1240,8 @@ body {
 }
 
 /* 状态详文气泡（#45）：编码器行有完整说明时行内只留版本号，说明悬停/聚焦
-   「圆圈叹号」图标时气泡展开；气泡在图标下方弹出，压住后续行（悬停瞬态） */
+   「圆圈叹号」图标时气泡展开；气泡在徽标下方弹出，压住后续行（悬停瞬态）。
+   ⓘ 图标收进徽标内部（#45 反馈），颜色继承徽标四态配色 */
 .settings-status-info {
   position: relative;
   display: inline-flex;
@@ -1250,9 +1251,14 @@ body {
 .settings-status-info-icon {
   display: inline-flex;
   align-items: center;
-  color: var(--muted);
+  margin-left: 0.3rem;
   cursor: help;
   outline-offset: 2px;
+}
+
+.settings-status-info-icon svg {
+  width: 11px;
+  height: 11px;
 }
 
 .settings-status-info-icon:focus-visible {
