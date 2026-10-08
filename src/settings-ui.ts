@@ -6,7 +6,7 @@
 //   整体回滚并显示中文原因；内存设置只在校验成功后替换，运行中任务不受影响）；
 // - 重置 = 恢复默认值（清空外部路径、恢复默认并发/主题/目录）；
 // - 「关于」固定在底部：项目信息 + 引用的库版本清单（版本读后端锁定清单，
-//   库名 https 链接渲染为超链接）。
+//   库名 https 链接渲染为超链接，每项带开源协议文本）。
 // 状态（内置/外部/未配置/不可用 + 探测版本）来自 settings_tool_status IPC，
 // 打开面板与每次保存成功后刷新——设置改完即重查，改动对后续评测轮立即生效。
 
@@ -597,7 +597,8 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   void refreshStatuses();
 }
 
-/** 渲染「关于」正文：项目信息行 + 库版本清单（库名 https 链接渲染为超链接）。 */
+/** 渲染「关于」正文：项目信息行 + 库版本清单（库名 https 链接渲染为超链接，
+ *  每项附版本与开源协议文本，协议读后端锁定清单）。 */
 function renderAbout(info: AboutData): Node[] {
   const nodes: Node[] = [];
   const headLine = document.createElement('p');
@@ -651,7 +652,7 @@ function renderAbout(info: AboutData): Node[] {
     } else {
       item.append(document.createTextNode(lib.name));
     }
-    item.append(document.createTextNode(` ${lib.version}`));
+    item.append(document.createTextNode(` ${lib.version} · 许可证：${lib.license}`));
     list.append(item);
   }
   nodes.push(list);

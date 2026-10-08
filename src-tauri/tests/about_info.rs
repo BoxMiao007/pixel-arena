@@ -51,3 +51,29 @@ fn about_info_库名链接都是可跳转的主页地址() {
         );
     }
 }
+
+#[test]
+fn about_info_库清单都带开源协议文本() {
+    // 每个库条目必须有协议文本（设置页展示硬口径）：编码器与 EncoderSource.license
+    // 同源核对，FFmpeg 锁定的是 GPL 静态构建（与 ffmpeg_setup 来源注口径一致）。
+    let info = about_info_impl();
+    let by_name = |name: &str| {
+        info.libraries
+            .iter()
+            .find(|lib| lib.name == name)
+            .unwrap_or_else(|| panic!("库清单缺少 {name}"))
+    };
+    let encoder_cases = [
+        ("MozJPEG", pixel_arena_core::encode::mozjpeg_source().unwrap().license),
+        ("libwebp", pixel_arena_core::encode::webp_source().unwrap().license),
+        ("libavif", pixel_arena_core::encode::avif_source().unwrap().license),
+        ("libjxl", pixel_arena_core::encode::jxl_source().unwrap().license),
+    ];
+    for (name, license) in &encoder_cases {
+        assert_eq!(&by_name(name).license, license, "「{name}」的协议应与 EncoderSource.license 同源");
+    }
+    assert_eq!(by_name("FFmpeg").license, "GPL", "锁定的 ffmpeg 静态构建是 GPL 变体");
+    for lib in &info.libraries {
+        assert!(!lib.license.is_empty(), "「{}」的协议文本不能为空", lib.name);
+    }
+}

@@ -60,12 +60,14 @@ pub struct ToolStatus {
     pub hint: Option<String>,
 }
 
-/// 「关于」区块的单个库条目：库名（超链接）+ 版本 + 主页。
+/// 「关于」区块的单个库条目：库名（超链接）+ 版本 + 开源协议 + 主页。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AboutLibrary {
     pub name: String,
     pub version: String,
+    /// 开源协议文本（编码器读 EncoderSource.license 单源；FFmpeg 为锁定 GPL 静态构建）。
+    pub license: String,
     pub url: String,
 }
 
@@ -326,6 +328,7 @@ pub fn about_info_impl() -> AboutInfo {
             .map(|src| AboutLibrary {
                 name: name.to_string(),
                 version: src.version.clone(),
+                license: src.license.clone(),
                 url: src.release_page.clone(),
             })
     };
@@ -349,6 +352,8 @@ pub fn about_info_impl() -> AboutInfo {
     libraries.push(AboutLibrary {
         name: "FFmpeg".to_string(),
         version: crate::ffmpeg_setup::pinned_ffmpeg_version().to_string(),
+        // 锁定的三端静态构建均为 GPL 变体（与 ffmpeg_setup 来源注口径一致，含 libvmaf）
+        license: "GPL".to_string(),
         url: "https://ffmpeg.org".to_string(),
     });
     AboutInfo {

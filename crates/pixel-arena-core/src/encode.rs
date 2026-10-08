@@ -42,7 +42,13 @@ pub struct EncoderSource {
     /// 可执行文件名（捆绑目录与 tools/ 落位同名；Windows 带 .exe）。
     pub member: String,
     /// 该编码器项目的官方发布页（https）。缺失时的报错指引与设置页链接用它。
+    /// 该编码器项目的官方发布页（https）。缺失时的报错指引与设置页链接用它。
     pub release_page: String,
+    /// 开源许可证（「关于」页库清单展示，单一数据源）。各库按其锁定版本仓库的
+    /// LICENSE 原文核实（2026-10）：MozJPEG 是 libjpeg-turbo 系三重 BSD 风格
+    /// （BSD-3-Clause + IJG + zlib）；libwebp / libjxl 为 BSD-3-Clause；
+    /// libavif 主协议为 BSD-2-Clause。
+    pub license: String,
 }
 
 /// 编码器可执行文件路径覆盖（T23 设置中心）：某项为 Some 时一站式编码跳过内置
@@ -201,6 +207,7 @@ pub fn mozjpeg_source() -> Result<EncoderSource, CoreError> {
             // bundle-encoders.* 取自 encoders-v1 Release 解进安装包资源目录（决策 0014）。
             version: "4.1.5".to_string(),
             member: if cfg!(windows) { "cjpeg.exe" } else { "cjpeg" }.to_string(),
+            license: "BSD-3-Clause（另含 IJG、zlib 条款）".to_string(),
             release_page,
         }),
         (_os, _arch) => Err(unsupported_platform("MozJPEG")),
@@ -217,6 +224,7 @@ pub fn webp_source() -> Result<EncoderSource, CoreError> {
             // 三端一起由 bundle-encoders.* 打进安装包资源目录（决策 0014）。
             version: "1.6.0".to_string(),
             member: if cfg!(windows) { "cwebp.exe" } else { "cwebp" }.to_string(),
+            license: "BSD-3-Clause".to_string(),
             release_page,
         }),
         (_os, _arch) => Err(unsupported_platform("libwebp")),
@@ -234,6 +242,7 @@ pub fn avif_source() -> Result<EncoderSource, CoreError> {
             //（产物代片解码用，经 PIXEL_ARENA_AVIFDEC 注入解码链）。
             version: "1.4.2".to_string(),
             member: if cfg!(windows) { "avifenc.exe" } else { "avifenc" }.to_string(),
+            license: "BSD-2-Clause".to_string(),
             release_page,
         }),
         (_os, _arch) => Err(unsupported_platform("libavif")),
@@ -250,6 +259,7 @@ pub fn jxl_source() -> Result<EncoderSource, CoreError> {
             // macOS 无官方工件，由 CI macos runner 原生构建，随安装包捆绑（决策 0014）。
             version: "0.11.1".to_string(),
             member: if cfg!(windows) { "cjxl.exe" } else { "cjxl" }.to_string(),
+            license: "BSD-3-Clause".to_string(),
             release_page,
         }),
         (_os, _arch) => Err(unsupported_platform("libjxl")),
@@ -1109,6 +1119,22 @@ mod tests {
         for (source, page) in cases {
             assert_eq!(source.release_page, page, "{} 的发布页应单一来源", source.name);
             assert!(source.release_page.starts_with("https://"));
+        }
+    }
+
+    #[test]
+    fn encoder_sources_pin_licenses() {
+        // 开源协议文本的单一数据源钉死（按各库锁定版本仓库的 LICENSE 原文核实，
+        // 2026-10）：「关于」页库清单从这里读。合规信息不许悄悄漂移，改协议
+        // 必须连同核实依据一起改。
+        let cases = [
+            (mozjpeg_source().unwrap(), "BSD-3-Clause（另含 IJG、zlib 条款）"),
+            (webp_source().unwrap(), "BSD-3-Clause"),
+            (avif_source().unwrap(), "BSD-2-Clause"),
+            (jxl_source().unwrap(), "BSD-3-Clause"),
+        ];
+        for (source, license) in cases {
+            assert_eq!(source.license, license, "{} 的协议文本应单一来源", source.name);
         }
     }
 

@@ -154,6 +154,8 @@ export function defaultSettings(): SettingsData {
 export interface AboutLibrary {
   name: string;
   version: string;
+  /** 开源协议文本（编码器读后端锁定清单，FFmpeg 为 GPL 静态构建）。 */
+  license: string;
   url: string;
 }
 
