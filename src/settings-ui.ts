@@ -12,6 +12,7 @@
 
 import { invoke, Channel } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { versionLabel } from './util';
 import { applyTheme } from './theme';
 import {
   defaultSettings,
@@ -103,10 +104,11 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     for (const fn of syncFns) fn();
   };
 
-  // 状态行渲染：徽标（来源 + 探测版本）+ 提示小字。statusLoadError 置位时
+  // 状态行渲染：徽标（来源）+ 提示小字。statusLoadError 置位时
   // 各行显示「检测失败」（IPC 异常不阻塞设置编辑，重开面板或保存成功后重试）。
-  // info（#45，编码器行专用）：有完整说明时行内只留版本号，说明进悬停气泡；
-  // 无说明（如内置正常态）或异常/加载中时图标整隐。FFmpeg 行不传则维持行内全文。
+  // info（#45，编码器行专用；v0.1.5 起 FFmpeg 行同挂）：行内只留 v 简化版本号
+  //（v0.1.5 反馈：探测原文简化为 v4.1.5），完整探测原文与说明进悬停气泡；
+  // 无版本且无说明（异常/加载中）时图标整隐。两个调用点都挂气泡，info 必传。
   // ⓘ 图标收进徽标内部（#45 反馈）：徽标文案经 textContent 重写会连带清掉图标，
   // 统一走 setBadge 重写后补回；wrap 现在包裹徽标，隐藏只能按图标/气泡各自控制。
   let statusLoadError: string | null = null;
@@ -114,7 +116,7 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     status: ToolStatus | undefined,
     badge: HTMLElement,
     hint: HTMLElement,
-    info?: { wrap: HTMLElement; bubble: HTMLElement; icon: HTMLElement },
+    info: { wrap: HTMLElement; bubble: HTMLElement; icon: HTMLElement },
   ): void => {
     const setBadge = (label: string, cls: string): void => {
       badge.textContent = label;
@@ -142,14 +144,11 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     }
     setBadge(sourceLabel(status.source), `settings-badge settings-badge-${status.source}`);
     const version = status.detectedVersion ?? status.builtinVersion;
-    if (info && status.hint) {
-      hint.textContent = version ?? '';
-      info.bubble.textContent = status.hint;
-      setInfoVisible(true);
-    } else {
-      hint.textContent = [version, status.hint].filter(Boolean).join(' · ');
-      setInfoVisible(false);
-    }
+    const versionShort = version === null ? '' : versionLabel(version);
+    // 行内只留 v 简化版本号；探测原文（含 build 日期等）与说明进气泡
+    hint.textContent = versionShort;
+    info.bubble.textContent = [version, status.hint].filter(Boolean).join('；');
+    setInfoVisible(Boolean(version) || Boolean(status.hint));
   };
 
   // 工具状态与设置保存联动：打开面板与每次保存成功后重查（改动立即生效）
@@ -354,10 +353,25 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   ffmpegBadge.className = 'settings-badge';
   const ffmpegStatusHint = document.createElement('span');
   ffmpegStatusHint.className = 'settings-status-hint';
-  ffmpegStatusLine.append(ffmpegBadge, ffmpegStatusHint);
+  // FFmpeg 状态行同挂 #45 详文气泡（v0.1.5 反馈：版本统一 v 简化后，探测原文
+  // 进气泡；机制与编码器行同构——Ⓘ 收进徽标内、气泡锚 wrap）
+  const ffmpegBubble = document.createElement('span');
+  ffmpegBubble.className = 'settings-bubble';
+  const ffmpegIcon = document.createElement('span');
+  ffmpegIcon.className = 'settings-status-info-icon';
+  ffmpegIcon.setAttribute('role', 'img');
+  ffmpegIcon.setAttribute('aria-label', '状态详情');
+  ffmpegIcon.setAttribute('tabindex', '0');
+  ffmpegIcon.append(infoIconSvg());
+  const ffmpegWrap = document.createElement('span');
+  ffmpegWrap.className = 'settings-status-info';
+  ffmpegWrap.append(ffmpegBadge, ffmpegBubble);
+  ffmpegBadge.append(ffmpegIcon);
+  ffmpegStatusLine.append(ffmpegWrap, ffmpegStatusHint);
   ffmpegSection.append(ffmpegStatusLine);
+  const ffmpegInfo = { wrap: ffmpegWrap, bubble: ffmpegBubble, icon: ffmpegIcon };
   statusRenderers.push(() => {
-    renderStatus(statuses.get('ffmpeg'), ffmpegBadge, ffmpegStatusHint);
+    renderStatus(statuses.get('ffmpeg'), ffmpegBadge, ffmpegStatusHint, ffmpegInfo);
   });
 
   const ffmpegLabel = document.createElement('span');
@@ -654,7 +668,7 @@ function renderAbout(info: AboutData): Node[] {
     } else {
       item.append(document.createTextNode(lib.name));
     }
-    item.append(document.createTextNode(` ${lib.version} · 许可证：${lib.license}`));
+    item.append(document.createTextNode(` ${versionLabel(lib.version)} · 许可证：${lib.license}`));
     list.append(item);
   }
   nodes.push(list);

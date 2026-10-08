@@ -28,3 +28,15 @@ export function truncateFileName(name: string, maxLen: number = FILE_NAME_MAX): 
   const tailLen = budget - headLen;
   return `${stem.slice(0, headLen)}…${stem.slice(-tailLen)}${ext}`;
 }
+
+/**
+ * 版本号统一简化显示（v0.1.5 反馈）：从探测/锁定版本原文中取首个
+ * 「数字.数字…」版本串并加 v 前缀，如「mozjpeg version 4.1.5 (build 20261005)」
+ * →「v4.1.5」、「4.1.5」→「v4.1.5」。解析不出数字版本时原样返回（不造假格式，
+ * 调用方将原文照显）；完整原文由调用方另行展示（设置页 #45 详文气泡）。
+ * 纯数字串如「4」不算版本（必须含点），避免把 build 日期/退出码误当版本。
+ */
+export function versionLabel(raw: string): string {
+  const match = raw.match(/\d+(?:\.\d+)+/);
+  return match ? `v${match[0]}` : raw;
+}

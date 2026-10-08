@@ -3,7 +3,7 @@
 // 悬浮全名由调用方以 title 提供（不属本函数职责）。
 
 import { describe, it, expect } from 'vitest';
-import { fileName, truncateFileName, FILE_NAME_MAX } from './util';
+import { fileName, truncateFileName, FILE_NAME_MAX, versionLabel } from './util';
 
 describe('fileName（取路径末端文件名，既有工具）', () => {
   it('POSIX 与 Windows 路径都取最后一段', () => {
@@ -81,5 +81,31 @@ describe('truncateFileName（中间截断 + 保留扩展名）', () => {
     expect(out.length).toBeLessThanOrEqual(FILE_NAME_MAX);
     expect(out.startsWith('.')).toBe(true);
     expect(out).toContain('…');
+  });
+});
+
+// versionLabel（v0.1.5 反馈：设置页/关于页版本统一「v版本号」）——只测公共函数行为。
+// 期望值为票面验收标准推演的字面量：探测原文取首个点分版本串、纯版本串加前缀、
+// 解析不出时原文回退（不造假）。
+describe('versionLabel（探测/锁定版本原文 → v版本号）', () => {
+  it('探测原文取首个「数字.数字」版本串并加 v 前缀', () => {
+    expect(versionLabel('mozjpeg version 4.1.5 (build 20261005)')).toBe('v4.1.5');
+    expect(versionLabel('avifenc 1.4.2 (libaom 3.14.1)')).toBe('v1.4.2');
+    expect(versionLabel('ffmpeg version 7.1-essentials-www.gyan.dev Copyright (c)')).toBe('v7.1');
+  });
+
+  it('锁定清单的纯版本串同样加前缀', () => {
+    expect(versionLabel('4.1.5')).toBe('v4.1.5');
+    expect(versionLabel('1.6.0')).toBe('v1.6.0');
+  });
+
+  it('纯数字（无点）不当版本——build 日期/退出码不误摘', () => {
+    expect(versionLabel('build 20261005')).toBe('build 20261005');
+    expect(versionLabel('20261005')).toBe('20261005');
+  });
+
+  it('解析不出数字版本时原样返回（不造假格式）', () => {
+    expect(versionLabel('检测异常')).toBe('检测异常');
+    expect(versionLabel('')).toBe('');
   });
 });
