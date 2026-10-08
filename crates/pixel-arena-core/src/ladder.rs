@@ -110,6 +110,28 @@ pub fn quality_ladder(baseline: u8) -> Result<Vec<LadderItem>, CoreError> {
     Ok(ladder)
 }
 
+/// 单点模式阶梯（v0.1.5 反馈：一站式加「单点模式」开关）：每有损格式只压基准
+/// 质量 1 点（基准夹到该格式有效范围内，如 JXL 上限 95），无损对照组照常（无损
+/// 与质量无关，保持「有损 vs 无损」参照与现行清单口径一致）。取点仍在核心库，
+/// 前端不自持档位定义。
+pub fn single_point_ladder(baseline: u8) -> Result<Vec<LadderItem>, CoreError> {
+    if baseline > 100 {
+        return Err(CoreError::Encode {
+            message: format!("基准质量 {baseline} 无效，有效范围 0–100"),
+        });
+    }
+    let mut ladder = Vec::new();
+    for format in LOSSY_FORMATS {
+        let (lo, hi) = quality_range(format);
+        let quality = baseline.clamp(lo, hi);
+        ladder.push(LadderItem::new(format, Some(quality)));
+    }
+    for format in LOSSLESS_FORMATS {
+        ladder.push(LadderItem::new(format, None));
+    }
+    Ok(ladder)
+}
+
 /// 大小优先的不可达类型：目标落在该格式可达大小范围之外，已回退最接近点。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizeUnreachable {
@@ -329,6 +351,48 @@ mod tests {
         let lossless = LadderItem::new(OnestopFormat::WebpLossless, None);
         assert_eq!(lossless.format, "webp-lossless");
         assert_eq!(lossless.label, "无损 WebP");
+    }
+
+    #[test]
+    fn single_point_ladder_每有损格式压基准_1_点_无损组照常() {
+        // v0.1.5 反馈：单点模式 = 有损 4 格式 × 基准 1 点 + 无损对照组
+        let ladder = single_point_ladder(75).unwrap();
+        let actual: Vec<(&str, Option<u8>)> = ladder
+            .iter()
+            .map(|item| (item.format.as_str(), item.quality))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                ("jpeg", Some(75)),
+                ("webp", Some(75)),
+                ("avif", Some(75)),
+                ("jxl", Some(75)),
+                ("png", None),
+                ("webp-lossless", None),
+                ("jxl-lossless", None),
+            ],
+            "单点阶梯 = 每有损格式基准质量 1 点 + 无损组，顺序与完整阶梯一致"
+        );
+        assert_eq!(ladder[0].label, "JPEG q75");
+    }
+
+    #[test]
+    fn single_point_ladder_基准夹到格式范围_jxl_上限_95() {
+        // JXL 的有损质量上限 95（100 是数学无损，与无损组重叠）：基准 100 → 95
+        let ladder = single_point_ladder(100).unwrap();
+        let jxl = ladder.iter().find(|item| item.format == "jxl").unwrap();
+        assert_eq!(jxl.quality, Some(95));
+        let jpeg = ladder.iter().find(|item| item.format == "jpeg").unwrap();
+        assert_eq!(jpeg.quality, Some(100));
+    }
+
+    #[test]
+    fn single_point_ladder_越界基准报中文错误() {
+        let err = single_point_ladder(101).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains('1'), "报错应含基准值与范围：{message}");
+        assert!(message.contains("基准质量"), "报错应指明基准质量：{message}");
     }
 }
 

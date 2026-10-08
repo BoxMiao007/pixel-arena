@@ -675,6 +675,30 @@ fn onestop_quality_ladder(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
     onestop_quality_ladder_impl(baseline)
 }
 
+/// 单点模式取点（v0.1.5 反馈）：每有损格式只压基准质量 1 点（夹到格式范围内），
+/// 无损对照组照常。pub 供端到端测试。
+pub fn onestop_single_point_ladder_impl(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
+    pixel_arena_core::ladder::single_point_ladder(baseline)
+        .map(|items| {
+            items
+                .into_iter()
+                .map(|item| LadderItemDto {
+                    format: item.format,
+                    quality: item.quality,
+                    label: item.label,
+                })
+                .collect()
+        })
+        .map_err(|err| err.to_string())
+}
+
+/// IPC 命令：单点模式取点。默认关闭的开关，启用后质量/大小调整项前端锁死，
+/// 跑分清单由本命令展开。纯计算，同步返回。
+#[tauri::command]
+fn onestop_single_point_ladder(baseline: u8) -> Result<Vec<LadderItemDto>, String> {
+    onestop_single_point_ladder_impl(baseline)
+}
+
 /// 大小优先搜索的一个质量点：质量 + 探测到的实际产物大小（字节）。
 #[derive(serde::Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -1440,6 +1464,7 @@ pub fn run() {
             onestop_catalog,
             // T22：质量优先取点与大小优先逼近搜索
             onestop_quality_ladder,
+            onestop_single_point_ladder,
             onestop_size_search,
             // T29-3 高级创建：图片/视频编码器目录与按任务编码
             advanced_image_catalog,

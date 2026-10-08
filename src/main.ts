@@ -27,6 +27,7 @@ import { askFileConflict } from './conflict';
 import {
   runOnestop as runOnestopLadder,
   fetchQualityLadder,
+  fetchSinglePointLadder,
   filterLadder,
   losslessLadder,
   searchSizeFormat,
@@ -149,6 +150,9 @@ interface OnestopUiState {
   /** 大小优先的目标字节数（KB/MB 只是显示口径，真值一律是字节） */
   targetBytes: number;
   unit: 'KB' | 'MB';
+  /** 单点模式（v0.1.5 反馈）：启用后每有损格式仅压基准质量 1 点；质量拉杆/
+   *  模式切换/目标大小全部锁死不可调（用启用前的基准值跑），无损组照常压。 */
+  singlePoint: boolean;
   selection: OnestopSelection;
 }
 
@@ -163,6 +167,7 @@ function defaultOnestopUi(): OnestopUiState {
     baseline: DEFAULT_ONESTOP_BASELINE,
     targetBytes: DEFAULT_SIZE_TARGET_BYTES,
     unit: 'KB',
+    singlePoint: false,
     selection: defaultSelection(),
   };
 }
@@ -183,6 +188,8 @@ function onestopStateFor(roundId: string): OnestopUiState {
 // 质量阶梯缓存（键 = 拉杆基准）：取点在核心库，启动预取 75，拉杆 change 时按需补拉，
 // 供阶梯预览与「一站式跑分」按钮计数使用。与具体评测轮无关，全局共享。
 const qualityLadderCache = new Map<number, LadderItem[]>();
+// 单点模式阶梯缓存（v0.1.5 反馈）：同键同用途，取点走核心库 single_point_ladder。
+const singlePointLadderCache = new Map<number, LadderItem[]>();
 
 /** T25 第 2 项：内容区滚动位置按评测轮记录（离开时记、渲染后恢复；首见轮为 0） */
 const contentScrollByRound = new Map<string, number>();
@@ -195,6 +202,13 @@ let contentScrollTarget = 0;
 async function refreshQualityLadder(baseline: number): Promise<LadderItem[]> {
   const ladder = await fetchQualityLadder(baseline);
   qualityLadderCache.set(baseline, ladder);
+  return ladder;
+}
+
+/** 拉取并缓存指定基准的单点阶梯（v0.1.5 反馈，失败上抛交调用方提示）。 */
+async function refreshSinglePointLadder(baseline: number): Promise<LadderItem[]> {
+  const ladder = await fetchSinglePointLadder(baseline);
+  singlePointLadderCache.set(baseline, ladder);
   return ladder;
 }
 
@@ -537,7 +551,14 @@ async function runOnestop(): Promise<void> {
   try {
     let ladder: LadderItem[];
     const notesByFormat = new Map<string, string>();
-    if (ui.mode === 'quality') {
+    if (ui.singlePoint) {
+      // 单点模式（v0.1.5 反馈）：每有损格式仅压基准质量 1 点（缓存优先），
+      // 无损组照常；大小优先在单点模式下不可达（UI 锁死）
+      const full =
+        singlePointLadderCache.get(ui.baseline) ??
+        (await refreshSinglePointLadder(ui.baseline));
+      ladder = filterLadder(full, ui.selection);
+    } else if (ui.mode === 'quality') {
       // 质量优先：核心库 quality_ladder 取点（缓存优先），按格式勾选过滤
       const full =
         qualityLadderCache.get(ui.baseline) ?? (await refreshQualityLadder(ui.baseline));
@@ -641,7 +662,8 @@ function buildOnestopControls(ui: OnestopUiState): HTMLDivElement {
     btn.type = 'button';
     btn.textContent = label;
     btn.title = title;
-    btn.disabled = scoring;
+    // 单点模式锁死：模式不可切（单点必走基准质量，等效质量优先取 1 点）
+    btn.disabled = scoring || ui.singlePoint;
     btn.classList.toggle('active', ui.mode === mode);
     btn.ariaPressed = ui.mode === mode ? 'true' : 'false';
     btn.addEventListener('click', () => {
@@ -653,6 +675,40 @@ function buildOnestopControls(ui: OnestopUiState): HTMLDivElement {
     modeSwitch.append(btn);
   }
   box.append(modeSwitch);
+
+  // 单点模式开关（v0.1.5 反馈）：默认关闭维持 BD-rate 取点；启用后质量拉杆/
+  // 模式切换/目标大小全部锁死（用启用前的基准值跑），无损组照常压。
+  const singleRow = document.createElement('div');
+  singleRow.className = 'onestop-param-row';
+  const singleCheck = document.createElement('input');
+  singleCheck.type = 'checkbox';
+  singleCheck.id = 'onestop-single-point';
+  singleCheck.disabled = scoring;
+  singleCheck.checked = ui.singlePoint;
+  singleCheck.title =
+    '启用后每个有损格式只压基准质量 1 点（无损组照常）；质量拉杆/模式/目标大小锁定不可调';
+  const singleLabel = document.createElement('label');
+  singleLabel.htmlFor = singleCheck.id;
+  singleLabel.className = 'onestop-param-label';
+  singleLabel.textContent = '单点模式';
+  const singleHint = document.createElement('span');
+  singleHint.className = 'muted onestop-preview';
+  singleHint.textContent =
+    '启用后仅压基准质量本身（换质量需先关闭）；默认在基准 ±15 取 3 点保 BD-rate 曲线';
+  singleCheck.addEventListener('change', () => {
+    ui.singlePoint = singleCheck.checked;
+    // 单点走基准质量，等效质量优先：切回 quality，避免停在大小优先语义下歧义
+    if (ui.singlePoint) ui.mode = 'quality';
+    render();
+    // 启用即锁拉杆，单点阶梯没拉过的话先补拉（预览与按钮计数都要用），拉完重渲染
+    if (ui.singlePoint && !singlePointLadderCache.has(ui.baseline)) {
+      void refreshSinglePointLadder(ui.baseline)
+        .then(() => render())
+        .catch((err) => setStatus(`取点失败: ${String(err)}`, true));
+    }
+  });
+  singleRow.append(singleCheck, singleLabel, singleHint);
+  box.append(singleRow);
 
   if (ui.mode === 'quality') {
     const row = document.createElement('div');
@@ -669,7 +725,8 @@ function buildOnestopControls(ui: OnestopUiState): HTMLDivElement {
     slider.max = '100';
     slider.step = '1';
     slider.value = String(ui.baseline);
-    slider.disabled = scoring;
+    // 单点模式锁死：拉杆灰掉，用启用前的基准值跑（换质量先关开关）
+    slider.disabled = scoring || ui.singlePoint;
     slider.title = '统一基准质量（0–100），自动映射到各格式自身质量参数';
 
     const value = document.createElement('span');
@@ -693,9 +750,16 @@ function buildOnestopControls(ui: OnestopUiState): HTMLDivElement {
     const cached = qualityLadderCache.get(ui.baseline);
     const preview = document.createElement('span');
     preview.className = 'muted onestop-preview';
-    preview.textContent = cached
-      ? `按基准 ${ui.baseline} 自动取点：共 ${filterLadder(cached, ui.selection).length} 项（每格式 ≥3 点，含无损对照组）`
-      : '正在计算取点…';
+    if (ui.singlePoint) {
+      const singleCached = singlePointLadderCache.get(ui.baseline);
+      preview.textContent = singleCached
+        ? `单点模式：按基准 ${ui.baseline} 每格式压 1 点，共 ${filterLadder(singleCached, ui.selection).length} 项（无损组照常）`
+        : '正在计算取点…';
+    } else {
+      preview.textContent = cached
+        ? `按基准 ${ui.baseline} 自动取点：共 ${filterLadder(cached, ui.selection).length} 项（每格式 ≥3 点，含无损对照组）`
+        : '正在计算取点…';
+    }
     box.append(preview);
   } else {
     const row = document.createElement('div');
@@ -982,7 +1046,9 @@ async function boot(): Promise<void> {
   // T25：勾选状态改为「每评测轮一份」，首轮首次渲染时按默认全选创建，无需在启动时预置。
   try {
     await initOnestopCatalog();
+    // 默认基准的两种阶梯都预取：BD-rate 取点（默认）与单点模式（v0.1.5 反馈）
     await refreshQualityLadder(DEFAULT_ONESTOP_BASELINE);
+    await refreshSinglePointLadder(DEFAULT_ONESTOP_BASELINE);
   } catch (err) {
     setStatus(`加载编码阶梯目录失败: ${String(err)}`, true);
   }
@@ -1204,10 +1270,15 @@ function renderImageGroupContent(session: { group: Group; round: Round }, ui: On
   scoreBtn.addEventListener('click', () => void startScoring());
 
   // T22 接线点：一站式跑分按钮。质量优先可按缓存阶梯给出项数；大小优先的项数要
-  // 搜索后才知道（每格式命中点 + 邻近补点），只提示行为不报数
+  // 搜索后才知道（每格式命中点 + 邻近补点），只提示行为不报数。
+  // v0.1.5：单点模式项数按单点阶梯缓存计（每格式 1 点 + 无损组）
   const cachedLadder = qualityLadderCache.get(ui.baseline);
-  const ladderCount =
-    ui.mode === 'quality' && cachedLadder
+  const singleCachedLadder = singlePointLadderCache.get(ui.baseline);
+  const ladderCount = ui.singlePoint
+    ? singleCachedLadder
+      ? filterLadder(singleCachedLadder, ui.selection).length
+      : null
+    : ui.mode === 'quality' && cachedLadder
       ? filterLadder(cachedLadder, ui.selection).length
       : null;
   const onestopBtn = document.createElement('button');
@@ -1219,9 +1290,11 @@ function renderImageGroupContent(session: { group: Group; round: Round }, ui: On
       ? '需要先选择原图'
       : ladderCount === 0
         ? '请先在下方选择至少一个格式或无损组'
-        : ui.mode === 'quality'
-          ? `按基准 ${ui.baseline} 自动取点生成 ${ladderCount ?? '—'} 份跑分图并逐张跑分（${downloadHint}）`
-          : `按目标大小为每个格式自动搜索最接近点并补邻近点，逐张跑分（${downloadHint}）`;
+        : ui.singlePoint
+          ? `单点模式：按基准 ${ui.baseline} 每格式压 1 点，生成 ${ladderCount ?? '—'} 份跑分图并逐张跑分（${downloadHint}）`
+          : ui.mode === 'quality'
+            ? `按基准 ${ui.baseline} 自动取点生成 ${ladderCount ?? '—'} 份跑分图并逐张跑分（${downloadHint}）`
+            : `按目标大小为每个格式自动搜索最接近点并补邻近点，逐张跑分（${downloadHint}）`;
   onestopBtn.disabled = scoring || !round.referencePath || ladderCount === 0;
   onestopBtn.addEventListener('click', () => void runOnestop());
 

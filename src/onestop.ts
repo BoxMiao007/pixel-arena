@@ -85,6 +85,12 @@ export async function fetchQualityLadder(baseline: number): Promise<LadderItem[]
   return invoke<LadderItem[]>('onestop_quality_ladder', { baseline });
 }
 
+/** 单点模式取点（v0.1.5 反馈）：每有损格式仅压基准质量 1 点（夹到格式范围）+
+ *  无损对照组照常；取点仍在核心库，前端不自持档位定义。 */
+export async function fetchSinglePointLadder(baseline: number): Promise<LadderItem[]> {
+  return invoke<LadderItem[]>('onestop_single_point_ladder', { baseline });
+}
+
 /** 按勾选过滤核心库阶梯（保序）：有损项只留勾选格式，无损项只留勾选的无损组。 */
 export function filterLadder(ladder: LadderItem[], selection: OnestopSelection): LadderItem[] {
   return ladder.filter((item) =>

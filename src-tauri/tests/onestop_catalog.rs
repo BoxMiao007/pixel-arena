@@ -132,3 +132,31 @@ fn onestop_size_search_未知格式_中文报错() {
         .unwrap_err();
     assert!(message.contains("不支持的编码格式"), "{message}");
 }
+
+// 单点模式取点（v0.1.5 反馈）的端到端测试：不经 Tauri 运行时，直接调
+// pixel_arena_lib::onestop_single_point_ladder_impl（与 IPC 命令同一实现体）。
+// 钉住口径：每有损格式仅压基准质量 1 点，无损对照组照常。
+#[test]
+fn onestop_single_point_ladder_基准75_每有损格式仅压1点() {
+    let ladder = pixel_arena_lib::onestop_single_point_ladder_impl(75).unwrap();
+    let actual: Vec<(&str, Option<u8>)> = ladder
+        .iter()
+        .map(|item| (item.format.as_str(), item.quality))
+        .collect();
+    assert_eq!(
+        actual,
+        vec![
+            ("jpeg", Some(75)),
+            ("webp", Some(75)),
+            ("avif", Some(75)),
+            ("jxl", Some(75)),
+            ("png", None),
+            ("webp-lossless", None),
+            ("jxl-lossless", None),
+        ],
+        "单点阶梯与完整阶梯同序，但有损每格式只有基准 1 点"
+    );
+    // 进度显示名与完整阶梯同口径
+    assert_eq!(ladder[0].label, "JPEG q75");
+    assert_eq!(ladder[4].label, "PNG");
+}
