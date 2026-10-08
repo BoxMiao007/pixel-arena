@@ -16,7 +16,7 @@ import {
   nextRecentDir,
   type SettingsData,
 } from './settings';
-import { openSettingsPanel } from './settings-ui';
+import { openSettingsPanel, infoIconSvg } from './settings-ui';
 // T29-3 接线点：高级创建（多编码器 + 独立参数 + 命令行预览；面板与纯逻辑在
 // src/advanced-ui.ts / src/advanced.ts）
 import { openAdvancedPanel, type AdvancedEncodeOutcome } from './advanced-ui';
@@ -279,12 +279,45 @@ function activeGroup(): Group | null {
   return ws.groups.find((g) => g.id === ws!.activeGroupId) ?? null;
 }
 
-function setStatus(text: string, isError = false, title: string = text): void {
-  $status.textContent = text;
-  // T18：状态栏放截断后的文件名时，悬浮仍能看到完整内容
-  $status.title = title;
+// 状态栏长文案优化（原问题：超长错误把顶栏撑高、顶飞下方内容）：行内单行截断
+// （CSS ellipsis + 宽度上限），header 高度恒定；确实被截断时挂「圆圈叹号」，
+// 悬停/Tab 聚焦展开气泡看全文（同 #45 设置页详文气泡机制）。
+// 全文进气泡后不再设原生 title，避免气泡与系统 tooltip 双弹。
+let lastStatus: { text: string; isError: boolean; title: string } | null = null;
+
+function renderStatus(): void {
+  if (!lastStatus) return;
+  const { text, isError, title } = lastStatus;
+  $status.textContent = '';
+  const $text = document.createElement('span');
+  $text.className = 'status-text';
+  $text.textContent = text;
+  $status.append($text);
   $status.classList.toggle('status-error', isError);
+  // 截断检测要读布局：scrollWidth 触发同步排布后与可视宽度比较。
+  // 极短文本（如「目标大小无效」）不截断时没有图标噪音。
+  if ($text.scrollWidth > $text.clientWidth) {
+    const detail = document.createElement('span');
+    detail.className = 'status-detail';
+    detail.setAttribute('role', 'img');
+    detail.setAttribute('aria-label', '完整状态内容');
+    detail.setAttribute('tabindex', '0'); // 键盘可达：Tab 聚焦即展开（同 #45 口径）
+    detail.append(infoIconSvg());
+    const bubble = document.createElement('span');
+    bubble.className = 'settings-bubble status-bubble';
+    bubble.textContent = title; // 调用方给的完整文案（默认 = 行内文本）
+    detail.append(bubble);
+    $status.append(detail);
+  }
 }
+
+function setStatus(text: string, isError = false, title: string = text): void {
+  lastStatus = { text, isError, title };
+  renderStatus();
+}
+
+// 窗口宽度变化会改变截断与否（Ⓘ 该不该出现），重挂一次；文本未变只是重排。
+window.addEventListener('resize', renderStatus);
 
 function markSaved(): void {
   setStatus(`已自动保存 ${new Date().toLocaleTimeString('zh-CN')}`);

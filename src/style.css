@@ -77,10 +77,78 @@ body {
   font-size: 0.85rem;
   color: var(--green);
   font-variant-numeric: tabular-nums;
+  /* 长文案优化：单行截断、宽度有上限，header 高度恒定（不再撑爆顶栏）；
+     被截断时 JS 挂 Ⓘ 气泡看全文 */
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  max-width: min(34rem, 44vw);
+}
+
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-error {
   color: var(--red);
+}
+
+/* ---------- 顶栏状态详文气泡：机制同 #45 设置页详文（.settings-bubble），
+   差异：气泡右锚（状态栏贴右上角，左锚会伸出窗外）；限高 50vh 可滚
+   （失败汇总可达上千字符）；指针事件开启（滚轮可用）；::after 桥接 7px
+   间隙，鼠标移向气泡途中不丢悬停 ---------- */
+.status-detail {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  cursor: help;
+  outline-offset: 2px;
+}
+
+.status-detail svg {
+  width: 11px;
+  height: 11px;
+}
+
+.status-detail:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+/* 悬停桥：盖住气泡与图标间的 7px 空隙，属 .status-detail 自身命中区 */
+.status-detail::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
+.status-bubble {
+  pointer-events: auto;
+  top: calc(100% + 7px);
+  right: 0;
+  left: auto;
+  transform: none;
+  max-height: 50vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.status-bubble::after {
+  left: auto;
+  right: 7px;
+  margin-left: 0;
+}
+
+.status-detail:hover .status-bubble,
+.status-detail:focus-within .status-bubble {
+  display: block;
 }
 
 /* ---------- 跑分组标签页栏 ---------- */

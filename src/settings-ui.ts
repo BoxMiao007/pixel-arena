@@ -685,8 +685,9 @@ function externalLinkIcon(): SVGSVGElement {
 }
 
 // 状态详文气泡的「圆圈叹号」图标（#45）。与 externalLinkIcon 同理零依赖手绘，
-// 叹号圆圈造型对「未配置/不可用」状态语义比 ⓘ 更贴近
-function infoIconSvg(): SVGSVGElement {
+// 叹号圆圈造型对「未配置/不可用」状态语义比 ⓘ 更贴近。
+// 顶栏状态详文气泡（长状态截断时）也复用同款图标，故导出。
+export function infoIconSvg(): SVGSVGElement {
   const NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');

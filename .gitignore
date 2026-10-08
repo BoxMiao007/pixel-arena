@@ -26,6 +26,9 @@ src-tauri/tauri.conf.dev.json
 .zcodeignore
 skills-lock.json
 
+# 代理工具把 ~ 当字面目录建出的本地索引库（频繁读写的 sqlite，不入库）
+~/
+
 # 捆绑编码器资源（T29-4）：CI 打包前由 scripts/bundle-encoders 填充，二进制不入库
 /src-tauri/resources/encoders/*
 !/src-tauri/resources/encoders/README.md
