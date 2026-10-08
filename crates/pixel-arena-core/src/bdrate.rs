@@ -504,6 +504,7 @@ mod tests {
             id: "r-1".to_string(),
             name: "测试轮".to_string(),
             reference_path: Some("/tmp/ref.png".to_string()),
+            reference_size: None,
             candidates,
             video_reference_path: None,
             video_candidates: Vec::new(),

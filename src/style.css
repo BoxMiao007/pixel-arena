@@ -568,6 +568,13 @@ body {
 
 /* ---------- 跑分结果表 ---------- */
 
+/* 原图固定基准行（v0.1.5 反馈）：表格顶部比对参照，背景色 + 加粗突出，
+   不参与排序 */
+.result-table tr.reference-row {
+  background: var(--active-bg);
+  font-weight: 600;
+}
+
 .result-table {
   border-collapse: collapse;
   font-size: 0.9rem;

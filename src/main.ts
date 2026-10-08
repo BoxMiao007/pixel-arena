@@ -64,6 +64,9 @@ interface Round {
   id: string;
   name: string;
   referencePath: string | null;
+  /** 原图文件大小（字节，结果表顶部「基准」固定行显示；旧文件后端迁移回填，
+   *  文件已移走时为 null 显示 —）。 */
+  referenceSize: number | null;
   candidates: CandidateImage[];
   // T14 接线点：视频评测字段（核心库 serde default，旧文件为空；实现都在 src/video.ts）
   videoReferencePath?: string | null;
@@ -1278,7 +1281,12 @@ function renderImageGroupContent(session: { group: Group; round: Round }, ui: On
     }
 
     // 备注列随行内 note 持久化（US22），悬浮 title 看完整文本
-    $content.append(buildResultTable(round.id, round.candidates));
+    $content.append(
+      buildResultTable(round.id, round.candidates, {
+        path: round.referencePath,
+        size: round.referenceSize,
+      }),
+    );
 
     // T13 接线点：BD-rate 汇总区（与导出报告同一数据源；异步填充，不触发整页重渲染）
     const bdrateBox = document.createElement('div');
@@ -1303,7 +1311,12 @@ function renderVideoGroupContent(session: { group: Group; round: Round }): void 
 
   // 遗留图片评测内容（旧工作区混用时期产生）：只读结果表，不提供图片操作入口
   if (round.candidates.length > 0) {
-    $content.append(buildResultTable(round.id, round.candidates));
+    $content.append(
+      buildResultTable(round.id, round.candidates, {
+        path: round.referencePath,
+        size: round.referenceSize,
+      }),
+    );
     const bdrateBox = document.createElement('div');
     bdrateBox.className = 'bdrate-summary';
     bdrateBox.textContent = 'BD-rate 汇总计算中…';
@@ -1369,7 +1382,11 @@ function firstClickDir(key: string): 1 | -1 {
   return key === 'fileSize' || key === 'name' || key === 'encodingParams' ? 1 : -1;
 }
 
-function buildResultTable(roundId: string, candidates: CandidateImage[]): HTMLTableElement {
+function buildResultTable(
+  roundId: string,
+  candidates: CandidateImage[],
+  reference: { path: string | null; size: number | null },
+): HTMLTableElement {
   // US22：大小优先不可达标注随评测轮持久化，直接读行内 note——任一行有备注
   // 才追加尾随「备注」列（对齐 CLI 大小优先模式的 note 列）；其余模式列序不变
   const noteFor = (candidate: CandidateImage): string | null => candidate.note ?? null;
@@ -1439,6 +1456,43 @@ function buildResultTable(roundId: string, candidates: CandidateImage[]): HTMLTa
   table.append(head);
 
   const body = document.createElement('tbody');
+  // 原图固定行（v0.1.5 反馈）：表格顶部的比对参照——名称 + 大小 + 体积比 100%，
+  // 参数/指标列 —，背景色 + 加粗突出。不进入 rows 数组，天然不参与排序/任何
+  // 行操作；无原图时不渲染。大小缺记录（旧文件且图已移走）显示 —。
+  if (reference.path) {
+    const tr = document.createElement('tr');
+    tr.className = 'reference-row';
+    const rank = document.createElement('td');
+    rank.className = 'rank';
+    rank.textContent = '基准';
+    const name = document.createElement('td');
+    name.className = 'cell-name';
+    name.textContent = `${truncateFileName(fileName(reference.path))}（原图）`;
+    name.title = reference.path;
+    const fileSize = document.createElement('td');
+    fileSize.textContent = reference.size === null ? '—' : formatSize(reference.size);
+    const ratio = document.createElement('td');
+    ratio.textContent = '100%';
+    const params = document.createElement('td');
+    params.textContent = '—';
+    tr.append(rank, name, fileSize, ratio, params);
+    for (const _key of metricKeys(candidates)) {
+      const td = document.createElement('td');
+      td.textContent = '—';
+      td.classList.add('cell-metric');
+      tr.append(td);
+    }
+    const status = document.createElement('td');
+    status.className = 'cell-status';
+    status.textContent = '基准';
+    tr.append(status);
+    if (hasNotes) {
+      const note = document.createElement('td');
+      note.className = 'cell-note';
+      tr.append(note);
+    }
+    body.append(tr);
+  }
   rows.forEach((candidate, index) => {
     const tr = document.createElement('tr');
 

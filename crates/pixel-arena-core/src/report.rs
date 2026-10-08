@@ -421,6 +421,7 @@ mod tests {
             id: "r-1".to_string(),
             name: "照片测试轮".to_string(),
             reference_path: Some("/tmp/原图 photo.png".to_string()),
+            reference_size: None,
             candidates,
             video_reference_path: None,
             video_candidates: Vec::new(),
@@ -433,6 +434,7 @@ mod tests {
             id: "r-1".to_string(),
             name: "照片测试轮".to_string(),
             reference_path: Some("/tmp/ref.png".to_string()),
+            reference_size: None,
             candidates,
             video_reference_path: Some("/tmp/ref.mp4".to_string()),
             video_candidates: vec![video(

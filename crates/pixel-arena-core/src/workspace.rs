@@ -84,6 +84,10 @@ pub struct Round {
     /// 原图路径（画质与压缩的基准）。尚未选图时为 None。
     #[serde(default)]
     pub reference_path: Option<String>,
+    /// 原图文件大小（字节，结果表顶部「基准」固定行的比对参照）。选图时写入；
+    /// 旧文件缺字段在 from_json 迁移时按磁盘回填（文件已移走则保持 None 显示 —）。
+    #[serde(default)]
+    pub reference_size: Option<u64>,
     /// 跑分图列表，含各自的跑分结果。
     #[serde(default)]
     pub candidates: Vec<CandidateImage>,
@@ -329,6 +333,7 @@ impl Workspace {
 
         let round = self.round_mut(group_id, round_id)?;
         round.reference_path = Some(path.to_string());
+        round.reference_size = Some(reference_size);
         for candidate in &mut round.candidates {
             candidate.metrics = None;
             candidate.error = None;
@@ -813,6 +818,7 @@ impl Workspace {
             id: new_id("r"),
             name: name.to_string(),
             reference_path: None,
+            reference_size: None,
             candidates: Vec::new(),
             video_reference_path: None,
             video_candidates: Vec::new(),
@@ -931,6 +937,17 @@ impl Workspace {
                 } else {
                     GroupKind::Image
                 };
+            }
+        }
+        // 旧文件迁移：reference_size 字段出现前选的原图没有大小记录，按磁盘回填
+        //（best-effort：文件已移走则保持 None，前端基准行显示 —，不阻加载）
+        for round in ws.groups.iter_mut().flat_map(|g| g.rounds.iter_mut()) {
+            if round.reference_size.is_none() {
+                if let Some(path) = round.reference_path.as_deref() {
+                    if let Ok(meta) = std::fs::metadata(path) {
+                        round.reference_size = Some(meta.len());
+                    }
+                }
             }
         }
         Ok(ws)
@@ -1088,6 +1105,30 @@ mod tests {
     }
 
     // ---------- T17：旧工作区迁移（组无 kind 字段 → 按组内内容归类，数据无损） ----------
+
+    // ---------- 旧工作区迁移：reference_size 缺字段按磁盘回填（基准行大小显示） ----------
+
+    #[test]
+    fn old_workspace_without_reference_size_backfills_from_disk() {
+        // 旧文件只有 referencePath 没有大小记录；路径真实存在时迁移回填，
+        // 路径已移走则保持 None（前端基准行显示 —，不阻加载）
+        let real = data("photo-ref.png");
+        let old = format!(
+            r#"{{
+            "formatVersion": 1,
+            "groups": [{{
+                "id": "g-1", "name": "组",
+                "rounds": [
+                    {{"id": "r-1", "name": "真图", "referencePath": "{real}"}},
+                    {{"id": "r-2", "name": "图已移走", "referencePath": "/不存在/的/图.png"}}
+                ]
+            }}]
+        }}"#
+        );
+        let ws = Workspace::from_json(&old).unwrap();
+        assert_eq!(ws.groups[0].rounds[0].reference_size, Some(127123));
+        assert_eq!(ws.groups[0].rounds[1].reference_size, None);
+    }
 
     #[test]
     fn old_workspace_empty_group_migrates_to_image() {
@@ -1547,6 +1588,8 @@ mod tests {
             round.reference_path.as_deref(),
             Some(data("photo-ref.png").as_str())
         );
+        // 基准行大小随选图写入（结果表顶部固定行显示用）
+        assert_eq!(round.reference_size, Some(127123));
         // photo-dis.jpg 17341 字节 / photo-ref.png 127123 字节 ≈ 0.1364
         let ratio = round.candidates[0].size_ratio.expect("选完原图应有体积比");
         assert!((ratio - 17341.0 / 127123.0).abs() < 1e-12);
