@@ -30,7 +30,7 @@
 
 三端安装包均已**内置四个跑分编码器**（JPEG / WebP / AVIF / JPEG XL，含 AVIF 代片解码），装完即可一站式跑分，无需联网下载编码器。
 
-- **Windows**：NSIS 安装包（`*-setup.exe`，双击安装）与 MSI 安装包，另有便携版 `pixel-arena.exe`（免安装直接双击运行）。Windows 10/11 自带 WebView2，双击即用。
+- **Windows**：NSIS 安装包（`*-setup.exe`，双击安装）与 MSI 安装包，另有便携包 `Pixel-Arena_<版本>_x64-portable.zip`（如 0.1.5 即 `Pixel-Arena_0.1.5_x64-portable.zip`，解压出 `PixelArena/` 文件夹后双击 `pixel-arena.exe` 直接运行，免安装）。Windows 10/11 自带 WebView2，双击即用。
 - **Linux**：`.deb`（Debian/Ubuntu）与 `.AppImage`（免安装，`chmod +x` 后直接运行）。
 - **macOS**：`.dmg` 镜像与应用包。
 

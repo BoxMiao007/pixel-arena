@@ -122,7 +122,7 @@ _Avoid_: 目标码率、按大小压缩挡
 _Avoid_: 自带工具、本地工具
 
 **便携版**：
-解压即用、自带全部编码器的免安装分发形态：Windows 为 `PixelArena.zip`（解开为 `PixelArena/`，内含 `encoders/` 与程序本体），macOS 为 PixelArena.app，Linux 为 AppImage；与安装版共用同一套工具定位顺序（决策 0026）。
+解压即用、自带全部编码器的免安装分发形态：Windows 为 `Pixel-Arena_<版本>_x64-portable.zip`（解开为 `PixelArena/`，内含 `encoders/` 与程序本体；文件名对齐安装包的「产品名_版本_架构」参数口径，决策 0026/0027），macOS 为 PixelArena.app，Linux 为 AppImage；与安装版共用同一套工具定位顺序（决策 0026）。
 _Avoid_: 裸 exe、绿色版
 
 **外部工具**：

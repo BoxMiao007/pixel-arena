@@ -185,3 +185,9 @@
 - 决策：Windows 新增便携 zip 产物 `PixelArena.zip`——解开为 `PixelArena/` 文件夹，内含 `encoders/`（五成员）与程序本体 exe，**取代 Release 现有裸 `pixel-arena.exe` 资产**；macOS 维持解压出 PixelArena.app（编码器在 .app 内 Resources）、Linux 维持 AppImage。「三端统一便携」的口径 = 每端都有「免安装 + 自带全部编码器」的产物，不追求三端 zip 目录结构逐字一致（Linux 程序本体依赖系统 webkit 库，裸目录便携结构性不可行，AppImage 即其便携形态）。便携包文件夹名 `PixelArena` / `encoders` 由用户拍板（纯 ASCII，避开 Windows 代码页/中文路径坑）。CI 同步补齐产物内编码器逐成员核对：NSIS、MSI、AppImage 此前无包内核对（Windows 只查源目录与文件存在），一律解包逐成员验证，沿用「禁止 ls|grep 任一匹配即过」规则。
 - 为什么：v0.1.4 试用反馈——裸 exe 不携带编码器，未安装机器上「内置」全缺，便携用户拿不到完整功能；裸 exe 与「便携版」概念混淆，单一 zip 形态更清晰。逐成员核对是 macOS bash 3.2 事故（v0.1.3 首次 tag 静默半废）的直接教训推广。
 - 放弃了：三端严格统一目录结构（macOS 把编码器从 .app 内挪到顶层共享文件夹需新增解析分支并整体重验证，收益低）；裸 exe 与 zip 并存（两种「便携」形态让用户无从选择）；macOS/Linux 另出独立便携 zip（.app 与 AppImage 本身已是免安装形态，重复打包只增资产不增能力）。
+
+## 0027 · Windows 便携 zip 文件名补齐包参数：Pixel-Arena_<版本>_x64-portable.zip（已确认）
+- 日期：2026-10-08
+- 决策：Windows 便携 zip 的资产文件名从裸名 `PixelArena.zip` 改为 `Pixel-Arena_<版本>_x64-portable.zip`（v0.1.5 即 `Pixel-Arena_0.1.5_x64-portable.zip`），对齐 NSIS/MSI 安装包既有的「产品名_版本_架构」参数口径；版本号由 CI 在组装步骤读 `tauri.conf.json` 生成（单一数据源，随发版自增，不硬编码进 workflow），经 GITHUB_ENV 传给逐成员核对与产物上传步骤。zip 内部目录仍为 `PixelArena/`（决策 0026 用户拍板的解压形态不动）。已发布的 v0.1.5 Release 资产同步改名重传（zip 内容不变，不重跑 CI）。
+- 为什么：用户反馈（票 #46）——Release 页多版本并存时裸名 `PixelArena.zip` 无法分辨版本与架构，其余资产都带参数，唯便携包不带；且 CI 产出即带参数后，手动挂资产到 Release 无需再改名。
+- 放弃了：把版本号硬编码进 workflow（发版忘改必然漂移）；连 zip 内部目录一起改带参数名（用户拍板的解压形态与票 #43 的 exe 同目录 encoders/ 回退逻辑全部要重验证，收益为零）。
