@@ -207,7 +207,9 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   generalTitle.textContent = '常规';
   general.append(generalTitle);
 
-  // 记录状态开关（滑动开关外观见 style.css settings-switch，状态语义仍是原生 checkbox）
+  // 记录状态开关（滑动开关外观见 style.css settings-switch，状态语义仍是原生 checkbox）。
+  // v0.1.5 反馈：文字靠左、开关靠右两端对齐（CSS space-between），DOM 顺序调整为
+  // 先文字后开关；label 包裹保证点文字也能切开关
   const recordCheck = document.createElement('input');
   recordCheck.type = 'checkbox';
   recordCheck.className = 'settings-switch';
@@ -218,7 +220,7 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   recordCheck.addEventListener('change', () => {
     draft.recordState = recordCheck.checked;
   });
-  recordWrap.append(recordCheck, recordText);
+  recordWrap.append(recordText, recordCheck);
   general.append(recordWrap);
   syncFns.push(() => {
     recordCheck.checked = draft.recordState;

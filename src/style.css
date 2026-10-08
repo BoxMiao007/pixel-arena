@@ -1176,6 +1176,7 @@ body {
 .settings-check {
   display: flex;
   align-items: center;
+  justify-content: space-between; /* v0.1.5 反馈：文字靠左、滑动开关推到行右端（两端对齐） */
   gap: 0.5rem;
   cursor: pointer;
   font-size: 0.9rem;
