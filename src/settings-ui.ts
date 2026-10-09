@@ -654,21 +654,36 @@ function renderAbout(info: AboutData): Node[] {
   libTitle.className = 'settings-about-meta';
   libTitle.textContent = '引用的库（版本来自构建锁定清单）：';
   nodes.push(libTitle);
+  // 三列网格对齐（库 / 版本 / 许可证）：库名长短不一，内联文本会让版本与
+  // 许可证列起点错位；表头说列义，行内不再重复「许可证：」前缀
   const list = document.createElement('ul');
   list.className = 'settings-libraries';
+  const head = document.createElement('li');
+  head.className = 'settings-libraries-head';
+  for (const text of ['库', '版本', '许可证']) {
+    const span = document.createElement('span');
+    span.textContent = text;
+    head.append(span);
+  }
+  list.append(head);
   for (const lib of info.libraries) {
     const item = document.createElement('li');
+    const name = document.createElement('span');
     if (isSafeLibraryUrl(lib.url)) {
       const link = document.createElement('a');
       link.href = lib.url;
       link.textContent = lib.name;
       link.className = 'settings-link';
       setExternalTarget(link);
-      item.append(link);
+      name.append(link);
     } else {
-      item.append(document.createTextNode(lib.name));
+      name.textContent = lib.name;
     }
-    item.append(document.createTextNode(` ${versionLabel(lib.version)} · 许可证：${lib.license}`));
+    const version = document.createElement('span');
+    version.textContent = versionLabel(lib.version);
+    const license = document.createElement('span');
+    license.textContent = lib.license;
+    item.append(name, version, license);
     list.append(item);
   }
   nodes.push(list);

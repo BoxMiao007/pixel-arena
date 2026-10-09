@@ -1417,11 +1417,26 @@ body {
   color: var(--muted);
 }
 
+/* 库清单三列网格（库 / 版本 / 许可证）：列宽固定，行间对齐；
+   首行 .settings-libraries-head 是表头 */
 .settings-libraries {
   margin: 0.3rem 0 0;
-  padding-left: 1.2rem;
+  padding-left: 0;
+  list-style: none;
   font-size: 0.85rem;
   color: var(--muted);
+}
+
+.settings-libraries li {
+  display: grid;
+  grid-template-columns: 6.5rem 5.5rem 1fr;
+  gap: 0 0.8rem;
+  padding: 0.08rem 0;
+}
+
+.settings-libraries-head {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .settings-libraries li {
