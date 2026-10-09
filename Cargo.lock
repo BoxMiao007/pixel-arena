@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "pixel-arena"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "pixel-arena-core",
  "serde",
@@ -3241,7 +3241,7 @@ dependencies = [
 
 [[package]]
 name = "pixel-arena-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -3253,7 +3253,7 @@ dependencies = [
 
 [[package]]
 name = "pixel-arena-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "butteraugli",
  "flate2",
