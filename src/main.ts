@@ -374,6 +374,9 @@ function closeGroupMenu(): void {
 
 function toggleGroupMenu(): void {
   const open = $newGroupMenu.hidden;
+  // #49：两下拉重叠根因是两套独立开关互不知晓——开这扇时先关另一扇；
+  // 只挂在「开」分支，收起分支不动对方（点已开按钮收起时不牵连另一菜单）。
+  if (open) closeRoundMenu();
   $newGroupMenu.hidden = !open;
   $addGroup.setAttribute('aria-expanded', String(open));
 }
@@ -1695,6 +1698,8 @@ function closeRoundMenu(): void {
 
 function toggleRoundMenu(): void {
   const open = $newRoundMenu.hidden;
+  // #49：同上，反向互斥——开评测轮菜单时先收起跑分组菜单（只挂「开」分支）。
+  if (open) closeGroupMenu();
   $newRoundMenu.hidden = !open;
   $addRound.setAttribute('aria-expanded', String(open));
 }
