@@ -425,13 +425,18 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
   // ---------- 条目渲染 ----------
   const renderEntries = (): void => {
     // 票 #50：「高级参数」折叠栏是无状态 <details>，整卡重建会把它打回默认闭合。
-    // 重建前按序抄下各条目折叠区的开合，重建后按序回写——加参数行、行增删排序、
-    // 条目增删、模式切换都汇到这一个重建出口，机制在此收口即可；条目数变化时按
-    // 序号对应（错位无害）。手动开合走原生行为不经重建，不受影响。
-    const prevOpen = Array.from(
-      entriesBox.querySelectorAll<HTMLDetailsElement>('details.adv-advanced'),
-      (d) => d.open,
-    );
+    // 加参数行、行增删排序、条目增删、模式切换都汇到这一个重建出口，机制在此收口
+    // 即可。code-review 修复（#50）：开合状态按条目 id 键控而非按序对应——删除非
+    // 末位条目时其余条目序号前移，按序回写会把开合错配给相邻条目（如删掉展开的
+    // 条目1，原本展开的条目2 落到收起位）；entry.id 会话内唯一且不复用（newEntryId
+    // 递增），按 id 对应才谈得上「折叠区保持原状」。手动开合走原生行为不经重建，
+    // 不受影响。
+    const prevOpen = new Map<string, boolean>();
+    for (const card of entriesBox.querySelectorAll<HTMLElement>('.adv-entry')) {
+      const details = card.querySelector<HTMLDetailsElement>('details.adv-advanced');
+      const id: string | undefined = card.dataset.entryId;
+      if (details && id !== undefined) prevOpen.set(id, details.open);
+    }
     entriesBox.replaceChildren();
     if (session.entries.length === 0) {
       const empty = document.createElement('p');
@@ -443,17 +448,19 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     session.entries.forEach((entry, index) => {
       entriesBox.append(renderEntry(entry, index));
     });
-    // 回写：重建后重查折叠区按序恢复；条目删多时 rebuilt 越界直接跳过
-    const rebuilt = entriesBox.querySelectorAll<HTMLDetailsElement>('details.adv-advanced');
-    prevOpen.forEach((open, i) => {
-      const details = rebuilt[i];
-      if (details) details.open = open;
-    });
+    // 回写：重建后按卡片 dataset 里的条目 id 查回开合；新加条目查不到，保持默认闭合
+    for (const card of entriesBox.querySelectorAll<HTMLElement>('.adv-entry')) {
+      const details = card.querySelector<HTMLDetailsElement>('details.adv-advanced');
+      const open = prevOpen.get(card.dataset.entryId ?? '');
+      if (details && open !== undefined) details.open = open;
+    }
   };
 
   const renderEntry = (entry: AdvancedEntry, index: number): HTMLElement => {
     const card = document.createElement('div');
     card.className = 'adv-entry';
+    // 卡片根元素带条目 id：renderEntries 重建后按它回写折叠区开合（id 键控，见彼处注释）
+    card.dataset.entryId = entry.id;
     const spec = specOf(entry);
     const imageSpec = imageSpecOf(entry);
 

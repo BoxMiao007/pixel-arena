@@ -1,7 +1,9 @@
 // 票 #50 的回归守卫：「高级参数」折叠栏（summary + 参数行 + 添加栏）是无状态
 // <details>，renderEntries 整卡重建（加参数行、行增删排序、条目增删、模式切换
-// 都汇到这一个重建出口）会把它打回默认闭合。修复 = 重建前按序收集现有折叠区的
-// open、重建后按序回写（读-重建-回写）；条目数变化时按序号对应，错位无害。
+// 都汇到这一个重建出口）会把它打回默认闭合。修复 = 重建前按条目 id 收集现有折叠
+// 区的 open 成 Map、重建后按 id 回写（读-重建-回写）。code-review 修复（#50）：
+// 不能按序号对应——删除非末位条目时其余条目序号前移，会把开合错配给相邻条目，
+// 按 id 键控才与「折叠区保持原状」相符；新加条目查不到 id，保持默认闭合。
 // 手动开合走 <details> 原生行为，不经重建，无需（也不应）在此钉死。
 // 票 #51 追加：参数行分样式的守卫（行分叉 / ⓘ 挂载 / 行内 title 移除 /
 // 气泡机制复用 / 参数名派生），接缝同上。
@@ -16,27 +18,38 @@ import css from './style.css?raw';
 
 const flat = advancedUi.replace(/\s+/g, '');
 
-describe('高级参数折叠态跨重建保留（票 #50）：读-重建-回写', () => {
-  it('重建出口按 details.adv-advanced 选择器收集 open 状态（读）', () => {
-    expect(flat).toContain("querySelectorAll<HTMLDetailsElement>('details.adv-advanced')");
-    expect(flat).toContain(')=>d.open');
+describe('高级参数折叠态跨重建保留（票 #50）：按条目 id 读-重建-回写', () => {
+  it('条目卡片根元素带 entryId，重建出口按 id 把折叠区 open 收集进 Map（读）', () => {
+    expect(flat, '卡片要带条目 id，按序号对应在删除非末位条目时会错配（票 #50 review）').toContain(
+      'card.dataset.entryId=entry.id',
+    );
+    expect(flat).toContain("querySelectorAll<HTMLElement>('.adv-entry')");
+    expect(flat).toContain('constprevOpen=newMap<string,boolean>()');
+    expect(flat, '键 = 卡片 dataset 里的条目 id').toContain('prevOpen.set(id,details.open)');
   });
 
   it('收集先于清空重建（先读后 replaceChildren，读晚了抄到的是空盒子）', () => {
-    const read = flat.indexOf("querySelectorAll<HTMLDetailsElement>('details.adv-advanced')");
+    const read = flat.indexOf('prevOpen.set(id,details.open)');
     const rebuild = flat.indexOf('entriesBox.replaceChildren()');
     expect(read).toBeGreaterThanOrEqual(0);
     expect(rebuild).toBeGreaterThanOrEqual(0);
     expect(read).toBeLessThan(rebuild);
   });
 
-  it('重建后按序回写 open（回写在重建之后，带越界守卫）', () => {
+  it('重建后按条目 id 查 Map 回写 open（回写在重建之后；查不到的新条目保持默认闭合）', () => {
     const rebuild = flat.indexOf('entriesBox.replaceChildren()');
-    const back = flat.indexOf('entriesBox.querySelectorAll<HTMLDetailsElement>', rebuild);
-    const write = flat.indexOf('.open=open', rebuild);
-    expect(back, '重建后应重查折叠区（而不是复用重建前的引用）').toBeGreaterThanOrEqual(0);
-    expect(write, '重建后应把收集到的 open 状态写回').toBeGreaterThanOrEqual(0);
-    expect(write).toBeGreaterThan(back);
+    const back = flat.indexOf("querySelectorAll<HTMLElement>('.adv-entry')", rebuild);
+    const lookup = flat.indexOf("prevOpen.get(card.dataset.entryId??'')", rebuild);
+    const write = flat.indexOf('details.open=open', rebuild);
+    expect(back, '重建后应重查卡片（而不是复用重建前的引用）').toBeGreaterThanOrEqual(0);
+    expect(lookup, '应按条目 id 查回开合状态').toBeGreaterThanOrEqual(0);
+    expect(write, '重建后应把查到的 open 状态写回').toBeGreaterThanOrEqual(0);
+    expect(lookup).toBeGreaterThan(back);
+    expect(write).toBeGreaterThan(lookup);
+    expect(
+      flat,
+      '新加条目查不到 id（Map.get 得 undefined）时不得误写，保持默认闭合',
+    ).toContain('if(details&&open!==undefined)details.open=open');
   });
 });
 
