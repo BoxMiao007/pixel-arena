@@ -1679,15 +1679,16 @@ body {
 }
 
 /* 弹出列表：absolute 悬浮 + z-index 高于相邻条目卡片（卡片无定位堆叠）；
-   .adv-entry 自身无 overflow 不会被裁剪，settings-panel 滚动区兜底 */
+   .adv-entry 自身无 overflow 不会被裁剪，settings-panel 滚动区兜底。
+   票 #51 GUI 验收：菜单绝不能设 overflow/max-height——每个选项末尾 ⓘ 的
+   气泡要伸出菜单盒，任何 overflow 裁剪值都会把它裁没；推荐目录固定 3~5 项，
+   不需要滚动兜底 */
 .adv-known-menu {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
   z-index: 40;
   min-width: 14rem;
-  max-height: 50vh;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 0.1rem;

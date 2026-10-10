@@ -103,6 +103,15 @@ describe('推荐行自制下拉 + ⓘ 气泡（票 #51）', () => {
     expect(flat, '应有收起全部下拉的出口').toContain('closeKnownMenus()');
     expect(flat).toContain("querySelectorAll<HTMLElement>('.adv-known-menu')");
   });
+
+  it('弹出菜单不得设 overflow/max-height（选项级 ⓘ 气泡要伸出菜单盒，任何裁剪值都会把它裁没——GUI 验收发现）', () => {
+    const flatCss = css.replace(/\s+/g, '');
+    const start = flatCss.indexOf('.adv-known-menu{');
+    expect(start, '样式表缺少 .adv-known-menu 规则块').toBeGreaterThanOrEqual(0);
+    const block = flatCss.slice(start, flatCss.indexOf('}', start) + 1);
+    expect(block).not.toContain('overflow');
+    expect(block).not.toContain('max-height');
+  });
 });
 
 describe('行内原生 title 退场与添加栏文案（票 #51）', () => {
