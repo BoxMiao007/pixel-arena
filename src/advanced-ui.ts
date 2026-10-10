@@ -338,6 +338,14 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
 
   // ---------- 条目渲染 ----------
   const renderEntries = (): void => {
+    // 票 #50：「高级参数」折叠栏是无状态 <details>，整卡重建会把它打回默认闭合。
+    // 重建前按序抄下各条目折叠区的开合，重建后按序回写——加参数行、行增删排序、
+    // 条目增删、模式切换都汇到这一个重建出口，机制在此收口即可；条目数变化时按
+    // 序号对应（错位无害）。手动开合走原生行为不经重建，不受影响。
+    const prevOpen = Array.from(
+      entriesBox.querySelectorAll<HTMLDetailsElement>('details.adv-advanced'),
+      (d) => d.open,
+    );
     entriesBox.replaceChildren();
     if (session.entries.length === 0) {
       const empty = document.createElement('p');
@@ -348,6 +356,12 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     }
     session.entries.forEach((entry, index) => {
       entriesBox.append(renderEntry(entry, index));
+    });
+    // 回写：重建后重查折叠区按序恢复；条目删多时 rebuilt 越界直接跳过
+    const rebuilt = entriesBox.querySelectorAll<HTMLDetailsElement>('details.adv-advanced');
+    prevOpen.forEach((open, i) => {
+      const details = rebuilt[i];
+      if (details) details.open = open;
     });
   };
 
