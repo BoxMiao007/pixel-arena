@@ -3,6 +3,8 @@
 // 都汇到这一个重建出口）会把它打回默认闭合。修复 = 重建前按序收集现有折叠区的
 // open、重建后按序回写（读-重建-回写）；条目数变化时按序号对应，错位无害。
 // 手动开合走 <details> 原生行为，不经重建，无需（也不应）在此钉死。
+// 票 #51 追加：参数行分样式的守卫（行分叉 / ⓘ 挂载 / 行内 title 移除 /
+// 气泡机制复用 / 参数名派生），接缝同上。
 // vitest 是 node 环境（无 DOM），无法真实渲染面板观察折叠态，仿
 // src/status-bar.test.ts 先例：?raw 导入源码当文本，压平空白后断言机制在位。
 // 取舍：断言与源码字面量耦合，重构措辞可能误红——这是本批次约定的守卫接缝，
@@ -10,6 +12,7 @@
 
 import { describe, it, expect } from 'vitest';
 import advancedUi from './advanced-ui.ts?raw';
+import css from './style.css?raw';
 
 const flat = advancedUi.replace(/\s+/g, '');
 
@@ -34,5 +37,88 @@ describe('高级参数折叠态跨重建保留（票 #50）：读-重建-回写'
     expect(back, '重建后应重查折叠区（而不是复用重建前的引用）').toBeGreaterThanOrEqual(0);
     expect(write, '重建后应把收集到的 open 状态写回').toBeGreaterThanOrEqual(0);
     expect(write).toBeGreaterThan(back);
+  });
+});
+
+describe('参数行分样式（票 #51）：行分叉与参数名派生', () => {
+  it('按「标志是否命中当前条目编码器的推荐目录」二分行样式', () => {
+    expect(
+      flat,
+      '参数行应先查推荐目录（命中 = 推荐行，未命中 = 自定义行）',
+    ).toContain('knownParamsOf(entry).find((k)=>k.flag===row.flag.trim())');
+    // class 名带空格，用未压平原文断言
+    expect(advancedUi).toContain("'adv-param-row adv-param-row-known'");
+    expect(advancedUi).toContain("'adv-param-row adv-param-row-custom'");
+  });
+
+  it('自定义行参数名从标志自动派生（去前导 -；核心库 mergeArgs 要求 name 非空）', () => {
+    expect(flat).toContain("row.name=row.flag.trim().replace(/^-+/,'')");
+  });
+});
+
+describe('推荐行自制下拉 + ⓘ 气泡（票 #51）', () => {
+  it('收起态 ⓘ 挂当前参数说明（气泡内容 = 行说明原文）', () => {
+    expect(flat).toContain('buildInfoBubble(row.note)');
+  });
+
+  it('选项级 ⓘ 挂该选项自己的说明（与点击选中分离，悬浮不触发选中）', () => {
+    expect(flat).toContain('buildInfoBubble(item.note)');
+  });
+
+  it('气泡机制复用 #45：settings-status-info 包裹 + settings-bubble + 导出的 infoIconSvg', () => {
+    expect(flat).toContain("info.className='settings-status-info'");
+    expect(flat).toContain("bubble.className='settings-bubble'");
+    expect(flat).toContain('icon.append(infoIconSvg())');
+    expect(flat).toContain("import{infoIconSvg}from'./settings-ui'");
+  });
+
+  it('CSS 机制全局可用：展开规则挂在共享包裹类上、不限定设置页容器', () => {
+    const flatCss = css.replace(/\s+/g, '');
+    expect(flatCss).toContain('.settings-status-info:hover.settings-bubble');
+    expect(flatCss).toContain('.settings-status-info:focus-within.settings-bubble');
+  });
+
+  it('已被其他行占用的选项禁用（本行自身除外），点击选项 = 整行替换为 rowFromKnown', () => {
+    expect(flat, '占用判定要排除本行自身').toContain('i!==rowIndex');
+    expect(flat).toContain('optionBtn.disabled=usedFlags.has(item.flag)');
+    expect(flat).toContain('entry.rows[rowIndex]=rowFromKnown(item)');
+    const replace = flat.indexOf('entry.rows[rowIndex]=rowFromKnown(item)');
+    expect(flat.indexOf('renderEntries()', replace), '替换后须经重建出口刷新整卡').toBeGreaterThan(replace);
+  });
+
+  it('下拉同一时间至多展开一个（开新的先收旧的；点外部统一收起）', () => {
+    expect(flat, '应有收起全部下拉的出口').toContain('closeKnownMenus()');
+    expect(flat).toContain("querySelectorAll<HTMLElement>('.adv-known-menu')");
+  });
+});
+
+describe('行内原生 title 退场与添加栏文案（票 #51）', () => {
+  it('值控件（勾选/下拉/数值/文本）一律不设原生 title（说明统一走 ⓘ 气泡）', () => {
+    const start = flat.indexOf('constbuildValueWidget=');
+    const end = flat.indexOf('constrowFromKnown=');
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(flat.slice(start, end), '值控件区域不应再出现 .title= 赋值').not.toContain('.title=');
+  });
+
+  it('参数名/说明输入框整体移除，命令框（自定义行）也不设 title', () => {
+    expect(flat).not.toContain('nameInput');
+    expect(flat).not.toContain('noteInput');
+    expect(flat).not.toContain('flagInput.title');
+  });
+
+  it('↑↓× 操作提示 title 保留', () => {
+    expect(advancedUi).toContain("'上移该参数行'");
+    expect(advancedUi).toContain("'下移该参数行'");
+    expect(advancedUi).toContain("'删除该参数行'");
+  });
+
+  it('添加栏「先选后加」行为不变，指向旧行为的过时提示清理', () => {
+    expect(flat, '旧提示声称悬浮参数行可见说明，已不成立').not.toContain(
+      '该编码器的推荐参数（带说明与推荐值/范围，悬浮参数行可见）',
+    );
+    expect(flat, '旧提示列举的参数名/说明框已不存在').not.toContain('添加一行自由参数（参数名/标志/值/说明）');
+    expect(advancedUi).toContain("'从该编码器的推荐目录中选择要添加的参数'");
+    expect(advancedUi).toContain("'添加一行自由参数（标志自由填写，参数名自动带出）'");
   });
 });

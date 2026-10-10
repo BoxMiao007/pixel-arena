@@ -1642,12 +1642,97 @@ body {
   min-width: 0;
 }
 
-.adv-param-name {
-  flex: 1.1;
+/* 票 #51：行控件 7→5（命令框 + 值控件 + ↑↓×），参数名/说明输入框退场 */
+.adv-param-flag {
+  flex: 2.2;
 }
 
-.adv-param-flag {
-  flex: 1.2;
+/* 推荐行自制下拉命令框（票 #51）：原生 select 放不进选项内图标 */
+.adv-known {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 2.2;
+  min-width: 0;
+}
+
+.adv-known-toggle {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  font-size: 0.82rem;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.4rem;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adv-known-toggle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* 弹出列表：absolute 悬浮 + z-index 高于相邻条目卡片（卡片无定位堆叠）；
+   .adv-entry 自身无 overflow 不会被裁剪，settings-panel 滚动区兜底 */
+.adv-known-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  min-width: 14rem;
+  max-height: 50vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.25rem;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* display:flex 会盖过 [hidden] 的 UA 样式（同 .group-menu[hidden] 先例），显式收回 */
+.adv-known-menu[hidden] {
+  display: none;
+}
+
+.adv-known-option {
+  display: flex;
+  align-items: center;
+}
+
+.adv-known-option-btn {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.adv-known-option-btn:hover:not(:disabled) {
+  background: var(--active-bg);
+  color: var(--active-text);
+}
+
+.adv-known-option-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .adv-param-value {
@@ -1660,10 +1745,6 @@ body {
   border-radius: 6px;
   padding: 0.2rem 0.4rem;
   min-width: 4rem;
-}
-
-.adv-param-note {
-  flex: 1.6;
 }
 
 .adv-add-row {
