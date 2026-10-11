@@ -115,7 +115,7 @@ describe('推荐行自制下拉 + ⓘ 气泡（票 #51）', () => {
 });
 
 describe('行内原生 title 退场与添加栏文案（票 #51）', () => {
-  it('值控件（勾选/下拉/数值/文本）一律不设原生 title（说明统一走 ⓘ 气泡）', () => {
+  it('值控件（开关/下拉/数值/文本）一律不设原生 title（说明统一走 ⓘ 气泡）', () => {
     const start = flat.indexOf('constbuildValueWidget=');
     const end = flat.indexOf('constrowFromKnown=');
     expect(start).toBeGreaterThanOrEqual(0);
@@ -142,5 +142,65 @@ describe('行内原生 title 退场与添加栏文案（票 #51）', () => {
     expect(flat, '旧提示列举的参数名/说明框已不存在').not.toContain('添加一行自由参数（参数名/标志/值/说明）');
     expect(advancedUi).toContain("'从该编码器的推荐目录中选择要添加的参数'");
     expect(advancedUi).toContain("'添加一行自由参数（标志自由填写，参数名自动带出）'");
+  });
+});
+
+describe('高级参数面板四条 UI 修正（票 #53）', () => {
+  it('折叠触发区收窄：summary 按文字宽度自适应，行内空白不再触发展开/折叠', () => {
+    const flatCss = css.replace(/\s+/g, '');
+    const start = flatCss.indexOf('.adv-advancedsummary{');
+    expect(start, '样式表缺少 .adv-advanced summary 规则块').toBeGreaterThanOrEqual(0);
+    const block = flatCss.slice(start, flatCss.indexOf('}', start) + 1);
+    expect(block).toContain('width:fit-content');
+    expect(block).toContain('max-width:100%');
+  });
+
+  it('布尔行裸 checkbox 退场：换 开/关 双态按钮（复用 adv-mode 分段样式，语义不变）', () => {
+    const start = flat.indexOf('constbuildValueWidget=');
+    const end = flat.indexOf('constrowFromKnown=');
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const widget = flat.slice(start, end);
+    expect(widget, '布尔行不得再创建勾选框控件（无样式、与 ↑↓× 重叠）').not.toContain(
+      "type='checkbox'",
+    );
+    expect(widget, '开/关 双态按钮复用分段样式').toContain("wrap.className='adv-mode'");
+    expect(widget).toContain("btn.textContent=on?'开':'关'");
+    expect(widget, '点击开/关写回 row.enabled（= 命令行是否带此标志，语义不变）').toContain(
+      'row.enabled=on',
+    );
+    expect(widget, '状态未变时不得触发重建').toContain('if(row.enabled!==on)');
+  });
+
+  it('收起态 ⓘ 在命令按钮内部：点 ⓘ 同按钮展开下拉，悬浮仍出气泡', () => {
+    expect(flat, 'ⓘ 应作为按钮子节点（排在文字 span 之后）').toContain(
+      'toggle.append(toggleText,buildInfoBubble(row.note))',
+    );
+    expect(flat, 'wrap 只剩 toggle + menu，ⓘ 不再悬在 flex 行中间').toContain(
+      'wrap.append(toggle,menu)',
+    );
+  });
+
+  it('命令按钮不得 overflow:hidden（ⓘ 气泡要从按钮盒外弹出），省略号职责移给内层文字 span', () => {
+    const flatCss = css.replace(/\s+/g, '');
+    const start = flatCss.indexOf('.adv-known-toggle{');
+    expect(start, '样式表缺少 .adv-known-toggle 规则块').toBeGreaterThanOrEqual(0);
+    const block = flatCss.slice(start, flatCss.indexOf('}', start) + 1);
+    expect(block, '按钮 overflow:hidden 会把 ⓘ 气泡裁没（#52 弹出菜单同款教训）').not.toContain(
+      'overflow',
+    );
+    const textStart = flatCss.indexOf('.adv-known-toggle-text{');
+    expect(textStart, '样式表缺少内层文字 span 规则块').toBeGreaterThanOrEqual(0);
+    const textBlock = flatCss.slice(textStart, flatCss.indexOf('}', textStart) + 1);
+    expect(textBlock).toContain('overflow:hidden');
+    expect(textBlock).toContain('text-overflow:ellipsis');
+  });
+
+  it('添加栏置顶：DOM 里 addRow 先于参数行容器挂进 details', () => {
+    const addPos = flat.indexOf('details.append(addRow)');
+    const rowsPos = flat.indexOf('details.append(rowsBox)');
+    expect(addPos, '应有 addRow 挂载点').toBeGreaterThanOrEqual(0);
+    expect(rowsPos, '应有 rowsBox 挂载点').toBeGreaterThanOrEqual(0);
+    expect(rowsPos, '添加栏要在参数行容器之前').toBeGreaterThan(addPos);
   });
 });

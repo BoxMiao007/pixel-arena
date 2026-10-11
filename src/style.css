@@ -1609,12 +1609,15 @@ body {
   opacity: 0.5;
 }
 
-/* 高级参数折叠栏：默认折叠（无 open 属性即收起） */
+/* 高级参数折叠栏：默认折叠（无 open 属性即收起）。票 #53：summary 是块级元素
+   整行可点，收窄到文字宽度后行内空白不再触发展开/折叠 */
 .adv-advanced summary {
   cursor: pointer;
   font-size: 0.85rem;
   color: var(--muted);
   user-select: none;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .adv-rows {
@@ -1656,10 +1659,14 @@ body {
   min-width: 0;
 }
 
+/* 票 #53：ⓘ 气泡从按钮盒外弹出，按钮自身不得 overflow:hidden（会把气泡裁没，
+   #52 弹出菜单同款教训）；省略号职责移给内层文字 span */
 .adv-known-toggle {
   flex: 1;
   min-width: 0;
-  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
   font: inherit;
   font-size: 0.82rem;
   background: var(--input-bg);
@@ -1668,6 +1675,11 @@ body {
   border-radius: 6px;
   padding: 0.2rem 0.4rem;
   cursor: pointer;
+}
+
+.adv-known-toggle-text {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

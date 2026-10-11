@@ -282,14 +282,28 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
   // 系统 tooltip 双弹。
   const buildValueWidget = (row: AdvancedParamRow, onChange: () => void): HTMLElement => {
     if (row.kind === 'bool') {
-      const check = document.createElement('input');
-      check.type = 'checkbox';
-      check.checked = row.enabled;
-      check.addEventListener('change', () => {
-        row.enabled = check.checked;
-        onChange();
-      });
-      return check;
+      // 票 #53：裸 checkbox 无样式、与 ↑↓× 挤在一起，换 开/关 双态按钮（复用
+      // .adv-mode 分段样式，与质量优先/大小优先同观感）；语义不变：开 = 命令行
+      // 带此标志（row.enabled），折叠标题「N 项生效」按它计数
+      const wrap = document.createElement('div');
+      wrap.className = 'adv-mode';
+      wrap.role = 'group';
+      wrap.ariaLabel = '是否在命令行中启用该参数';
+      for (const on of [true, false]) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = on ? '开' : '关';
+        btn.classList.toggle('active', row.enabled === on);
+        btn.ariaPressed = row.enabled === on ? 'true' : 'false';
+        btn.addEventListener('click', () => {
+          if (row.enabled !== on) {
+            row.enabled = on;
+            renderEntries();
+          }
+        });
+        wrap.append(btn);
+      }
+      return wrap;
     }
     if (row.kind === 'choice') {
       const select = document.createElement('select');
@@ -353,8 +367,10 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
   // ---------- 推荐行：自制下拉命令框 + ⓘ 气泡（票 #51） ----------
   /** #45 气泡机制的挂载点：wrap 挂设置页同款 .settings-status-info 类（其
    * :hover/:focus-within 展开规则在样式表里全局生效），图标用 settings-ui 导出的
-   * infoIconSvg，气泡用 .settings-bubble——观感与设置页一致。ⓘ 与可点击控件是
-   * 兄弟节点，悬浮 ⓘ 不会触发选中。 */
+   * infoIconSvg，气泡用 .settings-bubble——观感与设置页一致。菜单选项里 ⓘ 与
+   * 选中按钮是兄弟节点，悬浮不会触发选中；收起态命令按钮里 ⓘ 在按钮内部（票
+   * #53），点它 = 点按钮展开下拉。气泡从宿主盒外弹出，祖先不得设 overflow
+   * 裁剪。 */
   const buildInfoBubble = (text: string): HTMLElement => {
     const info = document.createElement('span');
     info.className = 'settings-status-info';
@@ -391,7 +407,13 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'adv-known-toggle';
-    toggle.textContent = `${known.name}（${known.flag}）`;
+    // 票 #53：ⓘ 挪进按钮内文字后面（原来悬在 flex 行中间）。点 ⓘ = 点按钮展开
+    // 下拉，悬浮仍出说明气泡；文字包内层 span 承担 ellipsis——按钮自身不能设
+    // overflow:hidden，否则 ⓘ 的气泡会被裁没（#52 弹出菜单同款教训）
+    const toggleText = document.createElement('span');
+    toggleText.className = 'adv-known-toggle-text';
+    toggleText.textContent = `${known.name}（${known.flag}）`;
+    toggle.append(toggleText, buildInfoBubble(row.note));
     const menu = document.createElement('div');
     menu.className = 'adv-known-menu';
     menu.hidden = true;
@@ -417,7 +439,7 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
       closeKnownMenus();
       menu.hidden = wasOpen;
     });
-    wrap.append(toggle, buildInfoBubble(row.note), menu);
+    wrap.append(toggle, menu);
     return wrap;
   };
 
@@ -714,6 +736,53 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     syncSummary();
     details.append(summary);
 
+    // 添加参数行：编码器推荐参数（下拉）+ 自定义（布尔/数值/下拉能力来自推荐项）。
+    // 票 #53：固定在顶部 summary 正下方，不随新建条目排到行列表末尾
+    const addRow = document.createElement('div');
+    addRow.className = 'adv-add-row';
+    const knownList = knownParamsOf(entry);
+    const usedFlags = new Set(entry.rows.map((row) => row.flag.trim()));
+    const available = knownList.filter((known) => !usedFlags.has(known.flag));
+    const knownSelect = document.createElement('select');
+    knownSelect.className = 'adv-known-select';
+    // 票 #51：旧提示「悬浮参数行可见」随行内说明输入框退场而过时，改为中性指引
+    knownSelect.title = '从该编码器的推荐目录中选择要添加的参数';
+    for (const known of available) {
+      const opt = document.createElement('option');
+      opt.value = known.flag;
+      opt.textContent = `${known.name}（${known.flag}）`;
+      knownSelect.append(opt);
+    }
+    knownSelect.disabled = available.length === 0;
+    const addKnownBtn = document.createElement('button');
+    addKnownBtn.className = 'settings-mini-btn';
+    addKnownBtn.textContent = '添加推荐参数';
+    addKnownBtn.disabled = available.length === 0;
+    addKnownBtn.addEventListener('click', () => {
+      const known = knownList.find((k) => k.flag === knownSelect.value);
+      if (!known) return;
+      entry.rows.push(rowFromKnown(known));
+      renderEntries();
+    });
+    const addCustomBtn = document.createElement('button');
+    addCustomBtn.className = 'settings-mini-btn';
+    addCustomBtn.textContent = '＋ 自定义参数';
+    addCustomBtn.title = '添加一行自由参数（标志自由填写，参数名自动带出）';
+    addCustomBtn.addEventListener('click', () => {
+      entry.rows.push({
+        name: '',
+        flag: '',
+        value: '',
+        note: '',
+        kind: 'text',
+        options: [],
+        enabled: true,
+      });
+      renderEntries();
+    });
+    addRow.append(knownSelect, addKnownBtn, addCustomBtn);
+    details.append(addRow);
+
     const rowsBox = document.createElement('div');
     rowsBox.className = 'adv-rows';
     entry.rows.forEach((row, rowIndex) => {
@@ -779,52 +848,6 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
       rowsBox.append(rowEl);
     });
     details.append(rowsBox);
-
-    // 添加参数行：编码器推荐参数（下拉）+ 自定义（布尔/数值/下拉能力来自推荐项）
-    const addRow = document.createElement('div');
-    addRow.className = 'adv-add-row';
-    const knownList = knownParamsOf(entry);
-    const usedFlags = new Set(entry.rows.map((row) => row.flag.trim()));
-    const available = knownList.filter((known) => !usedFlags.has(known.flag));
-    const knownSelect = document.createElement('select');
-    knownSelect.className = 'adv-known-select';
-    // 票 #51：旧提示「悬浮参数行可见」随行内说明输入框退场而过时，改为中性指引
-    knownSelect.title = '从该编码器的推荐目录中选择要添加的参数';
-    for (const known of available) {
-      const opt = document.createElement('option');
-      opt.value = known.flag;
-      opt.textContent = `${known.name}（${known.flag}）`;
-      knownSelect.append(opt);
-    }
-    knownSelect.disabled = available.length === 0;
-    const addKnownBtn = document.createElement('button');
-    addKnownBtn.className = 'settings-mini-btn';
-    addKnownBtn.textContent = '添加推荐参数';
-    addKnownBtn.disabled = available.length === 0;
-    addKnownBtn.addEventListener('click', () => {
-      const known = knownList.find((k) => k.flag === knownSelect.value);
-      if (!known) return;
-      entry.rows.push(rowFromKnown(known));
-      renderEntries();
-    });
-    const addCustomBtn = document.createElement('button');
-    addCustomBtn.className = 'settings-mini-btn';
-    addCustomBtn.textContent = '＋ 自定义参数';
-    addCustomBtn.title = '添加一行自由参数（标志自由填写，参数名自动带出）';
-    addCustomBtn.addEventListener('click', () => {
-      entry.rows.push({
-        name: '',
-        flag: '',
-        value: '',
-        note: '',
-        kind: 'text',
-        options: [],
-        enabled: true,
-      });
-      renderEntries();
-    });
-    addRow.append(knownSelect, addKnownBtn, addCustomBtn);
-    details.append(addRow);
     card.append(details);
 
     card.append(previewRow);
