@@ -271,3 +271,10 @@ describe('弹出菜单条目 ⓘ 紧跟文字（票 #56）', () => {
     );
   });
 });
+
+describe('复制出口共享（票 #58）', () => {
+  it('命令行复制走 util.copyText 共享出口，私有 fallbackCopy 退场', () => {
+    expect(flat, 'copyLine 复用共享出口').toContain("copyText(text,()=>deps.setStatus('已复制命令行'))");
+    expect(flat, '兜底逻辑只在 util 一份，避免拷贝').not.toContain('functionfallbackCopy');
+  });
+});

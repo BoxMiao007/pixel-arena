@@ -3,12 +3,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import settingsUi from './settings-ui.ts?raw';
 import advancedUi from './advanced-ui.ts?raw';
-import main from './main.ts?raw';
 import css from './style.css?raw';
 
 const flat = settingsUi.replace(/\s+/g, '');
 const flatAdv = advancedUi.replace(/\s+/g, '');
-const flatMain = main.replace(/\s+/g, '');
 const flatCss = css.replace(/\s+/g, '');
 
 describe('ⓘ 气泡出界约束（票 #57）', () => {
@@ -33,13 +31,10 @@ describe('ⓘ 气泡出界约束（票 #57）', () => {
     expect(flat, '上下都放不下 → 压回允许区顶 + 限高').toContain('bubble.style.maxHeight=');
   });
 
-  it('挂点接线：设置页两处 + 高级面板 buildInfoBubble + 底部状态栏', () => {
+  it('挂点接线：设置页两处 + 高级面板 buildInfoBubble（状态栏已改错误卡片，票 #58）', () => {
     expect(flat).toContain('wireBubbleFlip(ffmpegWrap,ffmpegBubble)');
     expect(flat).toContain('wireBubbleFlip(infoWrap,infoBubble)');
     expect(flatAdv).toContain('wireBubbleFlip(info,bubble)');
-    expect(flatMain, '状态栏贴窗口底，向下弹整块出窗（最严重案例）').toContain(
-      'wireBubbleFlip(detail,bubble)',
-    );
   });
 
   it('CSS：--up 变体翻到上方且箭头移到下缘；气泡限高后可滚动读全', () => {

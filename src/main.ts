@@ -6,7 +6,7 @@ import { invoke, Channel } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
-import { fileName, truncateFileName } from './util';
+import { copyText, fileName, truncateFileName } from './util';
 import { buildPill, buildPillList } from './pills'; // T18 接线点：已选文件胶囊（T22 复用同一套）
 // T23 接线点：设置中心（面板 UI + 数据形状 + 主题应用）
 import { applyTheme } from './theme';
@@ -16,7 +16,7 @@ import {
   nextRecentDir,
   type SettingsData,
 } from './settings';
-import { openSettingsPanel, infoIconSvg, wireBubbleFlip } from './settings-ui';
+import { openSettingsPanel } from './settings-ui';
 // T29-3 接线点：高级创建（多编码器 + 独立参数 + 命令行预览；面板与纯逻辑在
 // src/advanced-ui.ts / src/advanced.ts）
 import { openAdvancedPanel, type AdvancedEncodeOutcome } from './advanced-ui';
@@ -297,36 +297,80 @@ function activeGroup(): Group | null {
 }
 
 // 状态栏长文案优化（原问题：超长错误把顶栏撑高、顶飞下方内容）：行内单行截断
-// （CSS ellipsis + 宽度上限），header 高度恒定；确实被截断时挂「圆圈叹号」，
-// 悬停/Tab 聚焦展开气泡看全文（同 #45 设置页详文气泡机制）。
-// 全文进气泡后不再设原生 title，避免气泡与系统 tooltip 双弹。
+// （CSS ellipsis + 宽度上限），header 高度恒定；确实被截断时整段文本变为可点击，
+// 点击弹出完整内容卡片（票 #58：ⓘ 悬浮气泡退场，交互统一为「点状态看全文」，
+// 错误与普通长提示同机制）。
 let lastStatus: { text: string; isError: boolean; title: string } | null = null;
 
 function renderStatus(): void {
   if (!lastStatus) return;
   const { text, isError, title } = lastStatus;
   $status.textContent = '';
-  const $text = document.createElement('span');
-  $text.className = 'status-text';
-  $text.textContent = text;
-  $status.append($text);
   $status.classList.toggle('status-error', isError);
   // 截断检测要读布局：scrollWidth 触发同步排布后与可视宽度比较。
-  // 极短文本（如「目标大小无效」）不截断时没有图标噪音。
-  if ($text.scrollWidth > $text.clientWidth) {
-    const detail = document.createElement('span');
-    detail.className = 'status-detail';
-    detail.setAttribute('role', 'img');
-    detail.setAttribute('aria-label', '完整状态内容');
-    detail.setAttribute('tabindex', '0'); // 键盘可达：Tab 聚焦即展开（同 #45 口径）
-    detail.append(infoIconSvg());
-    const bubble = document.createElement('span');
-    bubble.className = 'settings-bubble status-bubble';
-    bubble.textContent = title; // 调用方给的完整文案（默认 = 行内文本）
-    detail.append(bubble);
-    wireBubbleFlip(detail, bubble); // 票 #57：状态栏贴窗口底，向下弹会整块出窗，须翻上
-    $status.append(detail);
-  }
+  // 极短文本（如「目标大小无效」）不截断时保持纯展示、不可点。
+  const probe = document.createElement('span');
+  probe.className = 'status-text';
+  probe.textContent = text;
+  $status.append(probe);
+  if (probe.scrollWidth <= probe.clientWidth) return;
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'status-text status-more';
+  more.textContent = text;
+  // 此处无气泡共存，原生 tooltip 不会双弹（#51 双弹顾虑只针对气泡挂点）
+  more.title = '点击查看完整内容';
+  more.addEventListener('click', () => openStatusCard(title, isError));
+  $status.replaceChild(more, probe);
+}
+
+// 状态全文卡片（票 #58）：模态弹层复用设置面板同款遮罩观感；正文可选可滚，
+// 头部一键复制全文；× / 点遮罩 / Esc 三路关闭（Esc 与既有菜单口径一致）。
+function openStatusCard(title: string, isError: boolean): void {
+  const overlay = document.createElement('div');
+  overlay.className = 'settings-overlay';
+  const panel = document.createElement('div');
+  panel.className = 'status-card';
+  const heading = document.createElement('h2');
+  heading.textContent = isError ? '错误详情' : '完整状态内容';
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'settings-mini-btn';
+  copyBtn.textContent = '复制全部';
+  copyBtn.addEventListener('click', () => {
+    copyText(title, () => {
+      copyBtn.textContent = '已复制';
+      window.setTimeout(() => {
+        copyBtn.textContent = '复制全部';
+      }, 1500);
+    });
+  });
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'settings-mini-btn';
+  closeBtn.textContent = '×';
+  closeBtn.title = '关闭';
+  const body = document.createElement('pre');
+  body.className = 'status-card-body';
+  body.textContent = title; // user-select:text（CSS），可手动选择部分复制
+  const close = (): void => {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') close();
+  };
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener('keydown', onKey);
+  closeBtn.addEventListener('click', close);
+  const head = document.createElement('div');
+  head.className = 'status-card-head';
+  head.append(heading, copyBtn, closeBtn);
+  panel.append(head, body);
+  overlay.append(panel);
+  document.body.append(overlay);
 }
 
 function setStatus(text: string, isError = false, title: string = text): void {

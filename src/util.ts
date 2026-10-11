@@ -40,3 +40,31 @@ export function versionLabel(raw: string): string {
   const match = raw.match(/\d+(?:\.\d+)+/);
   return match ? `v${match[0]}` : raw;
 }
+
+/**
+ * 剪贴板写入（票 #58 从 advanced-ui 提取共享）：clipboard API 优先，不可用时
+ * 走隐藏文本域兜底；写入完成后（成功才算）回调 done，由调用方负责用户反馈。
+ */
+export function copyText(text: string, done: () => void): void {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => done(), () => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+
+/** 隐藏文本域复制兜底（clipboard API 不可用时）。 */
+function fallbackCopy(text: string, done: () => void): void {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.append(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+    done();
+  } finally {
+    textarea.remove();
+  }
+}

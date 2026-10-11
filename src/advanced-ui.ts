@@ -14,6 +14,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { ConflictSession, type ConflictAnswer } from './conflict';
+import { copyText } from './util';
 import { infoIconSvg, wireBubbleFlip } from './settings-ui';
 import {
   addEntry,
@@ -269,12 +270,8 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
   };
 
   const copyLine = (text: string): void => {
-    const done = (): void => deps.setStatus('已复制命令行');
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
-    } else {
-      fallbackCopy(text, done);
-    }
+    // 票 #58：复制出口提取为 util.copyText 共享（状态栏错误卡片同用）
+    copyText(text, () => deps.setStatus('已复制命令行'));
   };
 
   // ---------- 参数行控件（布尔开关 / 下拉 / 数值 / 自由文本，票面验收 3） ----------
@@ -1086,21 +1083,5 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
   // 会话里一条条目都没有时，自动铺一条默认编码器，减少一次点击
   if (session.entries.length === 0) {
     addEncoderEntry();
-  }
-}
-
-/** 隐藏文本域复制兜底（clipboard API 不可用时）。 */
-function fallbackCopy(text: string, done: () => void): void {
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.style.position = 'fixed';
-  textarea.style.opacity = '0';
-  document.body.append(textarea);
-  textarea.select();
-  try {
-    document.execCommand('copy');
-    done();
-  } finally {
-    textarea.remove();
   }
 }

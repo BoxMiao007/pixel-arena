@@ -96,59 +96,65 @@ body {
   color: var(--red);
 }
 
-/* ---------- 顶栏状态详文气泡：机制同 #45 设置页详文（.settings-bubble），
-   差异：气泡右锚（状态栏贴右上角，左锚会伸出窗外）；限高 50vh 可滚
-   （失败汇总可达上千字符）；指针事件开启（滚轮可用）；::after 桥接 7px
-   间隙，鼠标移向气泡途中不丢悬停 ---------- */
-.status-detail {
-  position: relative;
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  cursor: help;
+/* ---------- 状态全文卡片（票 #58）：ⓘ 悬浮气泡退场后截断状态的详情出口。
+   截断的状态文本本身可点（button 语义，键盘可达），点击弹模态卡片——
+   遮罩复用 .settings-overlay，面板观感对齐 .settings-panel ---------- */
+.status-more {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.status-more:hover {
+  text-decoration: underline;
+}
+
+.status-more:focus-visible {
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.status-detail svg {
-  width: 11px;
-  height: 11px;
+.status-card {
+  width: min(42rem, 90vw);
+  max-height: min(30rem, 80vh);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
 
-.status-detail:focus-visible {
-  outline: 2px solid var(--accent);
+.status-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-/* 悬停桥：盖住气泡与图标间的 7px 空隙，属 .status-detail 自身命中区 */
-.status-detail::after {
-  content: '';
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  height: 8px;
+.status-card-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  flex: 1;
+  min-width: 0;
 }
 
-.status-bubble {
-  pointer-events: auto;
-  top: calc(100% + 7px);
-  right: 0;
-  left: auto;
-  transform: none;
-  max-height: 50vh;
+/* 正文等宽排版：错误多为路径/命令/原始输出，等宽对齐更可读；
+   user-select 放开供手动选择部分复制（票 #58），限高滚动看全文 */
+.status-card-body {
+  margin: 0;
+  font-family: var(--mono, monospace);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  user-select: text;
   overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.status-bubble::after {
-  left: auto;
-  right: 7px;
-  margin-left: 0;
-}
-
-.status-detail:hover .status-bubble,
-.status-detail:focus-within .status-bubble {
-  display: block;
 }
 
 /* ---------- 跑分组标签页栏 ---------- */
