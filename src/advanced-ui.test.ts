@@ -258,3 +258,15 @@ describe('下拉命令框 ⓘ 紧跟文字（票 #55）', () => {
     expect(block).toContain('text-overflow:ellipsis');
   });
 });
+
+describe('弹出菜单条目 ⓘ 紧跟文字（票 #56）', () => {
+  it('条目按钮不拉伸：ⓘ 跟随各条目文字，不再统一贴菜单右缘', () => {
+    const flatCss = css.replace(/\s+/g, '');
+    const start = flatCss.indexOf('.adv-known-option-btn{');
+    expect(start, '样式表缺少 .adv-known-option-btn 规则块').toBeGreaterThanOrEqual(0);
+    const block = flatCss.slice(start, flatCss.indexOf('}', start) + 1);
+    expect(block, '条目按钮 flex 拉伸会把 ⓘ 推到菜单右缘（与票 #55 同根源）').not.toContain(
+      'flex:1',
+    );
+  });
+});

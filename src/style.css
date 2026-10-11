@@ -1725,7 +1725,7 @@ body {
 }
 
 .adv-known-option-btn {
-  flex: 1;
+  /* 不设 flex 拉伸——内容宽，ⓘ 才紧跟各条目文字而不是全部对齐到菜单右缘（票 #56） */
   min-width: 0;
   text-align: left;
   border: none;
