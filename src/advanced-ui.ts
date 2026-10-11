@@ -105,9 +105,10 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
   panel.className = 'settings-panel adv-panel';
   overlay.append(panel);
 
-  // 推荐行下拉的共享收起出口（票 #51）：同一时间至多一个展开（与顶栏菜单同约定），
-  // 点面板外任何地方统一收起；面板关闭时摘掉 document 监听。toggle 自身
-  // stopPropagation，展开那一下不会被本监听立刻收掉。
+  // 推荐行下拉的共享收起出口（票 #51）：同一时间至多一个展开（与顶栏菜单同约定）。
+  // 本监听挂在 document 上，任何未被拦下的点击（面板内除 toggle 外一律、面板外）
+  // 都会收起下拉——含点质量滑杆/值控件这类面板内操作，属标准下拉行为；面板关闭时
+  // 摘掉监听。toggle 自身 stopPropagation，展开那一下不会被本监听立刻收掉。
   const closeKnownMenus = (): void => {
     for (const menu of entriesBox.querySelectorAll<HTMLElement>('.adv-known-menu')) {
       menu.hidden = true;
@@ -391,8 +392,6 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     toggle.type = 'button';
     toggle.className = 'adv-known-toggle';
     toggle.textContent = `${known.name}（${known.flag}）`;
-    // 目录为空时行不会命中推荐（防御性禁用，正常到不了这里）
-    toggle.disabled = knownList.length === 0;
     const menu = document.createElement('div');
     menu.className = 'adv-known-menu';
     menu.hidden = true;
