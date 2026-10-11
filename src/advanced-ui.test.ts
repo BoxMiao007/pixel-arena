@@ -140,7 +140,9 @@ describe('行内原生 title 退场与添加栏文案（票 #51）', () => {
       '该编码器的推荐参数（带说明与推荐值/范围，悬浮参数行可见）',
     );
     expect(flat, '旧提示列举的参数名/说明框已不存在').not.toContain('添加一行自由参数（参数名/标志/值/说明）');
-    expect(advancedUi).toContain("'从该编码器的推荐目录中选择要添加的参数'");
+    expect(advancedUi, '票 #54：添加栏按钮原生 title 移除，说明统一走 ⓘ 气泡').not.toContain(
+      '从该编码器的推荐目录中选择要添加的参数',
+    );
     expect(advancedUi).toContain("'添加一行自由参数（标志自由填写，参数名自动带出）'");
   });
 });
@@ -202,5 +204,45 @@ describe('高级参数面板四条 UI 修正（票 #53）', () => {
     expect(addPos, '应有 addRow 挂载点').toBeGreaterThanOrEqual(0);
     expect(rowsPos, '应有 rowsBox 挂载点').toBeGreaterThanOrEqual(0);
     expect(rowsPos, '添加栏要在参数行容器之前').toBeGreaterThan(addPos);
+  });
+});
+
+describe('添加栏下拉换自制：条目带 ⓘ 说明气泡（票 #54）', () => {
+  it('原生 select 退场（放不进选项内图标，#51 结论；编码器/单位选择器不受影响）', () => {
+    const start = flat.indexOf("constaddRow=document.createElement('div')");
+    const end = flat.indexOf('addRow.append(addDropdown,');
+    expect(start, '应有添加栏构建区').toBeGreaterThanOrEqual(0);
+    expect(end, '应有添加栏挂载点').toBeGreaterThan(start);
+    const addBar = flat.slice(start, end);
+    expect(addBar, '添加栏不应再创建 <select>').not.toContain("createElement('select')");
+    expect(flat).not.toContain("'adv-known-select'");
+    const flatCss = css.replace(/\s+/g, '');
+    expect(flatCss, '死样式一并清掉').not.toContain('.adv-known-select');
+  });
+
+  it('复用推荐行下拉结构与弹出机制：toggle + menu 挂同一 wrap', () => {
+    expect(flat).toContain("addToggle.className='adv-known-toggle'");
+    expect(flat).toContain("addMenu.className='adv-known-menu'");
+    expect(flat, 'toggle 与 menu 挂同一 position:relative 包裹').toContain(
+      'addDropdown.append(addToggle,addMenu)',
+    );
+  });
+
+  it('按钮收起态显示所选参数 + ⓘ（悬浮出该参数说明）；无可用时禁用且 ⓘ 退场', () => {
+    expect(flat, '按钮 ⓘ 说明 = 当前选中项').toContain('buildInfoBubble(chosen.note)');
+    expect(flat).toContain('addToggle.disabled=!chosen');
+    expect(flat).toContain("'无可用推荐参数'");
+  });
+
+  it('菜单条目末尾 ⓘ 挂该条目说明；点条目仅选中不添加（添加仍走添加推荐参数按钮）', () => {
+    expect(flat, '选中 = 更新按钮 + 收起菜单，不 push 行').toContain(
+      'chosen=item;paintAddToggle();addMenu.hidden=true',
+    );
+    expect(flat, '添加按钮用当前选中项').toContain('entry.rows.push(rowFromKnown(chosen))');
+  });
+
+  it('添加栏里下拉占比与原 select 时代一致（flex:1，覆盖行内 flex:2.2）', () => {
+    const flatCss = css.replace(/\s+/g, '');
+    expect(flatCss).toContain('.adv-add-row.adv-known{flex:1');
   });
 });

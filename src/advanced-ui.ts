@@ -737,31 +737,68 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     details.append(summary);
 
     // 添加参数行：编码器推荐参数（下拉）+ 自定义（布尔/数值/下拉能力来自推荐项）。
-    // 票 #53：固定在顶部 summary 正下方，不随新建条目排到行列表末尾
+    // 票 #53：固定在顶部 summary 正下方，不随新建条目排到行列表末尾。
+    // 票 #54：原生 select 放不进选项内图标，换与推荐行同款的自制下拉——按钮显示
+    // 已选「参数名（标志）」+ ⓘ，菜单项末尾 ⓘ 悬浮出对应说明；点条目只选中不
+    // 添加，添加仍走「添加推荐参数」（先选后加不变）。按钮不设原生 title，说明
+    // 统一走 ⓘ 气泡（#51 原则，避免悬浮双弹）
     const addRow = document.createElement('div');
     addRow.className = 'adv-add-row';
     const knownList = knownParamsOf(entry);
     const usedFlags = new Set(entry.rows.map((row) => row.flag.trim()));
     const available = knownList.filter((known) => !usedFlags.has(known.flag));
-    const knownSelect = document.createElement('select');
-    knownSelect.className = 'adv-known-select';
-    // 票 #51：旧提示「悬浮参数行可见」随行内说明输入框退场而过时，改为中性指引
-    knownSelect.title = '从该编码器的推荐目录中选择要添加的参数';
-    for (const known of available) {
-      const opt = document.createElement('option');
-      opt.value = known.flag;
-      opt.textContent = `${known.name}（${known.flag}）`;
-      knownSelect.append(opt);
+    let chosen = available[0];
+    const addDropdown = document.createElement('span');
+    addDropdown.className = 'adv-known';
+    const addToggle = document.createElement('button');
+    addToggle.type = 'button';
+    addToggle.className = 'adv-known-toggle';
+    addToggle.disabled = !chosen;
+    const addToggleText = document.createElement('span');
+    addToggleText.className = 'adv-known-toggle-text';
+    const paintAddToggle = (): void => {
+      addToggleText.textContent = chosen
+        ? `${chosen.name}（${chosen.flag}）`
+        : '无可用推荐参数';
+      // ⓘ 随选中项换说明；无选中时无说明可弹，ⓘ 退场
+      addToggle.replaceChildren(
+        addToggleText,
+        ...(chosen ? [buildInfoBubble(chosen.note)] : []),
+      );
+    };
+    paintAddToggle();
+    const addMenu = document.createElement('div');
+    addMenu.className = 'adv-known-menu';
+    addMenu.hidden = true;
+    for (const item of available) {
+      const option = document.createElement('div');
+      option.className = 'adv-known-option';
+      const optionBtn = document.createElement('button');
+      optionBtn.type = 'button';
+      optionBtn.className = 'adv-known-option-btn';
+      optionBtn.textContent = `${item.name}（${item.flag}）`;
+      optionBtn.addEventListener('click', () => {
+        chosen = item;
+        paintAddToggle();
+        addMenu.hidden = true;
+      });
+      option.append(optionBtn, buildInfoBubble(item.note));
+      addMenu.append(option);
     }
-    knownSelect.disabled = available.length === 0;
+    addToggle.addEventListener('click', (e) => {
+      e.stopPropagation(); // 别让 document 的「点外部收起」把展开那一下立刻关掉
+      const wasOpen = !addMenu.hidden;
+      closeKnownMenus();
+      addMenu.hidden = wasOpen;
+    });
+    addDropdown.append(addToggle, addMenu);
     const addKnownBtn = document.createElement('button');
     addKnownBtn.className = 'settings-mini-btn';
     addKnownBtn.textContent = '添加推荐参数';
     addKnownBtn.disabled = available.length === 0;
     addKnownBtn.addEventListener('click', () => {
-      const known = knownList.find((k) => k.flag === knownSelect.value);
-      if (!known) return;
-      entry.rows.push(rowFromKnown(known));
+      if (!chosen) return;
+      entry.rows.push(rowFromKnown(chosen));
       renderEntries();
     });
     const addCustomBtn = document.createElement('button');
@@ -780,7 +817,7 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
       });
       renderEntries();
     });
-    addRow.append(knownSelect, addKnownBtn, addCustomBtn);
+    addRow.append(addDropdown, addKnownBtn, addCustomBtn);
     details.append(addRow);
 
     const rowsBox = document.createElement('div');

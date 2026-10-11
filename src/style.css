@@ -1683,6 +1683,9 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* button 的 UA 样式 text-align:center 会被 span 继承，按钮拉宽后文字居中显形；
+     下拉命令框保持左对齐（与被替换的原生 select 一致，票 #54 GUI 验收发现） */
+  text-align: left;
 }
 
 .adv-known-toggle:disabled {
@@ -1767,16 +1770,10 @@ body {
   margin-top: 0.5rem;
 }
 
-.adv-known-select {
+/* 票 #54：添加栏下拉复用推荐行的自制下拉结构（.adv-known/.adv-known-toggle）；
+   .adv-known 的 flex:2.2 是参数行布局占比，添加栏里与原 select 时代一致占 flex:1 */
+.adv-add-row .adv-known {
   flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 0.82rem;
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.2rem 0.35rem;
 }
 
 /* 命令行预览：等宽、可横向滚动、可复制 */
