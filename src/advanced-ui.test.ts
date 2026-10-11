@@ -82,7 +82,8 @@ describe('推荐行自制下拉 + ⓘ 气泡（票 #51）', () => {
     expect(flat).toContain("info.className='settings-status-info'");
     expect(flat).toContain("bubble.className='settings-bubble'");
     expect(flat).toContain('icon.append(infoIconSvg())');
-    expect(flat).toContain("import{infoIconSvg}from'./settings-ui'");
+    // 票 #57 后导入行加了 wireBubbleFlip，断言放宽为「从 settings-ui 导入 infoIconSvg」
+    expect(flat).toMatch(/import\{[^}]*infoIconSvg[^}]*\}from'\.\/settings-ui'/);
   });
 
   it('CSS 机制全局可用：展开规则挂在共享包裹类上、不限定设置页容器', () => {

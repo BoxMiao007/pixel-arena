@@ -16,7 +16,7 @@ import {
   nextRecentDir,
   type SettingsData,
 } from './settings';
-import { openSettingsPanel, infoIconSvg } from './settings-ui';
+import { openSettingsPanel, infoIconSvg, wireBubbleFlip } from './settings-ui';
 // T29-3 接线点：高级创建（多编码器 + 独立参数 + 命令行预览；面板与纯逻辑在
 // src/advanced-ui.ts / src/advanced.ts）
 import { openAdvancedPanel, type AdvancedEncodeOutcome } from './advanced-ui';
@@ -324,6 +324,7 @@ function renderStatus(): void {
     bubble.className = 'settings-bubble status-bubble';
     bubble.textContent = title; // 调用方给的完整文案（默认 = 行内文本）
     detail.append(bubble);
+    wireBubbleFlip(detail, bubble); // 票 #57：状态栏贴窗口底，向下弹会整块出窗，须翻上
     $status.append(detail);
   }
 }

@@ -29,6 +29,88 @@ import {
   type ToolStatus,
 } from './settings';
 
+// ---------- ⓘ 气泡出界约束（票 #57） ----------
+/** 气泡允许区矩形（普通对象，避免依赖 DOMRect 构造器）。 */
+interface BubbleBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** 气泡允许区：沿祖先爬出所有会裁内容的滚动/裁剪容器，取其矩形与窗口可视区的
+ * 交集——气泡超出交集即被裁掉或弹出窗外，无法读取。 */
+const bubbleVisibleBounds = (wrap: HTMLElement): BubbleBounds => {
+  const bounds: BubbleBounds = {
+    left: 0,
+    top: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+  };
+  for (let node: HTMLElement | null = wrap.parentElement; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    const cropX = style.overflowX !== 'visible';
+    const cropY = style.overflowY !== 'visible';
+    if (!cropX && !cropY) continue;
+    const rect = node.getBoundingClientRect();
+    if (cropX) {
+      bounds.left = Math.max(bounds.left, rect.left);
+      bounds.right = Math.min(bounds.right, rect.right);
+    }
+    if (cropY) {
+      bounds.top = Math.max(bounds.top, rect.top);
+      bounds.bottom = Math.min(bounds.bottom, rect.bottom);
+    }
+  }
+  return bounds;
+};
+
+/** 展开瞬间的出界修正：横向越界左右贴边、纵向越界翻到 ⓘ 上方（--up 变体），
+ * 翻上去仍放不下则压回允许区顶、允许区比气泡窄则收窄 maxWidth 兜底。每次展开
+ * 先清上次内联再重测——瞬态机制：开着时滚动/缩放的二次越界不追，重悬浮即重测。 */
+const clampBubble = (wrap: HTMLElement, bubble: HTMLElement): void => {
+  bubble.style.left = '';
+  bubble.style.transform = '';
+  bubble.style.maxWidth = '';
+  bubble.style.maxHeight = '';
+  bubble.style.top = '';
+  bubble.classList.remove('settings-bubble--up');
+  if (!bubble.offsetParent) return; // 未展开（display:none）无布局可测，展开事件才到这
+  const bounds = bubbleVisibleBounds(wrap);
+  const wrapRect = wrap.getBoundingClientRect();
+  const rect = bubble.getBoundingClientRect();
+  const availWidth = bounds.right - bounds.left;
+  if (rect.width > availWidth) {
+    // 允许区比气泡还窄：左缘贴边界 + 收窄兜底，保证任何窗口宽下完整可读
+    bubble.style.left = `${bounds.left - wrapRect.left}px`;
+    bubble.style.transform = 'none';
+    bubble.style.maxWidth = `${availWidth}px`;
+  } else if (rect.right > bounds.right) {
+    bubble.style.left = `${rect.left - wrapRect.left + (bounds.right - rect.right)}px`;
+    bubble.style.transform = 'none';
+  } else if (rect.left < bounds.left) {
+    bubble.style.left = `${bounds.left - wrapRect.left}px`;
+    bubble.style.transform = 'none';
+  }
+  const measured = bubble.getBoundingClientRect();
+  if (measured.bottom > bounds.bottom) {
+    if (wrapRect.top - measured.height - 7 >= bounds.top) {
+      bubble.classList.add('settings-bubble--up'); // 上方放得下：翻到 ⓘ 上方
+    } else {
+      // 上下都放不下：顶边钉到允许区顶、限高滚动读全（极矮窗口的兜底）
+      bubble.style.top = `${bounds.top - wrapRect.top}px`;
+      bubble.style.maxHeight = `${bounds.bottom - bounds.top}px`;
+    }
+  }
+};
+
+/** 给 ⓘ 气泡挂出界约束（票 #57）：hover / 键盘聚焦展开瞬间重测一次。所有
+ * .settings-bubble 挂点统一走这里，未来新挂点接线一行即可。 */
+export const wireBubbleFlip = (wrap: HTMLElement, bubble: HTMLElement): void => {
+  wrap.addEventListener('mouseover', () => clampBubble(wrap, bubble));
+  wrap.addEventListener('focusin', () => clampBubble(wrap, bubble));
+};
+
 /** 设置面板对外依赖（main.ts 提供）：保存与改后的重渲染。 */
 export interface SettingsUiHost {
   /** 整体保存；返回后端归一后的最新设置。失败 reject（中文错误）。 */
@@ -367,6 +449,7 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
   ffmpegWrap.className = 'settings-status-info';
   ffmpegWrap.append(ffmpegBadge, ffmpegBubble);
   ffmpegBadge.append(ffmpegIcon);
+  wireBubbleFlip(ffmpegWrap, ffmpegBubble);
   ffmpegStatusLine.append(ffmpegWrap, ffmpegStatusHint);
   ffmpegSection.append(ffmpegStatusLine);
   const ffmpegInfo = { wrap: ffmpegWrap, bubble: ffmpegBubble, icon: ffmpegIcon };
@@ -482,6 +565,7 @@ export function openSettingsPanel(saved: SettingsData, host: SettingsUiHost): vo
     infoWrap.className = 'settings-status-info';
     infoWrap.append(badge, infoBubble);
     badge.append(infoIcon);
+    wireBubbleFlip(infoWrap, infoBubble);
     statusLine.append(infoWrap, lineHint);
     const info = { wrap: infoWrap, bubble: infoBubble, icon: infoIcon };
     statusRenderers.push(() => {

@@ -14,7 +14,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { ConflictSession, type ConflictAnswer } from './conflict';
-import { infoIconSvg } from './settings-ui';
+import { infoIconSvg, wireBubbleFlip } from './settings-ui';
 import {
   addEntry,
   availabilityErrors,
@@ -384,6 +384,7 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     bubble.className = 'settings-bubble';
     bubble.textContent = text;
     info.append(icon, bubble);
+    wireBubbleFlip(info, bubble); // 票 #57：出界翻转，保证气泡完整可读
     return info;
   };
 
