@@ -1678,7 +1678,7 @@ body {
 }
 
 .adv-known-toggle-text {
-  flex: 1;
+  /* 不设 flex 拉伸——内容宽（可收缩），ⓘ 才紧跟文字而不是被推到框末尾（票 #55） */
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

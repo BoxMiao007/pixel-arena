@@ -246,3 +246,15 @@ describe('添加栏下拉换自制：条目带 ⓘ 说明气泡（票 #54）', (
     expect(flatCss).toContain('.adv-add-row.adv-known{flex:1');
   });
 });
+
+describe('下拉命令框 ⓘ 紧跟文字（票 #55）', () => {
+  it('文字 span 不得设 flex:1（会把 ⓘ 推到框末尾），省略号机制保留', () => {
+    const flatCss = css.replace(/\s+/g, '');
+    const start = flatCss.indexOf('.adv-known-toggle-text{');
+    expect(start, '样式表缺少 .adv-known-toggle-text 规则块').toBeGreaterThanOrEqual(0);
+    const block = flatCss.slice(start, flatCss.indexOf('}', start) + 1);
+    expect(block, 'flex:1 会把 ⓘ 推到框末尾，ⓘ 须紧跟文字').not.toContain('flex:1');
+    expect(block).toContain('overflow:hidden');
+    expect(block).toContain('text-overflow:ellipsis');
+  });
+});
