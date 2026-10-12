@@ -2,8 +2,9 @@
 //
 // image crate 0.25 只解 PNG/JPEG/WebP；一站式产物另外两种格式在此按魔数分派：
 // - JPEG XL：jxl-oxide 进程内解码（纯 Rust，三端无外部依赖，无需下载任何工具）；
-// - AVIF：avifdec 子进程（libavif 工件随 avifenc 一并安装；用环境变量
-//   PIXEL_ARENA_AVIFDEC 定位，GUI 由 src-tauri 启动时注入确定性路径，CLI 自行设置）。
+// - AVIF：avifdec 子进程（avifdec 与 avifenc 同包：安装包捆绑或 tools/ 既有
+//   安装；用环境变量 PIXEL_ARENA_AVIFDEC 定位，GUI 由 src-tauri 按设置覆盖 >
+//   捆绑 > tools 的优先级注入，CLI 自行设置）。
 //
 // 解码口径与 metrics::decode_srgb 一致：统一 8-bit sRGB、alpha 丢弃、忽略 ICC
 //（第一版已知局限，见规格 Out of Scope）。
@@ -95,7 +96,7 @@ pub(crate) fn decode_avif(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, 
         path: path.to_path_buf(),
         message,
     };
-    let hint = "请先在一站式模式生成一次 AVIF 产物（会自动安装 avifdec），或设置环境变量 PIXEL_ARENA_AVIFDEC 指向 avifdec 可执行文件";
+    let hint = "avifdec 与 avifenc 同包分发：桌面安装包/便携包的 encoders 目录自带，也可在设置中心指定 avifdec 路径，或设置环境变量 PIXEL_ARENA_AVIFDEC 指向 avifdec 可执行文件";
     let decoder = std::env::var("PIXEL_ARENA_AVIFDEC")
         .ok()
         .map(|value| value.trim().to_string())

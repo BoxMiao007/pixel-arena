@@ -13,8 +13,9 @@
 // 环境变量注入的既有机制，由应用壳/CLI 负责。
 //
 // 编码链路：image crate 解码原图（与跑分同一套 decode_srgb 口径）→ 按编码器口味写
-// 中间临时文件（cjpeg/cwebp/cjxl 吃 P6 PPM，avifenc 吃 PNG）→ 子进程编码 →
-// 产物按 T29-1 命名新格式落盘（crates/pixel-arena-core/src/naming.rs：格式、冲突
+// 中间临时文件（cjpeg/cjxl 吃 P6 PPM，avifenc 吃 PNG，cwebp 平台分口味——Windows
+// 官方构建只认 WIC 可解格式、必须喂 PNG，其余平台喂 PPM，见 [`cwebp_input_png`]）
+// → 子进程编码 → 产物按 T29-1 命名新格式落盘（crates/pixel-arena-core/src/naming.rs：格式、冲突
 // 去重与输出目录的单一来源）。AVIF/JXL 产物写完自检解码并旁路一份 PNG 代片供查看器
 // 显示（WebView 原生解不了这两种格式，见决策 0012）。
 //
@@ -545,7 +546,8 @@ pub fn encode_jpeg_using(
 }
 
 /// 用 cwebp 把原图编码为 WebP：Some(质量) 有损（`-q`），None 无损（`-lossless`）。
-/// cwebp 吃 P6 PPM，输入与跑分同一套解码口径；产物名 `<原图名>_webp_q<质量>.webp`
+/// 输入与跑分同一套解码口径：Windows 喂 PNG（WIC）、其余平台喂 P6 PPM（原生 PNM），
+/// 口径由 [`cwebp_input_png`] 单一来源决定；产物名 `<原图名>_webp_q<质量>.webp`
 /// / `<原图名>_webp_lossless.webp`（T29-1 命名新格式，冲突自动 `_1/_2`）。
 pub fn encode_webp_using(
     encoder: impl AsRef<Path>,
@@ -584,8 +586,12 @@ pub fn encode_webp_using(
         Some(q) => command.arg("-q").arg(q.to_string()),
         None => command.arg("-lossless"),
     };
-    let ppm = write_ppm_temp(&decoded)?;
-    command.arg(ppm.path()).arg("-o").arg(&product_tmp);
+    let input = if cwebp_input_png() {
+        write_png_temp(&decoded)?
+    } else {
+        write_ppm_temp(&decoded)?
+    };
+    command.arg(input.path()).arg("-o").arg(&product_tmp);
 
     let result = run_subprocess(encoder, command, "libwebp cwebp", &product_tmp);
     finish_product(result, &product_tmp, &product)
@@ -737,7 +743,19 @@ pub(crate) fn file_stem(source: &Path) -> Result<String, CoreError> {
         })
 }
 
-/// 把解码像素包成 P6 PPM 临时文件（cjpeg/cwebp/cjxl 的输入）。
+/// cwebp 的中间输入是否必须用 PNG：Windows 官方 cwebp 构建带 `HAVE_WINCODEC_H`，
+/// 输入只走 WIC 解码（PNG/JPEG/TIFF 等 WIC 认的格式）+ 回落按 WebP 码流读，
+/// 没有编译原生 PNM 解码器——PPM 输入必然报
+/// `IWICImagingFactory_CreateDecoderFromStream(…) failed 88982f50`
+///（WINCODEC_ERR_COMPONENTNOTFOUND，WIC 无 PNM 解码器；实测 libwebp 1.6.0
+/// cwebp.exe 喂 PPM 全档失败、喂 PNG 正常，且按内容嗅探、与扩展名无关）。
+/// 其余平台官方构建原生认 PNM，PPM 免压缩写盘最快，保持原口味。
+/// PNG 无损且走同一套 8-bit sRGB 解码口径，无损 WebP 的像素逐位一致不受影响。
+pub fn cwebp_input_png() -> bool {
+    cfg!(windows)
+}
+
+/// 把解码像素包成 P6 PPM 临时文件（cjpeg/cjxl 的输入，及非 Windows 平台 cwebp 的输入）。
 /// 不走 stdin 管道：要同时读子进程的 stderr，大输出下双管道互塞会死锁，临时文件最稳。
 pub(crate) fn write_ppm_temp(decoded: &ImageBuffer<Rgb<u8>, Vec<u8>>) -> Result<tempfile::NamedTempFile, CoreError> {
     let (width, height) = decoded.dimensions();
@@ -1033,6 +1051,14 @@ mod tests {
     }
 
     // ---------- 编码器路径解析（T23 覆盖 + T32 缺失指引发布页）----------
+
+    #[test]
+    fn cwebp_input_flavor_matches_platform() {
+        // 回归锚（用户 0.1.8 Windows 便携版实测）：官方 cwebp.exe 喂 PPM 报
+        // IWICImagingFactory_CreateDecoderFromStream… 88982f50（WIC 无 PNM 解码器），
+        // Windows 中间输入必须 PNG；其余平台官方构建原生认 PNM，保持 PPM 快路径。
+        assert_eq!(cwebp_input_png(), cfg!(windows));
+    }
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name)

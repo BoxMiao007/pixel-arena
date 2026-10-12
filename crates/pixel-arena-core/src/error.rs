@@ -32,7 +32,7 @@ impl fmt::Display for CoreError {
             }
             CoreError::Decode { path, message } => write!(
                 f,
-                "无法解码图片 {}：{message}。请确认文件是受支持的格式（PNG/JPEG/WebP，AVIF/JPEG XL 需先完成一次一站式生成以安装解码工具）且未损坏。",
+                "无法解码图片 {}：{message}。请确认文件是受支持的格式（PNG/JPEG/WebP；AVIF 需 avifdec 解码工具就位——桌面版随安装包捆绑，JPEG XL 进程内解码无需外部工具）且未损坏。",
                 path.display()
             ),
             CoreError::DimensionMismatch { reference, distorted } => write!(

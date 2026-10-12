@@ -191,3 +191,9 @@
 - 决策：Windows 便携 zip 的资产文件名从裸名 `PixelArena.zip` 改为 `Pixel-Arena_<版本>_x64-portable.zip`（v0.1.5 即 `Pixel-Arena_0.1.5_x64-portable.zip`），对齐 NSIS/MSI 安装包既有的「产品名_版本_架构」参数口径；版本号由 CI 在组装步骤读 `tauri.conf.json` 生成（单一数据源，随发版自增，不硬编码进 workflow），经 GITHUB_ENV 传给逐成员核对与产物上传步骤。zip 内部目录仍为 `PixelArena/`（决策 0026 用户拍板的解压形态不动）。已发布的 v0.1.5 Release 资产同步改名重传（zip 内容不变，不重跑 CI）。
 - 为什么：用户反馈（票 #46）——Release 页多版本并存时裸名 `PixelArena.zip` 无法分辨版本与架构，其余资产都带参数，唯便携包不带；且 CI 产出即带参数后，手动挂资产到 Release 无需再改名。
 - 放弃了：把版本号硬编码进 workflow（发版忘改必然漂移）；连 zip 内部目录一起改带参数名（用户拍板的解压形态与票 #43 的 exe 同目录 encoders/ 回退逻辑全部要重验证，收益为零）。
+
+## 0028 · 两处 Windows 跑分失败修复：cwebp 中间输入喂 PNG，avifdec 定位优先级链重写（已确认）
+- 日期：2026-10-08
+- 决策：①Windows 上给 cwebp 的中间输入从无扩展名 P6 PPM 改喂 PNG（`encode::cwebp_input_png()` = `cfg!(windows)`，编码命令与高级创建 spec 同步取点；Linux/macOS 保持 PPM 免压缩快路径）。②avifdec 定位统一为单一优先级链「设置中心自定义 > 启动时进程环境变量已带的值（外部注入快照，AppState 新字段 `avifdec_external`）> 安装包捆绑（与 avifenc 同目录，`resolve_avifdec` 纯函数）> tools/ 确定性路径（不查存在性，T11 语义）」：启动预注入 tools 路径的代码删除（`apply_avifdec_env` 从「已注入则不动」早退改为每次全量重算，无来源时清残留旧值），保存设置后补调注入（文档宣称的「保存后即时生效」此前从未接线）；随行更正过时文案——decode.rs 提示与 error.rs 解码错误去掉「先跑一次一站式会自动安装 avifdec」假话（决策 0025 已移除运行期下载），改为「avifdec 与 avifenc 同包：桌面版捆绑自带，也可设置中心指定路径或 PIXEL_ARENA_AVIFDEC 环境变量」。
+- 为什么：用户 0.1.8 便携版实测两类失败。WebP 四档全败——官方 Windows cwebp（HAVE_WINCODEC_H 分支）只走 WIC 解码（失败后回落按 WebP 码流读，无原生 PNM 解码器），喂 PPM 即 `WINCODEC_ERR_COMPONENTNOTFOUND(0x88982F50)` → `BITSTREAM_ERROR`，PNG 输入实测 exit 0（WIC 按内容嗅探，与 cjpeg/cjxl 喂 PPM 正常形成对照，平台分口味是最小改动）。AVIF 三档全败——启动时无条件把 `PIXEL_ARENA_AVIFDEC` 预注入为 tools 确定性路径（文件不存在也注入，T11 下载时代遗留），`apply_avifdec_env` 的「已设置则早退」让捆绑 encoders/ 里明明躺着的 avifdec 永远没机会被选中，一站式自检解码即失败且整批 AVIF 产物被丢弃。
+- 放弃了：三端统一喂 PNG（非 Windows 端大小优先逼近搜索每档都写中间文件，PNG 编码显著变慢，PPM 免压缩是既有快路径）；把捆绑 avifdec 复制进 tools/（多一份状态、捆绑是只读资源目录，无收益）；保留启动预注入（预注入 + 早退的组合正是根因）。

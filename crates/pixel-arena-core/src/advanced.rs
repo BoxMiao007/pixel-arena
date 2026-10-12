@@ -164,7 +164,9 @@ pub struct ImageEncoderSpec {
     pub lossless_note: &'static str,
     /// 无损模式追加的参数（jxl 的无损 = q100，同样走参数表达）。
     pub lossless_args: Vec<String>,
-    /// 输入口味：true = 只吃 PNG（avifenc），false = 吃 P6 PPM（cjpeg/cwebp/cjxl）。
+    /// 输入口味：true = 只吃 PNG（avifenc，以及 Windows 的 cwebp——官方构建只有
+    /// WIC 解码、不认 PPM，见 encode::cwebp_input_png），false = 吃 P6 PPM
+    ///（cjpeg/cwebp（非 Windows）/cjxl）。
     pub input_png: bool,
     pub output_ext: &'static str,
     /// 快速参数之外的固定附加参数（如 cwebp -quiet）。
@@ -229,7 +231,7 @@ pub fn image_specs() -> Vec<ImageEncoderSpec> {
             lossless_supported: true,
             lossless_note: "无损开关打开后质量参数不参与（cwebp -lossless）",
             lossless_args: vec!["-lossless".to_string()],
-            input_png: false,
+            input_png: crate::encode::cwebp_input_png(),
             output_ext: "webp",
             base_args: vec!["-quiet".to_string()],
             known_params: vec![
@@ -926,7 +928,7 @@ mod tests {
         let webp = image_spec("webp").unwrap();
         assert_eq!(webp.quality_flag, "-q");
         assert!(webp.lossless_supported);
-        assert!(!webp.input_png);
+        assert_eq!(webp.input_png, cfg!(windows), "cwebp 在 Windows 只认 WIC 格式喂 PNG，其余平台吃 PPM");
 
         let avif = image_spec("avif").unwrap();
         assert_eq!(avif.tool_key, "avifenc");

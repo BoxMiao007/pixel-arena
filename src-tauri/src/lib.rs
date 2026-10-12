@@ -49,6 +49,10 @@ struct AppState {
     /// 与 workspace.json 分离）。设置只在保存时写盘，读盘只发生在启动。
     settings: Arc<Mutex<Settings>>,
     settings_path: Arc<PathBuf>,
+    /// 启动时进程环境变量里带的 PIXEL_ARENA_AVIFDEC（外部注入，avifdec 缺失时
+    /// 错误提示指引的兜底做法）。启动快照让 [`apply_avifdec_env`] 的每次全量重算
+    /// 都能分辨「外部注入」与「应用注入」，清空设置覆盖后不会残留旧值。
+    avifdec_external: Option<PathBuf>,
 }
 
 /// IPC 命令：把核心库版本号交给前端显示。
@@ -83,6 +87,9 @@ async fn settings_save(
     .await
     .map_err(|err| format!("设置保存任务执行失败: {err}"))??;
     *state.settings.lock().expect("设置锁不应中毒") = saved.clone();
+    // avifdec 定位随设置即时刷新（apply_avifdec_env 的口径：启动与保存后重算，
+    // 清空覆盖后立即回到捆绑/tools，不用重启应用）。
+    apply_avifdec_env(state.inner());
     Ok(saved)
 }
 
@@ -342,6 +349,85 @@ mod portable_encoders_tests {
         // 哨兵路径与旧 fallback 同形（相对不存在路径），消费端行为不变
         let resolved = resolve_bundled_encoders_dir(None, None);
         assert_eq!(resolved, PathBuf::from(".不存在的捆绑目录"));
+    }
+}
+
+/// 决策 0028：avifdec 定位优先级（[`resolve_avifdec`]）的单测。用户实测回归锚：
+/// 便携包 encoders/ 里 avifdec 明明在、tools/ 全空时必须解析到捆绑副本——旧逻辑
+/// 因启动预注入 tools 确定性路径 + 「已注入则不动」早退，把捆绑 avifdec 挡死。
+#[cfg(test)]
+mod avifdec_resolution_tests {
+    use super::*;
+
+    /// 在捆绑目录里造一个假 avifdec（内容无所谓，消费端只看 is_file）。
+    /// 文件名拼接口径与生产代码共用 [`member_name`]，避免 Windows 后缀逻辑漂移。
+    fn make_avifdec(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(member_name("avifdec"));
+        std::fs::write(&path, b"placeholder").unwrap();
+        path
+    }
+
+    #[test]
+    fn custom_override_wins_over_all_sources() {
+        // 设置中心自定义路径最高：外部注入、捆绑、tools 全在也盖不过它
+        let bundled = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        make_avifdec(bundled.path());
+        let resolved = resolve_avifdec(
+            Some("/custom/avifdec"),
+            Some(Path::new("/external/avifdec")),
+            bundled.path(),
+            tools.path(),
+        );
+        assert_eq!(resolved, Some(PathBuf::from("/custom/avifdec")));
+    }
+
+    #[test]
+    fn external_env_beats_bundled_and_tools() {
+        // 外部注入（PIXEL_ARENA_AVIFDEC 启动快照）高于捆绑与 tools
+        let bundled = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        make_avifdec(bundled.path());
+        let resolved = resolve_avifdec(
+            None,
+            Some(Path::new("/external/avifdec")),
+            bundled.path(),
+            tools.path(),
+        );
+        assert_eq!(resolved, Some(PathBuf::from("/external/avifdec")));
+    }
+
+    #[test]
+    fn bundled_avifdec_wins_when_tools_dir_empty() {
+        // 用户实测回归锚（0.1.8 便携版）：捆绑 encoders/ 有 avifdec、tools/ 全空
+        let bundled = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let member = make_avifdec(bundled.path());
+        let resolved = resolve_avifdec(None, None, bundled.path(), tools.path());
+        assert_eq!(resolved, Some(member));
+    }
+
+    #[test]
+    fn falls_back_to_tools_deterministic_path() {
+        // 捆绑缺失（本地/裸构建）→ tools/ 确定性路径（T11 语义：不查存在性）
+        let bundled = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let resolved = resolve_avifdec(None, None, bundled.path(), tools.path());
+        assert_eq!(
+            resolved,
+            pixel_arena_core::decode::avif_decoder_path(tools.path())
+        );
+    }
+
+    #[test]
+    fn blank_custom_falls_through_to_bundled() {
+        // 设置中心存了纯空白覆盖（trim 后为空）视同未设置，不挡捆绑
+        let bundled = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let member = make_avifdec(bundled.path());
+        let resolved = resolve_avifdec(Some("   "), None, bundled.path(), tools.path());
+        assert_eq!(resolved, Some(member));
     }
 }
 
@@ -1283,9 +1369,10 @@ fn to_core_overrides(
 }
 
 /// T23：把 AVIF 代片解码器（avifdec）的定位注入 PIXEL_ARENA_AVIFDEC 环境变量
-///（decode.rs 按它分派）。优先级：设置中心自定义路径 > 安装包捆绑的 avifdec
-///（T29-4）> tools/ 内置安装路径。启动与每次保存设置后调用；decode 侧逐次读取
-/// 环境变量，改动即时生效。
+///（decode.rs 按它分派）。启动与每次保存设置后全量重算——不再「已注入则不动」：
+/// 曾因启动预注入 tools 确定性路径（文件不存在也注入）把捆绑 avifdec 永久挡住，
+/// 用户实测便携包 encoders/ 里 avifdec 明明在却报不存在（决策 0028）。
+/// 优先级见 [`resolve_avifdec`]；decode 侧逐次读取环境变量，改动即时生效。
 fn apply_avifdec_env(state: &AppState) {
     let custom = state
         .settings
@@ -1294,25 +1381,40 @@ fn apply_avifdec_env(state: &AppState) {
         .encoder_overrides
         .avifdec
         .clone();
-    if let Some(path) = custom {
-        std::env::set_var("PIXEL_ARENA_AVIFDEC", path);
-        return;
+    match resolve_avifdec(
+        custom.as_deref(),
+        state.avifdec_external.as_deref(),
+        &state.bundled_encoders,
+        &state.tools_dir,
+    ) {
+        Some(path) => std::env::set_var("PIXEL_ARENA_AVIFDEC", path),
+        // 平台无 avifdec 来源清单（不支持的平台组合）：清掉可能残留的旧值，
+        // decode 侧按「缺少工具」报错，而不是拿着失效路径报「不存在」
+        None => std::env::remove_var("PIXEL_ARENA_AVIFDEC"),
     }
-    // 未设置覆盖：先看安装包捆绑的 avifdec（只在真实存在时注入——资源目录不存在
-    // 的场景安全退化），再保持既有行为——内置安装路径存在时注入（已注入则不动）
-    if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_some() {
-        return;
+}
+
+/// avifdec 的定位优先级（单一来源，供注入与单测共用）：设置中心自定义路径 >
+/// 启动时进程环境变量已带的值（外部注入，尊重调用方覆盖）> 安装包捆绑的
+/// avifdec（与 avifenc 同目录同包，T29-4）> tools/ 确定性安装路径（不查存在性——
+/// 旧版本装好的 avifdec 在应用运行中落位后即可直接用，T11 语义）。
+fn resolve_avifdec(
+    custom: Option<&str>,
+    external: Option<&Path>,
+    bundled_encoders: &Path,
+    tools_dir: &Path,
+) -> Option<PathBuf> {
+    if let Some(path) = custom.map(str::trim).filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(path));
     }
-    let bundled = state
-        .bundled_encoders
-        .join(if cfg!(windows) { "avifdec.exe" } else { "avifdec" });
+    if let Some(path) = external {
+        return Some(path.to_path_buf());
+    }
+    let bundled = bundled_encoders.join(member_name("avifdec"));
     if bundled.is_file() {
-        std::env::set_var("PIXEL_ARENA_AVIFDEC", bundled);
-        return;
+        return Some(bundled);
     }
-    if let Some(avifdec) = pixel_arena_core::decode::avif_decoder_path(state.tools_dir.as_path()) {
-        std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
-    }
+    pixel_arena_core::decode::avif_decoder_path(tools_dir)
 }
 
 /// T23：记录状态开启时，按设置恢复主窗口大小（逻辑像素，与 DPI 无关）。
@@ -1392,17 +1494,14 @@ pub fn run() {
             std::fs::create_dir_all(&dir).expect("无法创建应用数据目录");
             let tools_dir = dir.join("tools");
             std::fs::create_dir_all(&tools_dir).expect("无法创建工具目录");
-            // T11：AVIF 产物的解码工具 avifdec 与 avifenc 同工件安装。启动时把确定性
-            // 安装路径注入环境变量（已设置时尊重调用方覆盖），核心库解码入口按它分派
-            //（首次生成 AVIF 时自动安装，之后重启即可直接跑分/显示；进程启动早期一次性
-            // 设置，无并发写环境变量）。
-            if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_none() {
-                if let Some(avifdec) = pixel_arena_core::decode::avif_decoder_path(&tools_dir) {
-                    std::env::set_var("PIXEL_ARENA_AVIFDEC", avifdec);
-                }
-            }
+            // 启动快照：外部注入的 PIXEL_ARENA_AVIFDEC（用户/调用方显式设置，错误
+            // 提示指引的兜底做法）。应用自身不再预注入 tools 确定性路径——那会让
+            // apply_avifdec_env 全量重算时把捆绑 avifdec 挡死（决策 0028）；优先级
+            // 与回落统一在下方 apply_avifdec_env 处理。
+            let avifdec_external =
+                std::env::var_os("PIXEL_ARENA_AVIFDEC").map(std::path::PathBuf::from);
             // T23：加载设置（坏文件 fail-soft 回默认，见 settings.rs 模块头）。
-            // avifdec 覆盖在 apply_avifdec_env 里处理：设置了自定义路径则盖过上面的注入。
+            // avifdec 的环境变量注入统一由下方 apply_avifdec_env 处理（优先级见其文档）。
             let settings = Settings::load_from_file(&dir.join("settings.json"));
             let video_stream = video_server::VideoStreamServer::spawn()
                 .expect("视频流服务启动失败");
@@ -1426,6 +1525,7 @@ pub fn run() {
                 video_stream: Arc::new(video_stream),
                 settings: Arc::new(Mutex::new(settings.clone())),
                 settings_path: Arc::new(dir.join("settings.json")),
+                avifdec_external,
             });
             apply_avifdec_env(app.state::<AppState>().inner());
             // 记录状态开启时恢复上次窗口大小（关闭 = 配置里的默认尺寸）
