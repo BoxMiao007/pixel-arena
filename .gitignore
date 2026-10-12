@@ -32,3 +32,6 @@ skills-lock.json
 # 捆绑编码器资源（T29-4）：CI 打包前由 scripts/bundle-encoders 填充，二进制不入库
 /src-tauri/resources/encoders/*
 !/src-tauri/resources/encoders/README.md
+
+# archify 架构图工作目录（candidate.json、交付 HTML 与校验回执均为本地产物）
+/.archify/
