@@ -38,6 +38,25 @@
 - 不自动推送:用户说「推」才推到 origin。
 - 密钥、凭据等敏感内容一律不提交;新增构建产物或本地环境文件类型时,同步补充 `.gitignore`。
 
+## 版本与发布
+
+本项目遵循 SemVer 2.0.0，标签格式 `vX.Y.Z`。递增由当前版本阶段与 Commit 类型机械决定：
+
+- `BREAKING CHANGE:` footer，或任意类型携带 `!`（如 `feat!:`、`fix!:`、`refactor!:`）→ 升 MAJOR；
+- `feat:` → 升 MINOR；
+- 其余类型一律升 PATCH（如 `fix:`、`perf:`、`docs:`、`chore:`、`test:`、`ci:`、`build:`）；
+- 处于 `0.y.z` 阶段时，凡按上述规则应升 MAJOR 的，改为升 MINOR；
+- 无法机械判定时，暂停自动决策，列出候选版本号及理由，请用户选择。
+
+发布流程：
+
+1. 更新承载版本号的文件：`Cargo.toml` 的 `[workspace.package] version` 与 `src-tauri/tauri.conf.json` 的 `version`，两处必须一致。
+2. 创建本地 annotated tag：`git tag -a vX.Y.Z -m "Release vX.Y.Z"`，**不推送**。
+3. 停下并等待用户批准（闸门规则见全局 `AGENTS.md`「发布闸门」）。
+4. 获批准后推送 tag 并执行 `gh release create`，Release 正文写清本次版本号与变更分类（breaking / feature / fix）。
+
+验证：宣称发布完成须附 `git tag -l vX.Y.Z` 与 `gh release view vX.Y.Z` 实际输出，并确认版本号文件与 tag 一致。已推送的 tag 不可修改。
+
 ## 知识沉淀(保证任何新会话都能接手)
 
 - 全新环境依赖安装命令见 README「环境搭建(一次性)」:系统依赖(webkit2gtk-4.1、gtk3 等)已在当前环境预装,apt 命令经 `apt-get install --dry-run` 验证包名可解析;Rust/Node 为官方安装器标准流程;`npm install` 实测通过。步骤变化时同步更新。
