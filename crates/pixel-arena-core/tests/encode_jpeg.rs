@@ -8,6 +8,8 @@
 use pixel_arena_core::encode::{encode_jpeg_using, encode_onestop, EncoderOverrides};
 use pixel_arena_core::naming::ConflictPolicy;
 
+// 桩编码器用例仅 Unix 可跑，`read_to_end` 只在那些用例里用到。
+#[cfg(unix)]
 use std::io::Read as _;
 
 fn data(name: &str) -> String {

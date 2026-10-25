@@ -407,6 +407,8 @@ fn real_jxl_end_to_end_when_provided() {
 
 /// 预置桩 cwebp：复用检查只看「成员文件存在 + sidecar 哈希吻合」，桩被调用时把
 /// 入库的真实 WebP 样例拷成产物（与 CLI run 测试同一桩策略，离线确定性）。
+/// 桩是 shell 脚本（文件名无 `.exe`），只在 Unix 上可执行；Windows 上整条用例跳过。
+#[cfg(unix)]
 fn preseed_stub_cwebp(tools: &std::path::Path, fixture_webp: &str) {
     use sha2::{Digest, Sha256};
     let dir = tools.join("libwebp").join("1.6.0");
@@ -423,6 +425,7 @@ fn preseed_stub_cwebp(tools: &std::path::Path, fixture_webp: &str) {
     std::fs::write(dir.join("cwebp.sha256"), digest).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn probe_onestop_size_返回产物字节数_复用已装编码器() {
     let fixture = data("photo-dis.webp");

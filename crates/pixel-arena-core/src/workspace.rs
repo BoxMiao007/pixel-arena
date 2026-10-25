@@ -1113,13 +1113,15 @@ mod tests {
         // 旧文件只有 referencePath 没有大小记录；路径真实存在时迁移回填，
         // 路径已移走则保持 None（前端基准行显示 —，不阻加载）
         let real = data("photo-ref.png");
+        // 路径按 JSON 字符串转义后再嵌入（Windows 的反斜杠在 JSON 里必须转义）
+        let real_json = serde_json::to_string(&real).unwrap();
         let old = format!(
             r#"{{
             "formatVersion": 1,
             "groups": [{{
                 "id": "g-1", "name": "组",
                 "rounds": [
-                    {{"id": "r-1", "name": "真图", "referencePath": "{real}"}},
+                    {{"id": "r-1", "name": "真图", "referencePath": {real_json}}},
                     {{"id": "r-2", "name": "图已移走", "referencePath": "/不存在/的/图.png"}}
                 ]
             }}]

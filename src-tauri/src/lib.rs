@@ -1435,7 +1435,7 @@ fn restore_window_size(app: &tauri::AppHandle) {
 
 /// T23：把当前主窗口大小记进设置文件（逻辑像素，与 DPI 无关；仅记录状态开启、
 /// 窗口未最大化时）。读-改-写 settings.json，只动 window 字段，值没变不重写。
-/// 记录时机挂窗口 Resized 事件持续记录而非退出时一次性记录：实测（WSLg/X11）关窗
+/// 记录时机挂窗口 Resized 事件持续记录而非退出时一次性记录：实测（Linux 的 WebKitGTK/X11）关窗
 /// 会触发致命 X 错误（BadDrawable），GDK 直接终止进程，事件循环收不到任何关闭
 /// 事件（CloseRequested/ExitRequested 均不达）；Resized 事件则始终可达，且顺带
 /// 兜住崩溃退出。Windows/macOS 上关窗事件正常，CloseRequested 兜底写一次终值。

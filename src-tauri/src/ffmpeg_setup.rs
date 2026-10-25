@@ -15,7 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
-// 子进程派生统一加 Windows「不弹终端窗口」处理（issue #42）。
+// 子进程派生统一加 Windows「不弹终端窗口」处理（issue #42）；当前只有 Linux 解压链路调它。
+#[cfg(target_os = "linux")]
 use pixel_arena_core::process::apply_no_window;
 
 /// 锁定的 ffmpeg 构建压缩包下载地址（按平台）。
@@ -704,7 +705,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
         std::fs::write(&path, body).unwrap();
-        // WSL/CI 上 close 后立刻 exec 偶发 ETXTBSY（Text file busy）：fsync 推掉回写再留短缓冲
+        // Linux 上 close 后立刻 exec 偶发 ETXTBSY（Text file busy）：fsync 推掉回写再留短缓冲
         std::fs::File::open(&path).and_then(|f| f.sync_all()).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));

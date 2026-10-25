@@ -374,7 +374,7 @@ mod tests {
     use crate::settings::Settings;
 
     /// 写测试用假可执行脚本。写完 fsync + 短缓冲再返回：
-    /// WSL/CI 上 close 后立刻 exec 偶发 ETXTBSY（Text file busy），fsync 推掉回写可关掉竞态窗口。
+    /// Linux 上 close 后立刻 exec 偶发 ETXTBSY（Text file busy），fsync 推掉回写可关掉竞态窗口。
     #[cfg(unix)]
     fn write_exec(dir: &Path, name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -398,9 +398,14 @@ mod tests {
         Ok(format!("{tool} version 1.2.3"))
     }
 
+    /// 内置成员的可执行文件名带平台后缀（Windows 为 `.exe`），与 builtin_encoder_path 的取名口径一致。
+    fn exe_name(member: &str) -> String {
+        format!("{member}{}", std::env::consts::EXE_SUFFIX)
+    }
+
     fn tools_with_builtin(name: &str, version: &str, member: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(name).join(version).join(member);
+        let path = dir.path().join(name).join(version).join(exe_name(member));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"placeholder").unwrap();
         (dir, path)
@@ -623,7 +628,7 @@ mod tests {
         // 捆绑文件存在但探测失败：不可用，提示重装应用或改外部路径（不能说「自动重下」——
         // 资源目录只读，下载路径回不到捆绑目录）
         let bundled = tempfile::tempdir().unwrap();
-        std::fs::write(bundled.path().join("cjpeg"), b"x").unwrap();
+        std::fs::write(bundled.path().join(exe_name("cjpeg")), b"x").unwrap();
         let tools = tempfile::tempdir().unwrap();
         let failing = |_: &Path, tool: &str| -> Result<String, String> {
             Err(format!("{tool} 执行失败"))

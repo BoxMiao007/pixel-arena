@@ -1081,6 +1081,8 @@ Audio encoders:
     /// 桩编码器：从参数里找 -outfile / -o 的取值（或最后一个位置参数）当输出，
     /// 写入固定内容。高级创建四种布局（-outfile 收尾 / -o / 输入输出位置参数）
     /// 与大小优先探测（encode_jpeg_using 布局）都能命中。
+    /// 桩是 shell 脚本，只能在 Unix 上执行；Windows 无 sh，相关用例整体 cfg(unix) 跳过。
+    #[cfg(unix)]
     fn write_stub_encoder(dir: &Path, name: &str) -> PathBuf {
         let stub = dir.join(name);
         std::fs::write(

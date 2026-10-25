@@ -606,7 +606,7 @@ mod tests {
     }
 
     /// 写测试用假可执行脚本。写完 fsync + 短缓冲再返回：
-    /// WSL/CI 上 close 后立刻 exec 偶发 ETXTBSY（Text file busy），fsync 推掉回写可关掉竞态窗口。
+    /// Linux 上 close 后立刻 exec 偶发 ETXTBSY（Text file busy），fsync 推掉回写可关掉竞态窗口。
     #[cfg(unix)]
     fn write_exec(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;

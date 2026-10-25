@@ -22,6 +22,8 @@ fn sample(name: &str) -> PathBuf {
 /// 预置一个桩 cwebp 到内置落位（T32：复用只看「成员文件存在」，哈希 sidecar 已随
 /// 下载链路移除），桩被调用时把入库的真实 WebP 样例拷成产物，保证跑分环节能解码。
 /// 参数契约（encode_webp_using）：$1=-quiet $2=-q $3=质量 $4=输入 $5=-o $6=产物临时文件。
+/// 桩是 shell 脚本（文件名也无 `.exe`），只在 Unix 上可执行；Windows 上整条用例跳过，该路径靠 Unix 环境验证。
+#[cfg(unix)]
 fn preseed_stub_cwebp(tools: &Path, fixture_webp: &Path) {
     let dir = tools.join("libwebp").join("1.6.0");
     std::fs::create_dir_all(&dir).unwrap();
@@ -358,6 +360,7 @@ fn run_缺必填参数时退出码2() {
 
 // ---------- 有损格式：已装复用（桩编码器预置 tools 目录，离线确定性） ----------
 
+#[cfg(unix)]
 #[test]
 fn run_内置落位编码器直接复用_webp有损档_输出真实跑分行() {
     let tools = tempfile::tempdir().unwrap();
