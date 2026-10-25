@@ -10,7 +10,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -60,7 +60,7 @@ impl VideoStreamServer {
 
 /// 处理单个 HTTP 请求：GET /v/<id>，支持 Range: bytes=a-b / a- / -n（媒体引擎会分段拉流）。
 fn handle_connection(mut stream: TcpStream, registry: Arc<Mutex<HashMap<String, PathBuf>>>) {
-    let request = match parse_request(&stream) {
+    let request = match parse_request(&mut stream) {
         Some(request) => request,
         None => return, // 请求头读不全/不是 GET：直接断开，调用方自会重试
     };
@@ -71,10 +71,12 @@ fn handle_connection(mut stream: TcpStream, registry: Arc<Mutex<HashMap<String, 
         .cloned();
     let Some(path) = path else {
         let _ = respond_simple(&stream, 404, "video not registered");
+        let _ = stream.shutdown(Shutdown::Write);
         return;
     };
     let Ok(mut file) = std::fs::File::open(&path) else {
         let _ = respond_simple(&stream, 404, "file unreadable");
+        let _ = stream.shutdown(Shutdown::Write);
         return;
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -104,6 +106,9 @@ fn handle_connection(mut stream: TcpStream, registry: Arc<Mutex<HashMap<String, 
     }
     // 传输中途断开（常见：媒体引擎拿到足够数据提前关闭连接）不算错误
     let _ = stream_range(&mut file, &stream, start, end);
+    // Windows 上直接 closesocket 偶发 RST（客户端 read_to_end 收到 WSAECONNRESET）：
+    // 显式关写端先发 FIN，读取方稳定拿到 EOF 再断开。
+    let _ = stream.shutdown(Shutdown::Write);
 }
 
 struct Request {
@@ -111,8 +116,9 @@ struct Request {
     range: Option<(Option<u64>, Option<u64>)>,
 }
 
-fn parse_request(stream: &TcpStream) -> Option<Request> {
-    let mut reader = BufReader::new(stream.try_clone().ok()?);
+fn parse_request(stream: &mut TcpStream) -> Option<Request> {
+    // 直接在原套接字上读头（不 try_clone）：请求头之后没有 body，读缓冲多读的字节丢弃即可。
+    let mut reader = BufReader::new(stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line).ok()?;
     let mut parts = request_line.split_whitespace();
