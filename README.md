@@ -7,7 +7,7 @@
 
 ## 这是什么
 
-一个多标签页的编码评测工作台：以「评测」为主、「编码」为辅，用来对比不同图片/视频编码格式的画质和压缩效率。日常在 Windows 上当桌面程序用，开发在 WSL 里进行。
+一个多标签页的编码评测工作台：以「评测」为主、「编码」为辅，用来对比不同图片/视频编码格式的画质和压缩效率。日常在 Windows 上当桌面程序用，开发也在 Windows 上进行（Linux/macOS 产物由 CI 构建）。
 
 当前进度：
 
@@ -46,21 +46,15 @@
 
 ## 环境搭建（一次性）
 
-需要 Rust、Node.js 和几个系统库。系统依赖（webkit2gtk-4.1、gtk3 等）在当前开发环境已预装，下面的 apt 命令经 `apt-get install --dry-run` 验证过包名：
+需要 Rust（MSVC 工具链）、Node.js 和 C++ 构建工具。当前开发机是 Windows，已按下面口径装齐（`cargo test --workspace` 与 `npm install` 实测通过）：
 
-```bash
-# 1. Rust（官方安装器，装到用户目录）
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+- **Rust**：rustup + MSVC 工具链，默认 host `x86_64-pc-windows-msvc`（本机 cargo/rustc 1.99.1，装在 `D:\dev\env\rust`）。
+- **Node.js**：22 或更高（本机 v26.12.1、npm 11.20.0）。
+- **C++ 构建工具**：Visual Studio Build Tools，勾选「使用 C++ 的桌面开发」——Tauri 的 Rust 依赖靠它提供链接器。
+- **WebView2 运行时**：Windows 10/11 一般随系统预装（本机 155.0.4283.62）；缺失时装微软的 Evergreen 运行时。
+- **前端依赖**：在仓库根目录执行 `npm install`。
 
-# 2. Node.js 22（用 nvm 或系统包管理器均可，本机为 Node 22）
-
-# 3. Tauri 在 Linux 上的系统依赖（Debian/Ubuntu 包名）
-sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
-# 4. 前端依赖（在仓库根目录执行）
-npm install
-```
+Linux/macOS 的系统依赖（webkit2gtk 等）只在 CI 构建三端产物时需要，本机开发不用装。
 
 ## 怎么启动（看到桌面窗口）
 
@@ -144,3 +138,5 @@ npm run typecheck             # 前端类型检查
 npm test                      # 前端单测（对比查看器视口状态模块）
 cargo run -p pixel-arena-cli -- --version   # CLI 冒烟，应输出核心库版本号
 ```
+
+Windows 上 `cargo test --workspace` 会自动跳过依赖 shell 桩编码器的用例（桩只能在 Unix 执行），跳过属正常现象。

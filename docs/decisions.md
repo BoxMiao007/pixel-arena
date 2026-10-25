@@ -203,3 +203,9 @@
 - 决策：Windows 便携包可在 WSL 本地交叉编译复刻 release.yml 产物（0.1.9 首次使用）：`cargo build --release --target x86_64-pc-windows-gnu -p pixel-arena --features tauri/custom-protocol`，产物与五个捆绑编码器（来源/sha256 口径复刻 scripts/bundle-encoders.ps1，均落 src-tauri/resources/encoders/）组装为 `PixelArena/{pixel-arena.exe, encoders/*.exe}`，zip 布局与 CI 一致（决策 0026/0027）。**必须显式带 `tauri/custom-protocol`**：本仓库 src-tauri/Cargo.toml 未接该 feature，裸 cargo build 下 tauri `is_dev()=true`，窗口加载 devUrl（localhost:5173）而非内嵌前端，实测表现为「无法访问此页面 ERR_CONNECTION_REFUSED」；CI 的 `npm run tauri build` 由 tauri CLI 注入该 feature，本地纯 cargo 必须手动补。
 - 为什么：GitHub Actions 额度耗尽无法触发发版构建，但 0.1.9 修复需要立即交付便携包给用户实测；根因定位读实了 tauri 2.12.1 源码（build.rs `cargo:dev` 指令 → tauri-build 给应用 crate 定义 `cfg(dev)` 别名 → `get_app_url()` 按 `cfg(dev)` 选 devUrl 或内嵌资产）。
 - 放弃了：给 src-tauri/Cargo.toml 加 `custom-protocol` 默认 feature 接线（v2 由 CLI 注入，加默认值会让 `tauri dev` 也进生产模式加载内嵌资产，破坏开发工作流；且 8 秒进程存活冒烟不构成 GUI 内容验证——dev 模式窗口是错误页但进程活着，本次以「主窗口中心 60% 暗像素、零白像素」的截屏统计判定生产 UI 已渲染）。
+
+## 0030 · 开发环境从 WSL 迁到 Windows 原生 MSVC（已确认）
+- 日期：2026-10-26
+- 决策：后续开发、构建、验证都在 Windows 10/11 + MSVC 工具链上做，WSL 退出日常开发链路：`cargo test --workspace` 直接在本机跑，依赖 shell 桩编码器的用例统一 `#[cfg(unix)]` 跳过；README「环境搭建（一次性）」改列 Windows 侧依赖（Rust MSVC 工具链、Node.js、VS Build Tools 的 C++ 桌面开发、WebView2 运行时）；决策 0029 的 WSL 交叉编译配方自本日起只作历史参考。Linux/macOS 产物仍由 GitHub Actions 构建。
+- 为什么：用户明确「以后都在 Windows 上开发」；本机已具备完整工具链（cargo/rustc 1.99.1、host x86_64-pc-windows-msvc、Node v26.12.1、WebView2 155.0.4283.62），继续留在 WSL 要多维护一套环境，而桌面窗口调试在 Windows 原生更贴近用户实际使用。
+- 放弃了：双环境（WSL + Windows）并行验证（维护成本翻倍，且本机 WSL 未安装）；把 Unix-only 的 shell 桩编码器改写成 Windows 可执行桩（桩只是测试替身，改造收益低于成本，这批用例继续在 Unix 环境跑）。

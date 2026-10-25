@@ -18,7 +18,7 @@
 >
 > 最终形态：双击打开一个桌面窗口就能用；支持多标签页并行工作；CLI 用一行命令就能批量跑；在 Windows / Linux / macOS 上都能跑。必须是桌面原生程序，不要在浏览器里操作。
 
-开发环境：WSL 里开发，日常在 Windows 上使用。需求背景与待拍板分叉见 `docs/requirements.md`。
+开发环境：Windows 10/11（MSVC 工具链）上开发与使用；Linux/macOS 产物由 CI 构建。需求背景与待拍板分叉见 `docs/requirements.md`。
 
 ## 协作模式
 
@@ -64,7 +64,7 @@
 
 ## 知识沉淀(保证任何新会话都能接手)
 
-- 全新环境依赖安装命令见 README「环境搭建(一次性)」:系统依赖(webkit2gtk-4.1、gtk3 等)已在当前环境预装,apt 命令经 `apt-get install --dry-run` 验证包名可解析;Rust/Node 为官方安装器标准流程;`npm install` 实测通过。步骤变化时同步更新。
+- 全新环境依赖安装步骤见 README「环境搭建(一次性)」:开发机为 Windows(MSVC 工具链),需要 Rust(rustup,host `x86_64-pc-windows-msvc`)、Node.js、Visual Studio Build Tools(C++)与 WebView2 运行时,当前机器已装齐并实测 `npm install`、`cargo test --workspace` 通过;Linux/macOS 的系统依赖只在 CI 构建时需要。步骤变化时同步更新。
 - 重大技术决策(选型、数据模型、外部服务)在 `docs/decisions.md` 记一行:日期、决策、为什么、放弃了什么。技术栈选型是第一条要记的决策。
 - README 面向用户维护:项目是什么、怎么启动、日常怎么用,保持非程序员能看懂。
 
