@@ -1,6 +1,7 @@
 # 敏感信息与密钥
 .env
 *.key
+*.pem
 
 # 操作系统杂项
 .DS_Store
@@ -16,8 +17,6 @@ node_modules/
 
 # Tauri 构建时生成的 schema 与平台文件
 /src-tauri/gen/schemas/
-
-# 技术栈相关条目:待技术栈确定后按生态补齐
 
 # 本地 dev 覆盖（并行开发时改 devUrl 端口用）
 src-tauri/tauri.conf.dev.json

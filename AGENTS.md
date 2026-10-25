@@ -34,9 +34,12 @@
 
 ## 提交与推送
 
+- 仓库约定优先:涉及版本、锁文件、发布、提交格式等事项,先查本仓库是否已有明确约定,有则从其约定。
 - 自动提交:每个需求完成并验证通过后,agent 自行 git commit,无需逐次确认。
 - 不自动推送:用户说「推」才推到 origin。
-- 密钥、凭据等敏感内容一律不提交;新增构建产物或本地环境文件类型时,同步补充 `.gitignore`。
+- 提交粒度:独立功能、缺陷修复或重构分别提交,避免无关改动混入同一个提交;提交前检查暂存内容,确保只含本次任务明确产生且经过检查的改动。
+- 提交信息用 Conventional Commits:`<类型>[(scope)]: <一句话说明>`,类型常用 `feat` / `fix` / `refactor` / `perf` / `docs` / `test` / `ci` / `build` / `chore`,其余类型同样合法。破坏性改动在类型后加 `!`(如 `feat!:`),或在该提交的 footer 里写 `BREAKING CHANGE: <说明>`。这条格式是版本号机械递增的前提,不要随意破例。
+- 密钥、凭据等敏感内容一律不提交;`.env`、`*.pem`、`*.key` 等本地凭据产物,以及新增的构建产物、本地环境文件类型,在第一次提交前先写进 `.gitignore`(不含真实敏感值的 `.env.example` 等样例除外)。发现疑似敏感内容或无法确认安全性时,说明文件路径并停止提交,交由用户决定;不得为完成提交绕过 Git 钩子或其他安全检查。
 
 ## 版本与发布
 
@@ -44,16 +47,18 @@
 
 - `BREAKING CHANGE:` footer，或任意类型携带 `!`（如 `feat!:`、`fix!:`、`refactor!:`）→ 升 MAJOR；
 - `feat:` → 升 MINOR；
-- 其余类型一律升 PATCH（如 `fix:`、`perf:`、`docs:`、`chore:`、`test:`、`ci:`、`build:`）；
+- 其余类型一律升 PATCH（如 `fix:`、`perf:`、`docs:`、`refactor:`、`chore:`、`test:`、`ci:`、`build:`）；
 - 处于 `0.y.z` 阶段时，凡按上述规则应升 MAJOR 的，改为升 MINOR；
 - 无法机械判定时，暂停自动决策，列出候选版本号及理由，请用户选择。
+
+递增依据上一个 `vX.Y.Z` 标签到 HEAD 之间的提交；仓库还没有任何 `vX.Y.Z` 标签时，首个发布为 `0.1.0`。
 
 发布流程：
 
 1. 更新承载版本号的文件：`Cargo.toml` 的 `[workspace.package] version` 与 `src-tauri/tauri.conf.json` 的 `version`，两处必须一致。
-2. 创建本地 annotated tag：`git tag -a vX.Y.Z -m "Release vX.Y.Z"`，**不推送**。
-3. 停下并等待用户批准（闸门规则见全局 `AGENTS.md`「发布闸门」）。
-4. 获批准后推送 tag 并执行 `gh release create`，Release 正文写清本次版本号与变更分类（breaking / feature / fix）。
+2. 确认版本号改动已在提交中（未提交时先 `git commit -m "chore(release): vX.Y.Z"`），再创建本地 annotated tag：`git tag -a vX.Y.Z -m "Release vX.Y.Z"`，**不推送**。
+3. 停下并等待用户批准（发布闸门：未获批准不得推送 tag、不得执行 `gh release create`），报告候选版本号与递增理由。批准前不再产生新提交；若已产生，批准后先删掉本地 tag 重打（未推送的 tag 可以删），再推送。
+4. 获批准后推送 tag 并执行 `gh release create`，Release 正文写清本次版本号与变更分类（breaking / feature / fix）；`gh` 未认证或仓库无 Release 权限时，只推送 tag 并说明原因，不阻断发布。
 
 验证：宣称发布完成须附 `git tag -l vX.Y.Z` 与 `gh release view vX.Y.Z` 实际输出，并确认版本号文件与 tag 一致。已推送的 tag 不可修改。
 
