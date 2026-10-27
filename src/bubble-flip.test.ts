@@ -3,10 +3,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import settingsUi from './settings-ui.ts?raw';
 import advancedUi from './advanced-ui.ts?raw';
+import encoderCard from './encoder-card.ts?raw';
 import css from './style.css?raw';
 
 const flat = settingsUi.replace(/\s+/g, '');
-const flatAdv = advancedUi.replace(/\s+/g, '');
+// 票 #75：编码器卡的 ⓘ 气泡随卡片渲染搬进 src/encoder-card.ts 共享实现，
+// 挂点断言扫描面板 + 共享卡片两份源码
+const flatAdv = [advancedUi, encoderCard].map((source) => source.replace(/\s+/g, '')).join('\n');
 const flatCss = css.replace(/\s+/g, '');
 
 describe('ⓘ 气泡出界约束（票 #57）', () => {

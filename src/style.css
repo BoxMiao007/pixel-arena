@@ -1508,10 +1508,13 @@ body {
   gap: 0.5rem;
 }
 
+/* 卡头：序号 + 编码器选择 + 恢复默认 + ↑↓×（票 #75 把「恢复默认」收进卡头，
+   窄窗口下允许换行，不挤压编码器选择器） */
 .adv-entry-head {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  flex-wrap: wrap;
 }
 
 .adv-entry-label {
@@ -1522,7 +1525,7 @@ body {
 }
 
 .adv-encoder-select {
-  flex: 1;
+  flex: 1 1 8rem;
   min-width: 0;
   font: inherit;
   font-size: 0.9rem;
@@ -1533,13 +1536,46 @@ body {
   padding: 0.25rem 0.4rem;
 }
 
-/* 快速参数行：无损开关 + 质量滑块 + 目标大小 + 模式二选一 */
-.adv-quick-row {
+/* 卡级「恢复默认」：放在卡头、与排序/删除按钮同组，不抢编码器选择器的宽度 */
+.adv-entry-reset {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* 卡内子区（票 #75）：快速参数与高级参数行两块视觉上分开，各带标题；
+   高级参数子区再加一条分隔线，与快速参数不混成一坨 */
+.adv-quick-zone {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.adv-zone-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+/* 快速参数两列网格：无损 / 质量 / 目标大小 / 快速模式。
+   网格项 min-width:0 让滑杆与说明文字在窄窗口下收缩而不是把卡片撑出横向滚动 */
+.adv-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 0.6rem 0.9rem;
+  gap: 0.5rem 0.9rem;
   font-size: 0.85rem;
+}
+
+.adv-quick-grid > * {
+  min-width: 0;
+}
+
+/* 窄窗口降回单列（两列网格在 420px 以下会互相挤压，允许退化） */
+@media (max-width: 420px) {
+  .adv-quick-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .adv-lossless {
@@ -1550,14 +1586,17 @@ body {
 }
 
 .adv-quality {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.4rem;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .adv-quality-slider {
-  width: 11rem;
+  flex: 1 1 6rem;
+  min-width: 4rem;
+  max-width: 11rem;
   accent-color: var(--green);
   cursor: pointer;
 }
@@ -1567,14 +1606,15 @@ body {
 }
 
 .adv-quality-text {
-  white-space: nowrap;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .adv-size {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .adv-size-input {
@@ -1632,11 +1672,18 @@ body {
   opacity: 0.5;
 }
 
-/* 高级参数折叠栏：默认折叠（无 open 属性即收起）。票 #53：summary 是块级元素
-   整行可点，收窄到文字宽度后行内空白不再触发展开/折叠 */
+/* 高级参数行子区（票 #75）：带标题与上分隔线的独立子区，默认展开（.open 由
+   encoder-card 渲染时置上）。summary 是子区标题，同时也是开合触发区。 */
+.adv-advanced {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
 .adv-advanced summary {
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--muted);
   user-select: none;
   width: fit-content;
@@ -1799,11 +1846,30 @@ body {
   flex: 1;
 }
 
+/* 命令行预览（票 #75）：默认收起，点开才占高度；summary 是折叠标题，
+   展开后命令行与「复制」照旧可用 */
+.adv-preview {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.adv-preview summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  user-select: none;
+  width: fit-content;
+  max-width: 100%;
+}
+
 /* 命令行预览：等宽、可横向滚动、可复制 */
 .adv-preview-row {
   display: flex;
   align-items: flex-start;
   gap: 0.4rem;
+  margin-top: 0.4rem;
 }
 
 .adv-cmd {
