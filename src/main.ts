@@ -1950,12 +1950,17 @@ function openImageQueueCreation(group: Group): void {
 }
 
 /**
- * T29-3 接线点：高级创建面板（src/advanced-ui.ts）的宿主依赖。编码流程走
- * advanced_encode（参数合并在核心库），产物带 encodingParams 纳入新建的评测轮
- * 后复用整轮跑分循环。会话态在 advanced.ts 按跑分组键控（重启归零，D19）。
+ * 「新建评测轮 → 高级创建…」的入口：按跑分组类型分派，图片与视频各一套界面。
  *
- * T3（票 #77）起按组类型分派：图片组打开条目列表面板（本函数是「入口」，不再是
- * 面板本身）；视频组仍走旧的 openAdvancedPanel，行为不变。
+ * - 图片组（T3 / 票 #77）：条目列表面板（src/image-queue-panel.ts）＋逐图编辑弹窗
+ *   （src/image-entry-editor.ts）。编码走 advanced_encode（参数合并 / 命名 / 冲突
+ *   协议都在核心库），产物带 encodingParams 纳入惰性创建的评测轮后跑分。
+ * - 视频组（T29-3，T6 起旧面板的视频专用形态）：src/advanced-ui.ts 的
+ *   openAdvancedPanel——本版本只做编码器选择/参数/命令行预览与建轮，确认后把配置
+ *   摘要与命令行写进轮备注。
+ *
+ * T6（票 #80）删掉了旧面板的图片分支：图片组在这条 if 上就返回，`kind: 'video'`
+ * 是字面量（编译期收窄），面板自身另有运行期断言兜底——图片侧不存在第二套入口。
  */
 function openAdvancedCreation(): void {
   const group = activeGroup();
@@ -1973,24 +1978,13 @@ function openAdvancedCreation(): void {
   };
 
   void openAdvancedPanel(group.id, {
-    kind: group.kind,
-    pickReference: async () => {
-      const selected = await open({
-        title: '选择原图（高级创建）',
-        multiple: false,
-        filters: [IMAGE_FILTER],
-        defaultPath: defaultOpenPath(),
-      });
-      if (typeof selected !== 'string') return null;
-      notePickedPath(selected);
-      return selected;
-    },
+    kind: 'video',
     isBusy: () => scoring,
     initialReference: () => {
       const round = activeRound()?.round;
       if (!round) return null;
-      // 图片组预填原图，视频组预填原视频（高级创建面板的命令行预览用）
-      return group.kind === 'video' ? round.videoReferencePath ?? null : round.referencePath ?? null;
+      // 视频组预填本轮已选原视频（高级创建面板的命令行预览用）
+      return round.videoReferencePath ?? null;
     },
     setStatus,
     createRound: async () => {
@@ -2008,59 +2002,10 @@ function openAdvancedCreation(): void {
       await mutate(() => invoke('round_activate', { groupId: current.id, roundId: newRound.id }));
       return { groupId: current.id, roundId: newRound.id };
     },
-    setReference: (groupId, roundId, path) =>
-      mutate(() => invoke('round_set_reference', { groupId, roundId, path })),
-    encode: async (groupId, roundId, referencePath, entry, conflicts) => {
-      const invokeEncode = (overwrite: boolean): Promise<AdvancedEncodeOutcome> =>
-        invoke<AdvancedEncodeOutcome>('advanced_encode', {
-          groupId,
-          roundId,
-          referencePath,
-          conflictDecision: overwrite ? 'overwrite' : null,
-          job: {
-            formatId: entry.encoderId,
-            lossless: entry.lossless,
-            mode: entry.mode,
-            quality: entry.quality,
-            targetBytes: entry.targetBytes,
-            rows: entry.rows.map((row) => ({
-              name: row.name,
-              flag: row.flag,
-              value: row.value.trim() === '' ? null : row.value.trim(),
-              note: row.note === '' ? null : row.note,
-              enabled: row.enabled,
-            })),
-          },
-        });
-      const outcome = await invokeEncode(false);
-      if (outcome.kind === 'conflict') {
-        if ((await conflicts.decide(outcome.proposedName)) === 'skip') {
-          // 跳过：产物不生成、不进轮；抛中文原因进面板失败清单（与编码失败同路）
-          throw new Error(`已跳过（${outcome.proposedName} 已存在）`);
-        }
-        const retry = await invokeEncode(true);
-        if (retry.kind !== 'done') throw new Error('覆盖重调后不应再返回冲突');
-        return retry.product;
-      }
-      return outcome.product;
-    },
-    addCandidates: async (groupId, roundId, paths, params) => {
-      await mutate(() =>
-        invoke('round_add_candidates', { groupId, roundId, paths, encodingParams: params }),
-      );
-    },
-    setNote: async (groupId, roundId, path, note) => {
-      await mutate(() =>
-        invoke('round_set_candidate_note', { groupId, roundId, candidatePath: path, note }),
-      );
-    },
     setRoundNote: async (groupId, roundId, note) => {
       await mutate(() => invoke('round_set_note', { groupId, roundId, note }));
     },
-    scoreRound: () => scoreAllCandidates(),
     rerender: () => render(),
-    // T30：冲突询问弹窗（设置策略为「询问」时被调）
-    askConflict: (fileName) => askFileConflict(fileName),
   });
 }
 

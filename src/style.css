@@ -1481,16 +1481,6 @@ body {
   width: min(760px, calc(100vw - 2rem));
 }
 
-.adv-reference-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
 .adv-entries {
   display: flex;
   flex-direction: column;

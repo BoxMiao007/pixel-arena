@@ -481,3 +481,99 @@ describe('恢复默认 = 回到刚添加时（票 #75 行为验证）', () => {
     expect(entry.rows).toEqual([]);
   });
 });
+
+// ---------- 票 T6：旧面板收缩为视频专用 ----------
+// 图片组的高级创建已改为条目列表面板 + 逐图编辑弹窗（#74），图片侧只应剩一套界面。
+// 这里的守卫钉两件事：①旧面板源码里不再有图片分支（删干净，不留死路径）；
+// ②视频侧结构（原视频预填 / 编码器目录 / 可用性校验 / 建轮写备注 / 命令行）在位。
+
+describe('旧面板收缩为视频专用（T6）：图片分支整块删除', () => {
+  it('面板不再拉图片编码器目录，也不再自己选原图', () => {
+    expect(flatPanel, '图片规格表只应留给条目队列与编辑弹窗').not.toContain(
+      'advanced_image_catalog',
+    );
+    expect(flatPanel, '图片原图对话框的接线整块退场').not.toContain('pickReference');
+    expect(flatPanel, '图片原图行（+ 重选按钮）整块退场').not.toContain('adv-reference');
+    expect(flatPanel, '图片卡的命令行预览不再是本面板的依赖').not.toContain(
+      'previewImageCommand',
+    );
+    expect(flatPanel, '图片规格查询不再是本面板的依赖').not.toContain('imageSpecOf');
+  });
+
+  it('创建流程只剩「建轮 + 写轮备注」，图片的产物生成与跑分接线退场', () => {
+    for (const gone of [
+      "kind==='image'",
+      '创建并生成',
+      'addCandidates',
+      'setReference',
+      'scoreRound',
+      'askConflict',
+      '正在生成',
+    ]) {
+      expect(flatPanel, `旧图片分支残留：${gone}`).not.toContain(gone);
+    }
+  });
+
+  it('图片组误入旧面板立即抛错（防御性断言，不留半条路）', () => {
+    expect(flatPanel, '编译期的 kind 联合类型之外，运行期也要挡').toContain(
+      "if(String(deps.kind)!=='video')",
+    );
+    expect(flatPanel, '报错文案要指明该走条目列表面板').toContain(
+      '高级创建面板仅供视频跑分组使用',
+    );
+    expect(flatPanel, '抛错而不是静默返回（静默 = 半条路）').toContain('thrownewError(');
+  });
+});
+
+describe('视频侧高级创建完整保留（T6 回归）', () => {
+  it('原视频预填 + 视频编码器目录（静态规格 + ffmpeg 枚举）+ ffmpeg 就绪提示', () => {
+    expect(flatPanel, '会话态按视频口径取').toContain("sessionFor(groupId,'video')");
+    expect(flatPanel, '本轮已选原视频时预填（命令行预览用）').toContain(
+      'session.referencePath=deps.initialReference()',
+    );
+    expect(flatPanel).toContain("invoke<AdvancedVideoCatalog>('advanced_video_catalog')");
+    expect(flatPanel, 'ffmpeg 就绪/不可用都要给出提示').toContain('ffmpegStatus.textContent');
+    expect(flatPanel, '卡片目录按视频口径传参（图片规格表为空）').toContain(
+      "constcatalog:EncoderCardCatalog={kind:'video',imageSpecs:[],videoCatalog}",
+    );
+  });
+
+  it('默认条目与目录拉取失败时的表外条目都保留', () => {
+    expect(flatPanel, '首次打开铺一条视频规格表首条').toContain(
+      'constfirst=videoCatalog.specs[0]',
+    );
+    expect(flatPanel, '目录不可用时退到表外 libx264（只支持参数行）').toContain(
+      "addEntry(session,'libx264',{",
+    );
+  });
+
+  it('建轮前仍做 ffmpeg 可用性校验（unavailable 拦下并红标）', () => {
+    expect(flatPanel, '视频条目统一按 ffmpeg 查可用性（表外编码器同此）').toContain(
+      "consttoolKeyOf=(_entry:AdvancedEntry):string|null=>'ffmpeg'",
+    );
+    expect(flatPanel).toContain("invoke<ToolStatusLite[]>('advanced_encoder_status',{keys})");
+    expect(flatPanel).toContain('availabilityErrors(session.entries,toolKeyOf,statuses)');
+    expect(flatPanel, '不可用条目在卡上红标').toContain(
+      'unavailableError:unavailableEntries.get(entry.id)??null',
+    );
+  });
+
+  it('创建评测轮：校验 → 建轮 → 写轮备注（编码器 + 参数摘要 + 命令行）', () => {
+    expect(flatPanel).toContain("createBtn.textContent='创建评测轮'");
+    expect(flatPanel, '坏参数不建轮').toContain('consterrors=validateAll()');
+    expect(flatPanel).toContain('created=awaitdeps.createRound()');
+    expect(flatPanel, '备注内容由 buildVideoNote 生成').toContain('buildVideoNote()');
+    expect(flatPanel).toContain(
+      'awaitdeps.setRoundNote(created.groupId,created.roundId,buildVideoNote())',
+    );
+    expect(flatPanel, '参数摘要走宽松合并（与预览同口径）').toContain(
+      'buildEntryArgsLenient(spec,entry)',
+    );
+    expect(flatPanel, '命令行预览逐条写进轮备注').toContain(
+      'previewVideoCommand(spec,entry,session.referencePath)',
+    );
+    // 建轮成功后丢弃会话态、关闭面板并刷新主界面（与 T29-3 行为一致）
+    expect(flatPanel).toContain('dropSession(groupId)');
+    expect(flatPanel).toContain('deps.rerender()');
+  });
+});
