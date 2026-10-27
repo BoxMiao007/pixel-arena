@@ -14,9 +14,16 @@
 
 import { describe, it, expect } from 'vitest';
 import advancedUi from './advanced-ui.ts?raw';
+import encoderCard from './encoder-card.ts?raw';
 import css from './style.css?raw';
 
-const flat = advancedUi.replace(/\s+/g, '');
+// 票 #75 起，单张编码器卡的 DOM（卡头 / 快速参数 / 高级参数行 / 命令行预览）住在
+// src/encoder-card.ts 共享实现里，面板只剩列表容器与创建流程。守卫的语义是「机制
+// 在位」，所以扫描范围 = 面板源码 + 共享卡片源码的并集：机制放哪个文件都行，但
+// 任何一环被删掉这里必红。
+const flat = [advancedUi, encoderCard].map((source) => source.replace(/\s+/g, '')).join('\n');
+/** 未压平的合并源码：给需要断言带空格字面量（如 className）的守卫用。 */
+const rawAll = `${advancedUi}\n${encoderCard}`;
 
 describe('高级参数折叠态跨重建保留（票 #50）：按条目 id 读-重建-回写', () => {
   it('条目卡片根元素带 entryId，重建出口按 id 把折叠区 open 收集进 Map（读）', () => {
@@ -24,19 +31,23 @@ describe('高级参数折叠态跨重建保留（票 #50）：按条目 id 读-�
       'card.dataset.entryId=entry.id',
     );
     expect(flat).toContain("querySelectorAll<HTMLElement>('.adv-entry')");
-    expect(flat).toContain('constprevOpen=newMap<string,boolean>()');
-    expect(flat, '键 = 卡片 dataset 里的条目 id').toContain('prevOpen.set(id,details.open)');
+    // 票 #75：折叠区有两类（高级参数子区 / 命令行预览），收集粒度从
+    // 「id → boolean」升级为「id → (region → open)」，读-回写机制不变
+    expect(flat).toContain('constprevOpen=newMap<string,Map<string,boolean>>()');
+    expect(flat, 'open 按 region 收进该条目的 Map').toContain(
+      'openByRegion.set(details.dataset.advRegion??\'\',details.open)',
+    );
   });
 
   it('收集先于清空重建（先读后 replaceChildren，读晚了抄到的是空盒子）', () => {
-    const read = flat.indexOf('prevOpen.set(id,details.open)');
+    const read = flat.indexOf('openByRegion.set(details.dataset.advRegion');
     const rebuild = flat.indexOf('entriesBox.replaceChildren()');
     expect(read).toBeGreaterThanOrEqual(0);
     expect(rebuild).toBeGreaterThanOrEqual(0);
     expect(read).toBeLessThan(rebuild);
   });
 
-  it('重建后按条目 id 查 Map 回写 open（回写在重建之后；查不到的新条目保持默认闭合）', () => {
+  it('重建后按条目 id 查 Map 回写 open（回写在重建之后；查不到的新条目保持默认）', () => {
     const rebuild = flat.indexOf('entriesBox.replaceChildren()');
     const back = flat.indexOf("querySelectorAll<HTMLElement>('.adv-entry')", rebuild);
     const lookup = flat.indexOf("prevOpen.get(card.dataset.entryId??'')", rebuild);
@@ -48,8 +59,8 @@ describe('高级参数折叠态跨重建保留（票 #50）：按条目 id 读-�
     expect(write).toBeGreaterThan(lookup);
     expect(
       flat,
-      '新加条目查不到 id（Map.get 得 undefined）时不得误写，保持默认闭合',
-    ).toContain('if(details&&open!==undefined)details.open=open');
+      '新加条目查不到 id（Map.get 得 undefined）时不得误写，保持默认收合',
+    ).toContain("if(!openByRegion)continue");
   });
 });
 
@@ -58,10 +69,10 @@ describe('参数行分样式（票 #51）：行分叉与参数名派生', () => 
     expect(
       flat,
       '参数行应先查推荐目录（命中 = 推荐行，未命中 = 自定义行）',
-    ).toContain('knownParamsOf(entry).find((k)=>k.flag===row.flag.trim())');
+    ).toContain('knownParamsOf(catalog,entry).find((item)=>item.flag===row.flag.trim())');
     // class 名带空格，用未压平原文断言
-    expect(advancedUi).toContain("'adv-param-row adv-param-row-known'");
-    expect(advancedUi).toContain("'adv-param-row adv-param-row-custom'");
+    expect(rawAll).toContain("'adv-param-row adv-param-row-known'");
+    expect(rawAll).toContain("'adv-param-row adv-param-row-custom'");
   });
 
   it('自定义行参数名从标志自动派生（去前导 -；核心库 mergeArgs 要求 name 非空）', () => {
@@ -97,7 +108,7 @@ describe('推荐行自制下拉 + ⓘ 气泡（票 #51）', () => {
     expect(flat).toContain('optionBtn.disabled=usedFlags.has(item.flag)');
     expect(flat).toContain('entry.rows[rowIndex]=rowFromKnown(item)');
     const replace = flat.indexOf('entry.rows[rowIndex]=rowFromKnown(item)');
-    expect(flat.indexOf('renderEntries()', replace), '替换后须经重建出口刷新整卡').toBeGreaterThan(replace);
+    expect(flat.indexOf('callbacks.onChange()', replace), '替换后须经重建出口刷新整卡').toBeGreaterThan(replace);
   });
 
   it('下拉同一时间至多展开一个（开新的先收旧的；点外部统一收起）', () => {
@@ -117,8 +128,10 @@ describe('推荐行自制下拉 + ⓘ 气泡（票 #51）', () => {
 
 describe('行内原生 title 退场与添加栏文案（票 #51）', () => {
   it('值控件（开关/下拉/数值/文本）一律不设原生 title（说明统一走 ⓘ 气泡）', () => {
+    // 票 #75：值控件构建区搬进 encoder-card；rowFromKnown 现在位于它之前，用
+    // 下一个函数（buildKnownDropdown）当右边界
     const start = flat.indexOf('constbuildValueWidget=');
-    const end = flat.indexOf('constrowFromKnown=');
+    const end = flat.indexOf('constbuildKnownDropdown=');
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     expect(flat.slice(start, end), '值控件区域不应再出现 .title= 赋值').not.toContain('.title=');
@@ -131,9 +144,9 @@ describe('行内原生 title 退场与添加栏文案（票 #51）', () => {
   });
 
   it('↑↓× 操作提示 title 保留', () => {
-    expect(advancedUi).toContain("'上移该参数行'");
-    expect(advancedUi).toContain("'下移该参数行'");
-    expect(advancedUi).toContain("'删除该参数行'");
+    expect(rawAll).toContain("'上移该参数行'");
+    expect(rawAll).toContain("'下移该参数行'");
+    expect(rawAll).toContain("'删除该参数行'");
   });
 
   it('添加栏「先选后加」行为不变，指向旧行为的过时提示清理', () => {
@@ -141,10 +154,10 @@ describe('行内原生 title 退场与添加栏文案（票 #51）', () => {
       '该编码器的推荐参数（带说明与推荐值/范围，悬浮参数行可见）',
     );
     expect(flat, '旧提示列举的参数名/说明框已不存在').not.toContain('添加一行自由参数（参数名/标志/值/说明）');
-    expect(advancedUi, '票 #54：添加栏按钮原生 title 移除，说明统一走 ⓘ 气泡').not.toContain(
+    expect(rawAll, '票 #54：添加栏按钮原生 title 移除，说明统一走 ⓘ 气泡').not.toContain(
       '从该编码器的推荐目录中选择要添加的参数',
     );
-    expect(advancedUi).toContain("'添加一行自由参数（标志自由填写，参数名自动带出）'");
+    expect(rawAll).toContain("'添加一行自由参数（标志自由填写，参数名自动带出）'");
   });
 });
 
@@ -160,7 +173,7 @@ describe('高级参数面板四条 UI 修正（票 #53）', () => {
 
   it('布尔行裸 checkbox 退场：换 开/关 双态按钮（复用 adv-mode 分段样式，语义不变）', () => {
     const start = flat.indexOf('constbuildValueWidget=');
-    const end = flat.indexOf('constrowFromKnown=');
+    const end = flat.indexOf('constbuildKnownDropdown=');
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const widget = flat.slice(start, end);
@@ -276,5 +289,195 @@ describe('复制出口共享（票 #58）', () => {
   it('命令行复制走 util.copyText 共享出口，私有 fallbackCopy 退场', () => {
     expect(flat, 'copyLine 复用共享出口').toContain("copyText(text,()=>deps.setStatus('已复制命令行'))");
     expect(flat, '兜底逻辑只在 util 一份，避免拷贝').not.toContain('functionfallbackCopy');
+  });
+});
+
+// 票 #75：卡片渲染抽成共享实现 + 卡内分组布局。node 环境无 DOM，沿用 ?raw 文本
+// 机制守卫（先例 status-bar.test.ts / advanced-ui.test.ts 全篇）。
+import encoderCardSource from './encoder-card.ts?raw';
+
+const flatCard = encoderCardSource.replace(/\s+/g, '');
+const flatPanel = advancedUi.replace(/\s+/g, '');
+const flatCss75 = css.replace(/\s+/g, '');
+
+describe('编码器卡共享渲染（票 #75）', () => {
+  it('卡片渲染是不依赖面板生命周期的导出函数；面板经它渲染，不再自己造卡', () => {
+    expect(flatCard, '共享实现导出单卡渲染函数').toContain(
+      'exportfunctionrenderEncoderCard(',
+    );
+    expect(flatCard, '入参 = 条目 + 序号 + 目录 + 回调 + 可选环境，不引用面板闭包').toContain(
+      'entry:AdvancedEntry,index:number,catalog:EncoderCardCatalog,callbacks:EncoderCardCallbacks,options:EncoderCardOptions={},',
+    );
+    expect(flatPanel, '面板改为调用共享渲染').toContain('renderEncoderCard(entry,index,catalog,');
+    expect(
+      flatPanel,
+      '面板不得再自己创建 adv-entry 卡片（卡片 DOM 只应有一份实现）',
+    ).not.toContain("card.className='adv-entry'");
+    // 卡片模块不得反向 import 面板（否则又绑回面板生命周期）
+    expect(flatCard, '共享卡片不得依赖高级创建面板').not.toContain("from'./advanced-ui'");
+  });
+
+  it('卡头 = 序号 + 编码器选择 + 恢复默认 + ↑↓×', () => {
+    expect(flatCard).toContain('`第${index+1}项`');
+    expect(flatCard).toContain("select.className='adv-encoder-select'");
+    expect(flatCard).toContain("resetBtn.textContent='恢复默认'");
+    // 卡头挂载顺序：序号、选择器、恢复默认、上移、下移、删除
+    const headAppend = flatCard.slice(flatCard.indexOf('headRow.append('));
+    expect(headAppend.indexOf('label,select,resetBtn,upBtn,downBtn,delBtn')).toBeGreaterThanOrEqual(0);
+  });
+
+  it('卡内两区划分：快速参数子区（两列网格）与高级参数行子区各自带标题/容器', () => {
+    expect(flatCard, '快速参数子区容器').toContain("quickZone.className='adv-quick-zone'");
+    expect(flatCard, '两列网格容器').toContain("quickGrid.className='adv-quick-grid'");
+    expect(flatCard, '子区标题「快速参数」').toContain("quickTitle.textContent='快速参数'");
+    expect(flatCard, '高级参数子区容器').toContain("details.className='adv-advanced'");
+    expect(flatCard, '高级参数子区标题').toContain('`高级参数行（${active}项生效/共${entry.rows.length}行）`');
+    // DOM 顺序：快速参数子区先挂，高级参数子区后挂
+    const quickPos = flatCard.indexOf('card.append(quickZone)');
+    const advancedPos = flatCard.indexOf('card.append(details)');
+    expect(quickPos, '应挂载快速参数子区').toBeGreaterThanOrEqual(0);
+    expect(advancedPos, '应挂载高级参数子区').toBeGreaterThanOrEqual(0);
+    expect(advancedPos).toBeGreaterThan(quickPos);
+    // CSS：两列网格 + 子区分隔线
+    const gridStart = flatCss75.indexOf('.adv-quick-grid{');
+    expect(gridStart, '样式表缺少两列网格规则').toBeGreaterThanOrEqual(0);
+    const gridBlock = flatCss75.slice(gridStart, flatCss75.indexOf('}', gridStart) + 1);
+    expect(gridBlock, '快速参数须两列网格').toContain('grid-template-columns:repeat(2,minmax(0,1fr))');
+    const advStart = flatCss75.indexOf('.adv-advanced{');
+    expect(advStart, '高级参数子区应有独立样式块').toBeGreaterThanOrEqual(0);
+    const advBlock = flatCss75.slice(advStart, flatCss75.indexOf('}', advStart) + 1);
+    expect(advBlock, '高级参数子区带分隔线').toContain('border-top:1pxsolidvar(--border)');
+  });
+
+  it('高级参数行子区默认展开', () => {
+    const start = flatCard.indexOf("details.className='adv-advanced'");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const next = flatCard.slice(start, start + 200);
+    expect(next, '高级参数子区渲染时须置 open = true').toContain('details.open=true');
+  });
+
+  it('卡级「恢复默认」重置质量/模式/目标大小/无损/全部参数行（含自定义行）', () => {
+    const start = flatCard.indexOf('exportfunctionresetEntryToDefault(');
+    expect(start, '应有恢复默认的纯函数出口').toBeGreaterThanOrEqual(0);
+    const body = flatCard.slice(start, flatCard.indexOf('renderEncoderCard(', start));
+    expect(body).toContain('entry.lossless=false');
+    expect(body).toContain("entry.mode='quality'");
+    expect(body).toContain('entry.targetBytes=200*1024');
+    expect(body, '参数行整组清空（自定义行一并删除）').toContain('entry.rows=[]');
+    expect(body, '质量回到该编码器规格默认值（表外编码器退回 75）').toContain(
+      'entry.quality=spec?.qualityDefault??75',
+    );
+  });
+
+  it('命令行预览默认收起：<details> 不设 open，标题「命令行预览」，展开后可复制', () => {
+    const start = flatCard.indexOf("previewDetails.className='adv-preview'");
+    expect(start, '应有命令行预览折叠容器').toBeGreaterThanOrEqual(0);
+    const block = flatCard.slice(start, flatCard.indexOf('card.append(previewDetails)', start));
+    expect(block, '预览默认收起：不得设置 open').not.toContain('previewDetails.open=true');
+    expect(block, '折叠标题').toContain("previewSummary.textContent='命令行预览'");
+    expect(block, '展开后「复制」照旧可用').toContain("copyBtn.textContent='复制'");
+    // CSS：预览子区带分隔线，summary 可点
+    const cssStart = flatCss75.indexOf('.adv-preview{');
+    expect(cssStart, '样式表缺少预览折叠区规则').toBeGreaterThanOrEqual(0);
+    const cssBlock = flatCss75.slice(cssStart, flatCss75.indexOf('}', cssStart) + 1);
+    expect(cssBlock).toContain('border-top:1pxsolidvar(--border)');
+  });
+
+  it('预览内容随参数改动即时刷新（liveCallback 挂 refreshPreview，不重建保焦点）', () => {
+    expect(flatCard, '快速参数改动走 live 回调').toContain(
+      'liveCallbacks.push(()=>{refreshPreview();syncSummary();})',
+    );
+    expect(flatCard).toContain('slider.addEventListener(\'input\',()=>{');
+    const sliderBlock = flatCard.slice(flatCard.indexOf("slider.addEventListener('input'"));
+    expect(sliderBlock.slice(0, 200), '滑杆输入即刷新预览').toContain('onChangeLive()');
+  });
+});
+
+// 「恢复默认」口径的行为验证：纯逻辑无 DOM 依赖，可在 node 环境直接真跑（比
+// 文本守卫强）。断言「恢复后与刚添加时逐字段一致」——即票面「回到刚添加时的状态」。
+import { newEntry } from './advanced';
+import { resetEntryToDefault } from './encoder-card';
+
+describe('恢复默认 = 回到刚添加时（票 #75 行为验证）', () => {
+  const jpegSpec = {
+    id: 'jpeg',
+    toolKey: 'cjpeg',
+    displayName: 'JPEG',
+    baseArgs: ['-quality'],
+    losslessSupported: false,
+    losslessNote: 'JPEG 不支持无损',
+    losslessArgs: [],
+    qualityFlag: '-quality',
+    qualityMin: 0,
+    qualityMax: 100,
+    qualityDefault: 60,
+    qualityStep: 1,
+    inputPng: false,
+    outputExt: 'jpg',
+    knownParams: [],
+  };
+
+  it('质量 / 模式 / 目标大小 / 单位 / 无损开关 / 参数行全部回退，id 与编码器保留', () => {
+    const entry = newEntry('image', 'jpeg', jpegSpec);
+    const idBefore = entry.id;
+    // 调乱：无损 + 大小优先 + 质量 5 + 目标 3 MB + 两条参数行（含一条自定义行）
+    entry.lossless = true;
+    entry.mode = 'size';
+    entry.quality = 5;
+    entry.targetBytes = 3 * 1024 * 1024;
+    entry.unit = 'MB';
+    entry.rows.push(
+      {
+        name: '优化',
+        flag: '-optimize',
+        value: '',
+        note: '',
+        kind: 'bool',
+        options: [],
+        enabled: true,
+      },
+      { name: '自定义', flag: '-custom', value: '1', note: '', kind: 'text', options: [], enabled: true },
+    );
+
+    resetEntryToDefault(entry, jpegSpec);
+
+    expect(entry.lossless).toBe(false);
+    expect(entry.mode).toBe('quality');
+    expect(entry.quality).toBe(60);
+    expect(entry.targetBytes).toBe(200 * 1024);
+    expect(entry.unit).toBe('KB');
+    expect(entry.rows, '全部参数行清空（自定义行一并删除）').toEqual([]);
+    expect(entry.id, '条目 id 保留（折叠态按 id 回写）').toBe(idBefore);
+    expect(entry.encoderId, '编码器选择保留').toBe('jpeg');
+
+    // 与「刚添加时」逐字段一致（除 id/encoderId 外）
+    const fresh = newEntry('image', 'jpeg', jpegSpec);
+    const shape = (e: typeof entry) => ({
+      lossless: e.lossless,
+      mode: e.mode,
+      quality: e.quality,
+      targetBytes: e.targetBytes,
+      unit: e.unit,
+      rows: e.rows,
+    });
+    expect(shape(entry)).toEqual(shape(fresh));
+  });
+
+  it('表外视频编码器（无规格）也回到默认质量 75，参数行清空', () => {
+    const entry = newEntry('video', 'libx264', {
+      displayName: 'libx264',
+      baseArgs: [],
+      losslessSupported: false,
+      losslessNote: '',
+      losslessArgs: [],
+      qualityFlag: '-crf',
+      qualityMin: 0,
+      qualityMax: 51,
+    });
+    entry.quality = 51;
+    entry.rows.push({ name: '', flag: '-x', value: '', note: '', kind: 'text', options: [], enabled: true });
+    resetEntryToDefault(entry, null);
+    expect(entry.quality).toBe(75);
+    expect(entry.rows).toEqual([]);
   });
 });
