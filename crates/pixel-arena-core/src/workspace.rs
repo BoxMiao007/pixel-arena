@@ -2203,9 +2203,14 @@ mod tests {
     /// 1. 只跑子集时，**未列入**的行指标与 error 逐 bit 不变；
     /// 2. 列入的行结果与全量跑分完全一致（同为 bit 级比对，指标是单图闭式计算）；
     /// 3. 不传过滤（None）与既有 `score_round_candidates_parallel` 完全一致。
+    ///
+    /// 为什么未列入的行要写**哨兵值**而不是沿用真实结果：同一张原图重算的结果与
+    /// 第一次完全一样，若实现错误地把未列入的行也写了回不去，比对看不出差别。
+    /// 哨兵是一对「真跑不可能产出」的状态（指标 -1 且同时带 error 文本），
+    /// 任何写回都会把它改掉，因此这条断言能真正钉住「写回只碰子集」。
     #[test]
     fn 路径过滤_只跑子集_未列入行逐bit不变且列入行与全量一致() {
-        // 全量基线：整轮跑完，作为两张对照表的来源
+        // 全量基线：整轮跑完，作为「列入行应等于什么」的唯一来源
         let (mut full_ws, g, r) = workspace_with_golden_candidates();
         full_ws
             .score_round_candidates_parallel(&g, &r, 4, &|_, _| {})
@@ -2218,28 +2223,23 @@ mod tests {
             .map(|c| (c.path.clone(), c.metrics.clone(), c.error.clone()))
             .collect();
 
-        // 子集：只跑第 2、4 张（顺序打乱给过滤列表，验证写回按轮内选入顺序）
+        // 子集：只跑第 2、4 张（过滤列表顺序与轮内顺序相反，验证写回按轮内选入顺序）
         let subset: Vec<String> = vec![full_rows[3].0.clone(), full_rows[1].0.clone()];
         let subset_refs: Vec<&str> = subset.iter().map(String::as_str).collect();
 
         let (mut sub_ws, g, r) = workspace_with_golden_candidates();
-        // 先全量跑满，再把列入行的结果抹掉，然后只跑子集：抹掉的两行应恢复成全量值，
-        // 未列入的行必须与「跑子集之前」逐 bit 相等（证明写回只碰子集）
-        sub_ws
-            .score_round_candidates_parallel(&g, &r, 4, &|_, _| {})
-            .unwrap();
+        // 未列入的行：哨兵状态（真跑不会产出「有指标 + 有 error」的组合）
+        let sentinel_metrics = BTreeMap::from([("PSNR".to_string(), MetricValue::Number(-1.0))]);
+        let sentinel_error = "哨兵：未列入的行不应被改写".to_string();
         for candidate in &mut sub_ws.groups[0].rounds[0].candidates {
             if subset_refs.contains(&candidate.path.as_str()) {
                 candidate.metrics = None;
                 candidate.error = Some("旧结果已抹掉".to_string());
+            } else {
+                candidate.metrics = Some(sentinel_metrics.clone());
+                candidate.error = Some(sentinel_error.clone());
             }
         }
-        let before: Vec<(Option<BTreeMap<String, MetricValue>>, Option<String>)> = sub_ws.groups[0]
-            .rounds[0]
-            .candidates
-            .iter()
-            .map(|c| (c.metrics.clone(), c.error.clone()))
-            .collect();
 
         // 进度回调是 Sync 的 Fn（可被多线程并发调用），收集用原子量
         let reported_total = std::sync::atomic::AtomicUsize::new(0);
@@ -2261,22 +2261,26 @@ mod tests {
         );
 
         for (index, row) in sub_ws.groups[0].rounds[0].candidates.iter().enumerate() {
-            let full = &full_rows[index];
             if subset_refs.contains(&row.path.as_str()) {
                 assert_eq!(
-                    row.metrics, full.1,
+                    row.metrics, full_rows[index].1,
                     "列入的行应与全量跑分完全一致（{}）",
                     row.path
                 );
-                assert_eq!(row.error, full.2, "列入的行 error 应与全量一致（{}）", row.path);
-            } else {
-                // 未列入的行：与「跑子集之前」逐 bit 一致（旧值/旧错误都不能被写回）
                 assert_eq!(
-                    (row.metrics.clone(), row.error.clone()),
-                    before[index],
-                    "未列入的行指标与 error 必须逐 bit 不变（{}）",
+                    row.error, full_rows[index].2,
+                    "列入的行 error 应与全量一致（{}）",
                     row.path
                 );
+            } else {
+                // 未列入的行：哨兵原样保留（指标与 error 一个字节都不许被写回碰上）
+                assert_eq!(
+                    row.metrics,
+                    Some(sentinel_metrics.clone()),
+                    "未列入的行指标必须逐 bit 不变（{}）",
+                    row.path
+                );
+                assert_eq!(row.error, Some(sentinel_error.clone()));
             }
         }
     }
