@@ -131,26 +131,26 @@ beforeEach(() => {
 
 describe('高级创建会话态（视频专用，T6）', () => {
   it('首次取会话得到空配置（无条目、无原视频），不触碰任何持久化通道', () => {
-    const session = sessionFor('g1', 'video');
+    const session = sessionFor('g1');
     expect(session.kind).toBe('video');
     expect(session.referencePath).toBeNull();
     expect(session.entries).toEqual([]);
   });
 
   it('同一跑分组的会话跨多次取用共享（切标签保留）；不同跑分组互不串扰', () => {
-    const a1 = sessionFor('g1', 'video');
+    const a1 = sessionFor('g1');
     addEntry(a1, 'libx264', h264Spec);
-    const a2 = sessionFor('g1', 'video');
+    const a2 = sessionFor('g1');
     expect(a2.entries).toHaveLength(1);
     expect(a2).toBe(a1);
 
-    const b = sessionFor('g2', 'video');
+    const b = sessionFor('g2');
     expect(b.entries).toHaveLength(0);
     expect(b.entries).not.toBe(a1.entries);
   });
 
   it('addEntry 支持同一编码器添加多次（票面验收 1）', () => {
-    const session = sessionFor('g1', 'video');
+    const session = sessionFor('g1');
     addEntry(session, 'libx264', h264Spec);
     addEntry(session, 'libx264', h264Spec);
     addEntry(session, 'libx265', h264Spec);
@@ -160,7 +160,7 @@ describe('高级创建会话态（视频专用，T6）', () => {
   });
 
   it('removeEntry 删除指定位置，越界不动', () => {
-    const session: AdvancedSession = sessionFor('g1', 'video');
+    const session: AdvancedSession = sessionFor('g1');
     addEntry(session, 'libx264', h264Spec);
     addEntry(session, 'libx265', h264Spec);
     removeEntry(session, 0);
@@ -170,7 +170,7 @@ describe('高级创建会话态（视频专用，T6）', () => {
   });
 
   it('moveEntry 上移下移排序，边界不动（票面验收 3）', () => {
-    const session = sessionFor('g1', 'video');
+    const session = sessionFor('g1');
     addEntry(session, 'libx264', h264Spec);
     addEntry(session, 'libx265', h264Spec);
     addEntry(session, 'libaom-av1', h264Spec);
@@ -185,12 +185,12 @@ describe('高级创建会话态（视频专用，T6）', () => {
   });
 
   it('dropSession 丢弃后回到空配置；clearAdvancedSessions 模拟重启归零', () => {
-    const session = sessionFor('g1', 'video');
+    const session = sessionFor('g1');
     addEntry(session, 'libx264', h264Spec);
     session.referencePath = '/v/原.mp4';
     dropSession('g1');
-    expect(sessionFor('g1', 'video').entries).toHaveLength(0);
-    expect(sessionFor('g1', 'video').referencePath).toBeNull();
+    expect(sessionFor('g1').entries).toHaveLength(0);
+    expect(sessionFor('g1').referencePath).toBeNull();
   });
 });
 

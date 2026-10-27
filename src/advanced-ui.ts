@@ -87,7 +87,7 @@ export async function openAdvancedPanel(groupId: string, deps: AdvancedDeps): Pr
     throw new Error('高级创建面板仅供视频跑分组使用：图片组请走条目列表面板（高级创建）');
   }
 
-  const session = sessionFor(groupId, 'video');
+  const session = sessionFor(groupId);
   // 预填原视频：当前评测轮已选原视频时直接沿用（命令行预览的输入路径）
   if (!session.referencePath) {
     session.referencePath = deps.initialReference();

@@ -27,6 +27,7 @@ import {
 } from './image-queue';
 import {
   NOTHING_TO_RUN_MESSAGE,
+  nothingToRunNotice,
   planRunBatches,
   runScorePlan,
   scoreButtonLabel,
@@ -98,6 +99,12 @@ interface MockOptions {
   ) => { path: string; encodingParams: string } | Error;
   /** 跑分回包行；缺省 = 本次路径全部成功。 */
   scored?: (paths: string[]) => ScoredCandidate[];
+  /** 让某个执行步骤抛错（模拟系统级 IPC 错误）。 */
+  fail?: Partial<
+    Record<'createRound' | 'setReference' | 'addCandidates' | 'scoreCandidates', string>
+  >;
+  /** 工作区里还存在的轮 id；缺省 = 任何 roundId 都算还在（不触发惰性重建）。 */
+  existingRounds?: string[];
 }
 
 /** 记录所有调用的假执行器（面板真实实现注入 IPC 的地方）。 */
@@ -122,12 +129,19 @@ function createMockExecutor(options: MockOptions = {}): {
   };
   let sequence = 0;
   const executor: QueueRunExecutor = {
+    describeRound(_target, roundId) {
+      const exists =
+        options.existingRounds === undefined || options.existingRounds.includes(roundId);
+      return exists ? { name: `评测轮（${roundId}）`, candidateCount: 0 } : null;
+    },
     async createRound(target) {
+      if (options.fail?.createRound) throw new Error(options.fail.createRound);
       calls.createRound.push(target.id);
       sequence += 1;
       return `round-${sequence}`;
     },
     async setReference(target, roundId) {
+      if (options.fail?.setReference) throw new Error(options.fail.setReference);
       calls.setReference.push(`${target.id}:${roundId}`);
     },
     async encode(_target, _roundId, planned) {
@@ -137,9 +151,11 @@ function createMockExecutor(options: MockOptions = {}): {
       return result ?? { path: `/out/${planned.encoder.id}.jpg`, encodingParams: `参数-${planned.encoder.id}` };
     },
     async addCandidates(_target, _roundId, products) {
+      if (options.fail?.addCandidates) throw new Error(options.fail.addCandidates);
       calls.addCandidates.push(products.map((product) => product.path));
     },
     async scoreCandidates(_target, _roundId, paths) {
+      if (options.fail?.scoreCandidates) throw new Error(options.fail.scoreCandidates);
       calls.scoreCandidates.push([...paths]);
       return options.scored ? options.scored([...paths]) : paths.map((path) => ({ path, error: null }));
     },
@@ -257,6 +273,47 @@ describe('summaryLines：汇总卡片的正文行', () => {
   });
 });
 
+// ---------- 计划为空时的提示文案（按跳过原因分流） ----------
+
+describe('nothingToRunNotice：计划为空也要说对原因', () => {
+  it('全部是「已跑分且无变更」：保持票面文案「所有图片已跑分且无变更，无需重跑」', () => {
+    const clean = scoredEntry({ path: '/photos/done.png' });
+
+    const notice = nothingToRunNotice(planScore([clean], probe));
+
+    expect(notice.title).toBe('无需重跑');
+    expect(notice.lines).toEqual([NOTHING_TO_RUN_MESSAGE]);
+  });
+
+  it('含「没有编码器配置」的条目：换准确文案并逐张点名（不再说已跑分且无变更）', () => {
+    const empty = entry({ id: 'img-empty', path: '/photos/no-encoder.png', encoders: [] });
+    const clean = scoredEntry({ id: 'img-clean', path: '/photos/done.png' });
+
+    const notice = nothingToRunNotice(planScore([empty, clean], probe));
+
+    expect(notice.title).toBe('没有可跑的编码器配置');
+    expect(notice.lines).toEqual([
+      '没有可跑的编码器配置，请先在编辑窗口里添加编码器卡',
+      'no-encoder.png（没有编码器配置）',
+      'done.png（已跑分且无变更）',
+    ]);
+    expect(notice.lines.join('\n'), '空计划的原因不是「已跑分」').not.toContain(
+      NOTHING_TO_RUN_MESSAGE,
+    );
+  });
+
+  it('只有没有编码器配置的条目：只点名这些图（没有别的跳过原因可提）', () => {
+    const empty = entry({ id: 'img-empty', path: '/photos/no-encoder.png', encoders: [] });
+
+    const notice = nothingToRunNotice(planScore([empty], probe));
+
+    expect(notice.lines).toEqual([
+      '没有可跑的编码器配置，请先在编辑窗口里添加编码器卡',
+      'no-encoder.png（没有编码器配置）',
+    ]);
+  });
+});
+
 // ---------- 执行编排 ----------
 
 describe('runScorePlan：只跑计划内的编码器卡', () => {
@@ -357,6 +414,25 @@ describe('runScorePlan：单条失败不阻断该图其余条目', () => {
     expect(planScore([target], probe).runImageCount).toBe(1);
   });
 
+  it('跑分结果里没有该产物的行：按失败处理（没确认指标就不算已跑分）', async () => {
+    const target = entry({ encoders: [card({ id: 'c1' })] });
+    // 回包一行都没有：产物没跑出指标，不能当成功（否则这张图会被永久跳过）
+    const { executor } = createMockExecutor({ scored: () => [] });
+
+    const report = await runScorePlan([target], probe, executor);
+
+    expect(report.images[0].failures).toEqual([
+      {
+        cardId: 'c1',
+        encoderId: 'jpeg',
+        reason: '跑分结果里没有该产物的行，未确认指标',
+      },
+    ]);
+    expect(target.snapshot).toBeNull();
+    expect(judgeImageEntry(target, probe).state).toBe('failed');
+    expect(planScore([target], probe).runImageCount, '缺行必须留待下次重跑').toBe(1);
+  });
+
   it('本次新建的轮一条产物都没产出时回滚，工作区不留空轮', async () => {
     const target = entry({ encoders: [card({ id: 'c1' })] });
     const { executor, calls } = createMockExecutor({ encode: () => new Error('编码器不可用') });
@@ -379,6 +455,90 @@ describe('runScorePlan：单条失败不阻断该图其余条目', () => {
     expect(calls.createRound).toEqual([]);
     expect(calls.deleteRound).toEqual([]);
     expect(target.roundId).toBe('r-old');
+  });
+});
+
+describe('runScorePlan：系统级错误落成计划内每张卡的失败（徽章不再停在「未跑分」）', () => {
+  it('建轮 IPC 抛错：计划内每张卡都记失败，徽章「上次失败」，下次自动重试', async () => {
+    const target = entry({
+      encoders: [card({ id: 'c1' }), card({ id: 'c2', encoderId: 'webp' })],
+    });
+    const { executor } = createMockExecutor({ fail: { createRound: '建轮 IPC 超时' } });
+
+    const report = await runScorePlan([target], probe, executor);
+
+    expect(report.images[0].error).toBe('建轮 IPC 超时');
+    // 一条产物都没有时也必须写出失败原因：面板提示「详情见列表徽章」，徽章只读 failures
+    expect(report.images[0].failures).toEqual([
+      { cardId: 'c1', encoderId: 'jpeg', reason: '本次未完成跑分：建轮 IPC 超时' },
+      { cardId: 'c2', encoderId: 'webp', reason: '本次未完成跑分：建轮 IPC 超时' },
+    ]);
+    expect(target.snapshot).toBeNull();
+    expect(judgeImageEntry(target, probe).state).toBe('failed');
+    // 仍是待跑：两张卡都要重试（计数口径是图片张数，编码器条数看 runEncoderCount）
+    const retry = planScore([target], probe);
+    expect(retry.runImageCount).toBe(1);
+    expect(retry.runEncoderCount).toBe(2);
+  });
+
+  it('设原图抛错：同样落成失败（不留下「未跑分」的空徽章）', async () => {
+    const target = entry({ encoders: [card({ id: 'c1' })] });
+    const { executor } = createMockExecutor({ fail: { setReference: '设置原图失败：磁盘不可写' } });
+
+    const report = await runScorePlan([target], probe, executor);
+
+    expect(report.images[0].failures).toEqual([
+      { cardId: 'c1', encoderId: 'jpeg', reason: '本次未完成跑分：设置原图失败：磁盘不可写' },
+    ]);
+    expect(judgeImageEntry(target, probe).state).toBe('failed');
+  });
+
+  it('纳产物抛错：已编码成功的卡也降级成失败，编码本身失败的原因原样保留', async () => {
+    const target = entry({
+      encoders: [card({ id: 'c1' }), card({ id: 'c2', encoderId: 'webp' })],
+    });
+    const { executor } = createMockExecutor({
+      encode: (planned) =>
+        planned.encoder.id === 'c1'
+          ? new Error('编码器不可用')
+          : { path: '/out/c2.webp', encodingParams: 'WebP q75' },
+      fail: { addCandidates: '纳入跑分图失败：IPC 超时' },
+    });
+
+    const report = await runScorePlan([target], probe, executor);
+
+    expect(report.images[0].failures).toEqual([
+      { cardId: 'c1', encoderId: 'jpeg', reason: '编码器不可用' },
+      { cardId: 'c2', encoderId: 'webp', reason: '本次未完成跑分：纳入跑分图失败：IPC 超时' },
+    ]);
+    expect(target.snapshot, '没跑出指标就不许写快照').toBeNull();
+    expect(planScore([target], probe).runEncoderCount).toBe(2);
+  });
+});
+
+describe('runScorePlan：条目记着的轮被删掉后自动重新建轮', () => {
+  it('roundId 指向的轮已不在工作区：丢弃失效 id 走惰性建轮，不再每次报「评测轮不存在」', async () => {
+    const target = entry({ encoders: [card({ id: 'c1' })], roundId: 'r-deleted' });
+    const { executor, calls } = createMockExecutor({ existingRounds: [] });
+
+    const report = await runScorePlan([target], probe, executor);
+
+    expect(report.images[0].error).toBeNull();
+    expect(calls.createRound, '失效 id 必须丢弃并重建轮').toEqual(['img-1']);
+    expect(calls.setReference).toEqual(['img-1:round-1']);
+    expect(target.roundId).toBe('round-1');
+    expect(judgeImageEntry(target, probe).state).toBe('scored');
+  });
+
+  it('轮还在工作区：沿用旧轮，不重复建轮', async () => {
+    const target = entry({ encoders: [card({ id: 'c1' })], roundId: 'r-keep' });
+    const { executor, calls } = createMockExecutor({ existingRounds: ['r-keep'] });
+
+    await runScorePlan([target], probe, executor);
+
+    expect(calls.createRound).toEqual([]);
+    expect(calls.setReference).toEqual(['img-1:r-keep']);
+    expect(target.roundId).toBe('r-keep');
   });
 });
 

@@ -19,7 +19,7 @@ import {
   newImageEntry,
   type EncoderRunOutcome,
 } from './image-queue';
-import { mergeScoreFailures } from './image-queue-run';
+import { mergeScoreFailures, MISSING_SCORE_ROW_REASON } from './image-queue-run';
 import { identityReadingsOf, planDelete } from './image-queue-panel';
 import panelSource from './image-queue-panel.ts?raw';
 import runSource from './image-queue-run.ts?raw';
@@ -118,11 +118,19 @@ describe('编码成功但跑分失败的行不算已跑分（快照只收成功�
     ]);
   });
 
-  it('跑分结果里没出现该产物（例如还没进轮）时保持成功结论不动', () => {
+  it('跑分结果里没出现该产物（没跑出指标）时折成失败，不当成功', () => {
     const outcomes: EncoderRunOutcome[] = [
       { kind: 'success', cardId: 'c1', artifactPath: '/out/missing.jpg', fingerprint: 'fp1' },
     ];
-    expect(mergeScoreFailures(outcomes, [])).toEqual(outcomes);
+    // 缺行 = 没确认指标：保守按失败（否则这张图会被记成已跑分并永久跳过）
+    expect(mergeScoreFailures(outcomes, [])).toEqual([
+      {
+        kind: 'failure',
+        cardId: 'c1',
+        reason: MISSING_SCORE_ROW_REASON,
+      },
+    ]);
+    expect(MISSING_SCORE_ROW_REASON).toBe('跑分结果里没有该产物的行，未确认指标');
   });
 });
 
@@ -193,37 +201,28 @@ describe('四态徽章文案（单一来源 IMAGE_ENTRY_STATE_LABELS）', () => 
   });
 });
 
-describe('模态卡片三路关闭（× / 点遮罩 / Esc + keydown 清理）', () => {
-  it('删除确认卡片是 settings-overlay + status-card 的应用内模态（不抢系统焦点）', () => {
-    expect(flat).toContain("overlay.className='settings-overlay'");
-    expect(flat).toContain("panel.className='status-cardqueue-confirm-card'");
-  });
-
-  it('确认卡片三路关闭：× 按钮、点遮罩本身、Esc；关闭时摘掉 document 上的 keydown 监听', () => {
+// 模态卡片脚手架自 review 修复 F9 起收进共享实现 src/modal-card.ts：面板这边只留
+// 「用哪张卡、给什么内容、点按钮做什么」，三路关闭与监听清理由共享实现保证（那里另有
+// 守卫）。这里钉调用点不被改回第二份手写脚手架。
+describe('面板的三种卡片都走共享模态实现（modal-card）', () => {
+  it('删除确认卡片：queue-confirm-card + 取消/删除两个底部按钮', () => {
     const start = flat.indexOf('functionconfirmCard(');
     expect(start, '应有确认卡片实现').toBeGreaterThanOrEqual(0);
     const end = flat.indexOf('exportfunctionopenImageQueuePanel', start);
     expect(end).toBeGreaterThan(start);
     const body = flat.slice(start, end);
-    // × 关闭
-    expect(body).toContain("closeBtn.addEventListener('click',()=>finish(false))");
-    // 点遮罩：只在点到遮罩本身时关（面板内部点击不冒到这一层）
-    expect(body).toContain("overlay.addEventListener('click',(e)=>{if(e.target===overlay)finish(false)");
-    // Esc
-    expect(body, 'Esc 关闭').toContain("if(e.key==='Escape')finish(false)");
-    expect(body, 'keydown 挂在 document 上').toContain("document.addEventListener('keydown',onKey)");
-    // 清理：三路关闭共用 finish，先摘监听再移除遮罩
-    expect(body, '关闭时必须摘掉 keydown 监听').toContain(
-      "document.removeEventListener('keydown',onKey)",
-    );
-    const remove = body.indexOf("document.removeEventListener('keydown',onKey)");
-    const detach = body.indexOf('overlay.remove()');
-    expect(detach, '先摘监听再移除遮罩').toBeGreaterThan(remove);
+    expect(body, '确认卡片用共享实现的模态').toContain('openModalCard({');
+    expect(body, '外观类名不变').toContain("cardClassName:'queue-confirm-card'");
+    expect(body).toContain("{label:'取消'");
+    expect(body).toContain("{label:'删除'");
+    expect(body, '删除是主操作按钮').toContain("className:'settings-primary-btn'");
+    // 不得再手写一份遮罩 / 卡片 / 三路关闭脚手架
+    expect(body).not.toContain("overlay.className='settings-overlay'");
+    expect(body).not.toContain("document.addEventListener('keydown'");
+    expect(body, '关闭后交答案').toContain('onClose:()=>resolve(confirmed)');
   });
 
-  it('删除确认按钮与取消按钮都在卡片内（确认才动手）', () => {
-    expect(flat).toContain("confirmBtn.textContent='删除'");
-    expect(flat).toContain("cancelBtn.textContent='取消'");
+  it('确认结果决定是否继续：先删轮再移除条目', () => {
     const start = flat.indexOf('constdeleteEntry=');
     const body = flat.slice(start, start + 1200);
     expect(body, '确认结果决定是否继续').toContain('if(!confirmed)return');
@@ -232,30 +231,25 @@ describe('模态卡片三路关闭（× / 点遮罩 / Esc + keydown 清理）', 
   });
 });
 
-describe('提示 / 汇总卡片（showQueueNotice）：三路关闭 + keydown 清理', () => {
-  it('应用内模态：settings-overlay + status-card，正文按行渲染', () => {
+describe('提示 / 汇总卡片（showQueueNotice）走共享模态实现', () => {
+  it('queue-notice-card + 正文按行交给共享实现', () => {
     const start = flat.indexOf('exportfunctionshowQueueNotice(');
     expect(start, '应有 showQueueNotice 实现').toBeGreaterThanOrEqual(0);
     const end = flat.indexOf('exportfunctionopenImageQueuePanel', start);
     expect(end).toBeGreaterThan(start);
     const body = flat.slice(start, end);
-    expect(body).toContain("overlay.className='settings-overlay'");
-    expect(body).toContain("panel.className='status-cardqueue-notice-card'");
-    expect(body, '正文按行拼接').toContain("body.textContent=lines.join('\\n')");
+    expect(body).toContain('openModalCard({');
+    expect(body, '外观类名不变').toContain("cardClassName:'queue-notice-card'");
+    expect(body, '正文按行交给共享实现').toContain('lines,');
+    expect(body).toContain("{label:'知道了'");
+    expect(body, '不得再手写遮罩').not.toContain("overlay.className='settings-overlay'");
   });
 
-  it('× / 点遮罩 / Esc 三路关闭，关闭时先摘 keydown 监听再移除遮罩', () => {
-    const start = flat.indexOf('exportfunctionshowQueueNotice(');
-    const end = flat.indexOf('exportfunctionopenImageQueuePanel', start);
-    const body = flat.slice(start, end);
-    expect(body).toContain("closeBtn.addEventListener('click',close)");
-    expect(body).toContain("overlay.addEventListener('click',(e)=>{if(e.target===overlay)close()");
-    expect(body).toContain("if(e.key==='Escape')close()");
-    expect(body).toContain("document.addEventListener('keydown',onKey)");
-    expect(body).toContain("document.removeEventListener('keydown',onKey)");
-    const remove = body.indexOf("document.removeEventListener('keydown',onKey)");
-    const detach = body.indexOf('overlay.remove()');
-    expect(detach, '先摘监听再移除遮罩').toBeGreaterThan(remove);
+  it('共享实现在 main.ts 的状态全文卡片与面板两张卡片之间只有一份', () => {
+    // 面板与主界面都从 modal-card 导入，不再各自拼脚手架
+    expect(flat).toContain("from'./modal-card'");
+    expect(flatMain).toContain("from'./modal-card'");
+    expect(flat.split('openModalCard({').length - 1, '面板两处调用').toBe(2);
   });
 });
 
@@ -314,7 +308,11 @@ describe('增量跑分接线（T5：按钮待跑数量 / 只跑计划内 / 无�
       'runScorePlan(session.entries,probe,buildExecutor()',
     );
     expect(body, '无待跑时只弹提示卡片').toContain(
-      'showQueueNotice([NOTHING_TO_RUN_MESSAGE],{title:',
+      'showQueueNotice(notice.lines,{title:notice.title})',
+    );
+    // 空计划的原因要分流：没有编码器配置 ≠ 已跑分且无变更（票面文案只属于后者）
+    expect(body, '提示内容按 skippedImages 的原因分流').toContain(
+      'constnotice=nothingToRunNotice(report.plan)',
     );
     expect(body, '有待跑时弹汇总卡片').toContain('showQueueNotice(summaryLines(report.plan),{title:');
     // 面板不得自行按全量重建任务清单：计划与跳过全部来自 planScore/runScorePlan
@@ -341,6 +339,16 @@ describe('增量跑分接线（T5：按钮待跑数量 / 只跑计划内 / 无�
     expect(body).not.toContain('close()');
     expect(body, '每张跑完原地刷新').toContain('onImageDone:()=>renderList()');
     expect(body, '跑完 finally 重渲染').toContain('renderList()');
+  });
+
+  it('执行器先只读确认轮还在工作区（轮被主界面删掉时编排层丢弃失效 id 重建）', () => {
+    const start = flat.indexOf('constbuildExecutor=');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = flat.indexOf('construnScoring=', start);
+    const body = flat.slice(start, end);
+    expect(body, 'describeRound 是执行器契约的一部分').toContain(
+      'describeRound:(_entry,roundId)=>deps.describeRound(groupId,roundId)',
+    );
   });
 
   it('执行器把本次新增产物路径传给 scoreRound（子集跑分，不重跑整轮）', () => {

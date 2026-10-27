@@ -527,7 +527,9 @@ describe('旧面板收缩为视频专用（T6）：图片分支整块删除', ()
 
 describe('视频侧高级创建完整保留（T6 回归）', () => {
   it('原视频预填 + 视频编码器目录（静态规格 + ffmpeg 枚举）+ ffmpeg 就绪提示', () => {
-    expect(flatPanel, '会话态按视频口径取').toContain("sessionFor(groupId,'video')");
+    expect(flatPanel, '会话态按视频口径取（T6 后 sessionFor 无 kind 参数，恒为视频会话）').toContain(
+      'sessionFor(groupId)',
+    );
     expect(flatPanel, '本轮已选原视频时预填（命令行预览用）').toContain(
       'session.referencePath=deps.initialReference()',
     );

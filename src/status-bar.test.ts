@@ -11,9 +11,13 @@
 import { describe, it, expect } from 'vitest';
 import css from './style.css?raw';
 import mainTs from './main.ts?raw';
+import modalTs from './modal-card.ts?raw';
 
 const flatCss = (): string => css.replace(/\s+/g, '');
 const flatMain = mainTs.replace(/\s+/g, '');
+// 模态卡片脚手架（遮罩 / 标题 / × / 正文 / 三路关闭）自 review 修复 F9 起住在
+// src/modal-card.ts：main.ts 只描述「标题 / 正文 / 按钮 / 关闭后做什么」。
+const flatModal = modalTs.replace(/\s+/g, '');
 
 /** 压平空白后按选择器取规则块（`选择器 { … }` 整块），便于无空格断言 */
 function ruleBlock(selector: string): string {
@@ -53,8 +57,10 @@ describe('全文可达端：状态全文卡片（票 #58）', () => {
   });
 
   it('遮罩复用设置面板同款（观感一致、点遮罩即关）', () => {
-    expect(flatMain).toContain("overlay.className='settings-overlay'");
-    expect(flatMain).toContain('if(e.target===overlay)close()');
+    expect(flatModal, '遮罩类名是共享实现的承诺').toContain("overlay.className='settings-overlay'");
+    expect(flatModal).toContain('if(e.target===overlay)close()');
+    // 状态全文卡片走共享实现，自己不再拼遮罩 / 面板
+    expect(flatMain).toContain('openModalCard({');
   });
 
   it('可点态观感：手型 + 悬停下划线 + 键盘焦点环', () => {
@@ -85,10 +91,15 @@ describe('挂载端（main.ts）：截断才可点、ⓘ 退场、卡片三路�
     expect(flatMain, '此处无气泡共存，原生 tooltip 不双弹').toContain("'点击查看完整内容'");
   });
 
-  it('卡片三路关闭：× / 点遮罩 / Esc（与既有菜单口径一致）', () => {
-    expect(flatMain).toContain("closeBtn.textContent='×'");
-    expect(flatMain).toContain("if(e.key==='Escape')close()");
-    expect(flatMain).toContain('document.removeEventListener(\'keydown\',onKey)');
+  it('卡片三路关闭：× / 点遮罩 / Esc，且关闭时先摘 keydown 监听（共享实现）', () => {
+    expect(flatModal, '× 按钮文案与类名不变').toContain("buildButton({label:'×'})");
+    expect(flatModal).toContain("closeBtn.title='关闭'");
+    expect(flatModal).toContain("closeBtn.addEventListener('click',close)");
+    expect(flatModal).toContain("if(e.key==='Escape')close()");
+    const remove = flatModal.indexOf("document.removeEventListener('keydown',onKey)");
+    const detach = flatModal.indexOf('overlay.remove()');
+    expect(remove, '关闭时必须摘掉 keydown 监听').toBeGreaterThanOrEqual(0);
+    expect(detach, '先摘监听再移除遮罩').toBeGreaterThan(remove);
   });
 
   it('一键复制全部 + 按钮瞬时反馈；标题按错误/普通区分', () => {
@@ -96,5 +107,15 @@ describe('挂载端（main.ts）：截断才可点、ⓘ 退场、卡片三路�
     expect(flatMain).toContain("'复制全部'");
     expect(flatMain).toContain("'已复制'");
     expect(flatMain).toContain("isError?'错误详情':'完整状态内容'");
+    // 复制按钮是共享卡片的头部附加按钮：回调拿到按钮本身就地改文案
+    expect(flatMain).toContain('headActions:[');
+    expect(flatMain).toContain('onClick:(button)=>{');
+  });
+
+  it('正文仍是 <pre> 等宽、可选中复制（外观与行为不变）', () => {
+    expect(flatModal).toContain("body.className='status-card-body'");
+    expect(flatModal).toContain('options.lines.join');
+    // 状态全文卡片把整段文本作为单行正文传进去
+    expect(flatMain).toContain('lines:[title]');
   });
 });

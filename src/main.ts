@@ -7,6 +7,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
 import { copyText, fileName, truncateFileName } from './util';
+import { openModalCard } from './modal-card';
 import { buildPill, buildPillList } from './pills'; // T18 接线点：已选文件胶囊（T22 复用同一套）
 // T23 接线点：设置中心（面板 UI + 数据形状 + 主题应用）
 import { applyTheme } from './theme';
@@ -329,51 +330,27 @@ function renderStatus(): void {
 
 // 状态全文卡片（票 #58）：模态弹层复用设置面板同款遮罩观感；正文可选可滚，
 // 头部一键复制全文；× / 点遮罩 / Esc 三路关闭（Esc 与既有菜单口径一致）。
+// 脚手架走共享实现 src/modal-card.ts（与条目面板的确认 / 提示卡片同一份）。
 function openStatusCard(title: string, isError: boolean): void {
-  const overlay = document.createElement('div');
-  overlay.className = 'settings-overlay';
-  const panel = document.createElement('div');
-  panel.className = 'status-card';
-  const heading = document.createElement('h2');
-  heading.textContent = isError ? '错误详情' : '完整状态内容';
-  const copyBtn = document.createElement('button');
-  copyBtn.type = 'button';
-  copyBtn.className = 'settings-mini-btn';
-  copyBtn.textContent = '复制全部';
-  copyBtn.addEventListener('click', () => {
-    copyText(title, () => {
-      copyBtn.textContent = '已复制';
-      window.setTimeout(() => {
-        copyBtn.textContent = '复制全部';
-      }, 1500);
-    });
+  openModalCard({
+    title: isError ? '错误详情' : '完整状态内容',
+    // 正文塞进 <pre>（CSS user-select:text），可手动选择部分复制
+    lines: [title],
+    headActions: [
+      {
+        label: '复制全部',
+        // 拿到按钮本身就地改文案（复制成功后短暂显示「已复制」）
+        onClick: (button) => {
+          copyText(title, () => {
+            button.textContent = '已复制';
+            window.setTimeout(() => {
+              button.textContent = '复制全部';
+            }, 1500);
+          });
+        },
+      },
+    ],
   });
-  const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'settings-mini-btn';
-  closeBtn.textContent = '×';
-  closeBtn.title = '关闭';
-  const body = document.createElement('pre');
-  body.className = 'status-card-body';
-  body.textContent = title; // user-select:text（CSS），可手动选择部分复制
-  const close = (): void => {
-    overlay.remove();
-    document.removeEventListener('keydown', onKey);
-  };
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') close();
-  };
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close();
-  });
-  document.addEventListener('keydown', onKey);
-  closeBtn.addEventListener('click', close);
-  const head = document.createElement('div');
-  head.className = 'status-card-head';
-  head.append(heading, copyBtn, closeBtn);
-  panel.append(head, body);
-  overlay.append(panel);
-  document.body.append(overlay);
 }
 
 function setStatus(text: string, isError = false, title: string = text): void {
@@ -559,8 +536,11 @@ async function startScoring(): Promise<void> {
  * 激活轮）；省略时取当前激活轮，既有调用点行为不变。
  *
  * T5：`paths` 可选——条目列表面板的增量跑分只传本次新增产物的路径子集，后端只重算
- * 这些行、未列入行逐 bit 不变。省略时（主界面「开始跑分」、一站式、CLI）行为与今天
- * 一字不差，仍是整轮全量。
+ * 这些行、未列入行逐 bit 不变。省略时（主界面「开始跑分」、一站式）**不带这个键**，
+ * 后端按「未传 = 整轮全量」处理，行为与今天一字不差。
+ *
+ * 行内状态（scoringPaths）由本函数自己 try/finally 收口清空：面板的增量跑分经
+ * `scoreRound` 复用这里，跑完必须恢复这些行的显示（否则永久停在「跑分中…」）。
  */
 async function scoreAllCandidates(
   groupId?: string,
@@ -590,19 +570,32 @@ async function scoreAllCandidates(
   channel.onmessage = (progress) => {
     setStatus(`跑分中 ${progress.completed}/${progress.total}`, false);
   };
-  setStatus(`跑分中 0/${total}`, false);
-  render();
 
-  ws = await invoke('round_score_candidates', {
+  // 传参口径：无子集时**不带 paths 这个键**——Tauri 对可选参数按缺失走 None，与后端
+  // 「不传 = 整轮全量」的注释、主界面「开始跑分」与一站式入口的调用口径一致；显式传
+  // null 虽然行为等价，却让「既有调用点都不传」这句话对不上实现。
+  const invokeArgs: Record<string, unknown> = {
     groupId: targetGroupId,
     roundId: targetRoundId,
-    // undefined = 不传过滤（整轮全量）；数组 = 只跑这些路径
-    paths: paths === undefined ? null : [...paths],
     onProgress: channel,
-  });
-  render();
-  markSaved();
-  setStatus(`跑分完成，共 ${total} 张`);
+  };
+  if (paths !== undefined) invokeArgs.paths = [...paths];
+
+  try {
+    setStatus(`跑分中 0/${total}`, false);
+    render();
+
+    ws = await invoke('round_score_candidates', invokeArgs);
+    render();
+    markSaved();
+    setStatus(`跑分完成，共 ${total} 张`);
+  } finally {
+    // 行内「跑分中…」必须收在这里清：条目列表面板（image-queue-panel）经 scoreRound
+    // 复用本函数，它自己没有第二个清空点——不清的话主界面结果表这些行会永久显示
+    // 「跑分中…」，与已经落库的指标并存。清完要 render 让行内状态立刻刷新。
+    scoringPaths = new Set();
+    render();
+  }
 }
 
 // ---------- 一站式跑分（T11 完整编码阶梯，清单实现在 src/onestop.ts） ----------

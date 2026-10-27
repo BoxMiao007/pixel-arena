@@ -157,6 +157,16 @@ export interface ImageQueueSession {
   entries: ImageEntry[];
 }
 
+/**
+ * 评测轮的最小信息（宿主从工作区读，会话态不自己持有工作区）：确认文案要点名轮名与
+ * 结果条数。删条目确认（列表面板）与换图确认（逐图编辑弹窗）共用这一份形状，避免两处
+ * 各自声明一个 `{ name, candidateCount }` 后漂移。
+ */
+export interface RoundSummary {
+  name: string;
+  candidateCount: number;
+}
+
 // ---------- 会话态（模块级 Map：切标签保留、重启归零，不写 workspace.json） ----------
 
 const queues = new Map<string, ImageQueueSession>();
@@ -610,30 +620,6 @@ export function planScore(entries: ImageEntry[], probe: ImageIdentityProbe): Sco
     runImageCount: runImageIds.size,
     skippedImageCount: skippedImages.length,
   };
-}
-
-/**
- * 计划里要跑的图片（按条目顺序去重，供调度按条目建轮/建产物）：每项带该条目本次要跑的
- * 编码器卡。已跳过的条目不在其中。
- */
-export interface PlannedImage {
-  imageId: string;
-  path: string;
-  encoders: EncoderCard[];
-}
-
-/** 把计划按图片条目分组：只含至少有一条卡要跑的条目。 */
-export function plannedImages(plan: ScorePlan): PlannedImage[] {
-  const images = new Map<string, PlannedImage>();
-  for (const planned of plan.encoders) {
-    let image = images.get(planned.imageId);
-    if (!image) {
-      image = { imageId: planned.imageId, path: planned.path, encoders: [] };
-      images.set(planned.imageId, image);
-    }
-    image.encoders.push(planned.encoder);
-  }
-  return [...images.values()];
 }
 
 /** 计划是否为空（没有任何编码器要跑）：后续票据此只弹「无需重跑」提示、不执行跑分。 */
