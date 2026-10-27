@@ -1,47 +1,57 @@
-// 图片条目列表面板（票 #77 / T3）：图片跑分组的「高级创建」入口从旧向导换成条目队列。
+// 图片条目列表面板（票 #77 / T3，票 #79 / T5 起为增量跑分）：
+// 图片跑分组的「高级创建」入口从旧向导换成条目队列。
 //
 // 交互骨架（父规格 #74「交互与编排」）：
 // - 顶部「添加图片」多选后**直接入列，不弹任何窗**；
 // - 中部每行 = 中间截断文件名 + 状态徽章 + 删除按钮（同一路径重复添加给「重复图片」提示）；
-// - 底部「跑分」跑全量（本票阶段；增量在 T5），跑完**面板不关闭**、列表原地刷新；
+// - 底部「跑分 / 重跑」只跑计划内的编码器条目（T5）：已跑分且无变更的图整张跳过、
+//   沿用上一轮产物与指标；无待跑条目时只弹提示卡片、零编码零跑分调用；
+// - 跑完弹应用内汇总卡片（本次跑分 N 张，跳过 M 张 + 逐张跳过原因），**面板不关闭**；
 // - 删除条目前弹应用内模态卡片二次确认（点名轮名与结果条数、写明磁盘产物不删），
 //   有轮则连带删轮。
 //
-// 两条数据边界：
+// 三条数据边界：
 // 1. **只改会话态**：条目队列活在 src/image-queue.ts 的模块级 Map 里（T2 交付），本面板
 //    只读它、经 T2 的纯函数改它；只有点「跑分」才经 deps 真正写工作区。关掉面板没跑过 =
 //    工作区零变更。
-// 2. **惰性建轮**：条目第一次真正产出产物时才建评测轮（`planQueueRun` 的 createsRound），
-//    仅添加图片不建轮；本次新建的轮若一条产物都没产出就回滚删掉，工作区不留空轮。
+// 2. **惰性建轮**：条目第一次真正产出产物时才建评测轮（编排层只在 entry.roundId === null
+//    时调 createRound），仅添加图片不建轮；本次新建的轮若一条产物都没产出就回滚删掉。
+// 3. **增量判定单一来源**：跑哪些卡、跳过哪些图全走 T2 的 planScore；本面板不另造脏判定。
 //
-// 本文件分工：文件上半是**编排决策的纯函数**（node 环境可测，见 image-queue-panel.test.ts），
-// 下半是 DOM 渲染与转发（node 环境只能做机制守卫，仓库约定不引 jsdom）。
-// 四态判定、脏原因、轮命名、结果回写全部复用 src/image-queue.ts，本模块不另造判定。
+// 本文件分工：上半是面板对宿主/后端的薄契约与标识回包适配（node 可测），下半是 DOM 渲染
+// 与转发（仓库约定不引 jsdom，DOM 侧只做机制守卫）。跑分编排决策与执行在
+// src/image-queue-run.ts（纯逻辑 + 注入执行器，node 环境真跑）。
 
-import { askFileConflict, ConflictSession } from './conflict';
+import { askFileConflict, type ConflictSession } from './conflict';
 import {
   addImagePaths,
-  applyRunResults,
-  attachRound,
   badgeText,
   duplicateEntryIds,
   entryFailures,
   imageIdentityFrom,
   imageQueueFor,
   judgeEntries,
-  paramFingerprint,
+  planScore,
   probeFromCache,
   removeImageEntry,
   type EncoderCard,
-  type EncoderRunOutcome,
   type ImageEntry,
-  type ImageIdentityProbe,
   type ImageIdentityReading,
 } from './image-queue';
+import {
+  NOTHING_TO_RUN_MESSAGE,
+  runScorePlan,
+  scoreButtonLabel,
+  summaryLines,
+  type QueueRunExecutor,
+  type ScoredCandidate,
+} from './image-queue-run';
 import type { ImageSpec } from './advanced';
 import type { AdvancedProductDto } from './advanced-ui';
 import { openImageEntryEditor } from './image-entry-editor';
 import { fileName, truncateFileName } from './util';
+
+export type { ScoredCandidate } from './image-queue-run';
 
 // ---------- 与后端的薄契约 ----------
 
@@ -54,12 +64,6 @@ export interface ImageIdentityDto {
   path: string;
   sizeBytes: number | null;
   modifiedMs: number | null;
-  error: string | null;
-}
-
-/** 一轮跑分后的逐行结果（面板据此把「编码成功但跑分失败」折成失败，见 mergeScoreFailures）。 */
-export interface ScoredCandidate {
-  path: string;
   error: string | null;
 }
 
@@ -91,12 +95,15 @@ export interface ImageQueueDeps {
   ): Promise<AdvancedProductDto>;
   /** 产物带 encodingParams 纳入本轮。 */
   addCandidates(groupId: string, roundId: string, paths: string[], params: string[]): Promise<void>;
-  /** 清空某轮跑分图行（全量重跑前清旧行；原图与轮保留，磁盘产物文件不删）。 */
+  /** 清空某轮跑分图行（换图前清旧行；原图与轮保留，磁盘产物文件不删）。 */
   clearCandidates(groupId: string, roundId: string): Promise<void>;
   /** 删除评测轮（删条目时连带删除）。 */
   deleteRound(groupId: string, roundId: string): Promise<void>;
-  /** 整轮跑分（复用主界面入口）；返回逐行结果供失败判定。 */
-  scoreRound(groupId: string, roundId: string): Promise<ScoredCandidate[]>;
+  /**
+   * 只跑指定路径的跑分图（T5 增量：paths = 本次新增产物），返回逐行结果供失败判定。
+   * 未列入的跑分图行由后端保持逐 bit 不变。
+   */
+  scoreRound(groupId: string, roundId: string, paths: string[]): Promise<ScoredCandidate[]>;
   /** 跑分期间与主界面一致地置灰（主界面的 scoring 忙标志由宿主维护）。 */
   withBusy<T>(task: () => Promise<T>): Promise<T>;
   /** 主界面忙标志（忙时面板不再发起新的跑分）。 */
@@ -112,7 +119,7 @@ export interface ImageQueueDeps {
   setStatus(text: string, isError?: boolean, title?: string): void;
 }
 
-// ---------- 编排决策（纯函数，node 环境可测） ----------
+// ---------- 标识回包适配（纯函数，node 环境可测） ----------
 
 /**
  * 把 image_identities 的回包折成 T2 的「标识读取」缓存（喂 probeFromCache）。
@@ -138,31 +145,7 @@ export function identityReadingsOf(dtos: ImageIdentityDto[]): Map<string, ImageI
   return readings;
 }
 
-/** 一次面板跑分里一张条目的计划：要跑哪些卡、要不要先建轮。 */
-export interface EntryRunPlan {
-  entry: ImageEntry;
-  /** 惰性建轮：该条目还没有轮（第一次真正产出产物时要建）。 */
-  createsRound: boolean;
-  /** 本次要编码的编码器卡（T3 全量：条目里的全部卡）。 */
-  cards: EncoderCard[];
-}
-
-/**
- * 算本次跑分要处理的条目（T3 = 跑全量）。
- *
- * 与 T2 的 planScore 的区别：**不看脏标记**——本票阶段点「跑分」就是整批重跑，
- * 增量跳过与「只跑改过的」都留给 T5（票面「跑分暂全量」）。这里只做两件事：
- * 过滤掉没有编码器卡的条目（没东西可编码），标出哪些条目要先建轮。
- */
-export function planQueueRun(entries: ImageEntry[]): EntryRunPlan[] {
-  return entries
-    .filter((entry) => entry.encoders.length > 0)
-    .map((entry) => ({
-      entry,
-      createsRound: entry.roundId === null,
-      cards: entry.encoders,
-    }));
-}
+// ---------- 删条目的计划（纯函数） ----------
 
 /** 删条目的计划：要不要连带删轮 + 二次确认文案。 */
 export interface DeletePlan {
@@ -194,37 +177,6 @@ export function planDelete(entry: ImageEntry, round: ImageQueueRoundInfo | null)
         `这个条目没有对应的评测轮（从未跑分，或轮已被删除），删除不会改动工作区；` +
         `磁盘上的产物文件不会被删除（删除只作用于会话记录，不会删除磁盘文件）。`;
   return { entryId: entry.id, fileName: name, roundId, message };
-}
-
-/** 「跑分」按钮文案：T3 跑全量，直接显示条目张数（T5 换成待跑张数）。 */
-export function scoreButtonLabel(entryCount: number): string {
-  return entryCount === 0 ? '跑分' : `跑分（${entryCount} 张）`;
-}
-
-/**
- * 把「编码成功但跑分失败」的卡折成失败结果。
- *
- * 为什么需要它：编码成功只说明产物写出来了，跑分（解码 + 指标计算）仍可能失败，
- * 失败原因由核心库写进产物行的 error 字段。T2 的 applyRunResults 只在成功时写快照，
- * 所以这里必须把这类行降级成失败——否则一张解不开的图会被记成「已跑分」。
- * 产物行没出现（例如没进轮）时保持原结论，交给快照比对兜底。
- */
-export function mergeScoreFailures(
-  outcomes: EncoderRunOutcome[],
-  scored: readonly ScoredCandidate[],
-): EncoderRunOutcome[] {
-  const failureByPath = new Map<string, string>();
-  for (const row of scored) {
-    if (row.error !== null && row.error !== undefined) failureByPath.set(row.path, row.error);
-  }
-  if (failureByPath.size === 0) return outcomes;
-  return outcomes.map((outcome) => {
-    if (outcome.kind !== 'success') return outcome;
-    const reason = failureByPath.get(outcome.artifactPath);
-    return reason === undefined
-      ? outcome
-      : { kind: 'failure', cardId: outcome.cardId, reason };
-  });
 }
 
 // ---------- 面板 DOM ----------
@@ -297,6 +249,70 @@ function confirmCard(options: ConfirmCardOptions): Promise<boolean> {
   });
 }
 
+/** 提示 / 汇总卡片选项。 */
+export interface QueueNoticeOptions {
+  /** 卡片标题（如「无需重跑」「跑分汇总」）。 */
+  title: string;
+}
+
+/**
+ * 应用内提示 / 汇总卡片（票 #79）：结构照抄 main.ts 的 openStatusCard 范式——
+ * `settings-overlay` 遮罩 + `.status-card` + × / 点遮罩 / Esc 三路关闭，
+ * 关闭时先摘 document 上的 keydown 监听再移除遮罩（防监听泄漏）。
+ *
+ * 汇总卡片正文 = 本次跑分 N 张，跳过 M 张 + 逐张跳过原因；无待跑提示 = 单行提示。
+ */
+export function showQueueNotice(lines: string[], options: QueueNoticeOptions): void {
+  const overlay = document.createElement('div');
+  overlay.className = 'settings-overlay';
+  const panel = document.createElement('div');
+  panel.className = 'status-card queue-notice-card';
+  const head = document.createElement('div');
+  head.className = 'status-card-head';
+  const heading = document.createElement('h2');
+  heading.textContent = options.title;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'settings-mini-btn';
+  closeBtn.textContent = '×';
+  closeBtn.title = '关闭';
+  head.append(heading, closeBtn);
+
+  const body = document.createElement('pre');
+  body.className = 'status-card-body';
+  body.textContent = lines.join('\n');
+
+  const actions = document.createElement('div');
+  actions.className = 'status-card-actions';
+  const okBtn = document.createElement('button');
+  okBtn.type = 'button';
+  okBtn.className = 'settings-primary-btn';
+  okBtn.textContent = '知道了';
+  actions.append(okBtn);
+
+  let settled = false;
+  /** 收口：先摘 keydown 监听再移除遮罩（三路关闭共用，防监听泄漏）。 */
+  const close = (): void => {
+    if (settled) return;
+    settled = true;
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') close();
+  };
+  document.addEventListener('keydown', onKey);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) close();
+  });
+  closeBtn.addEventListener('click', close);
+  okBtn.addEventListener('click', close);
+
+  panel.append(head, body, actions);
+  overlay.append(panel);
+  document.body.append(overlay);
+}
+
 /**
  * 打开图片条目列表面板（覆盖层挂 body，关闭即销毁；条目队列留在会话态）。
  *
@@ -339,7 +355,8 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
   hint.className = 'settings-hint';
   hint.textContent =
     '添加图片即入列、不弹窗；每行是「一张原图 + 一套编码器配置」，对应一个评测轮。' +
-    '点「跑分」才开始生成产物并写工作区——没跑过的图不会留下空轮，关掉面板等于工作区零变更。';
+    '点「跑分 / 重跑」只跑改过的：已跑分且无变更的图会跳过并沿用上一轮结果——' +
+    '没跑过的图不会留下空轮，关掉面板等于工作区零变更。';
   panel.append(hint);
 
   // ---------- 顶部：添加图片 ----------
@@ -365,17 +382,22 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
   actions.className = 'settings-actions queue-actions';
   const scoreBtn = document.createElement('button');
   scoreBtn.className = 'settings-primary-btn queue-score-btn';
-  scoreBtn.title = '对列表里每一张图生成产物并跑分（本版本每次跑全量）';
+  scoreBtn.title = '只跑改过的编码器条目：已跑分且无变更的图跳过并沿用上一轮结果';
   actions.append(scoreBtn);
   panel.append(actions);
+
+  /** 当前计划（按钮待跑张数与列表徽章同一判定口径）。 */
+  const currentPlan = () => planScore(session.entries, probeFromCache(identityCache));
 
   /** 按钮与标题随会话态同步（不重建 DOM，避免清掉焦点）。 */
   const syncChrome = (): void => {
     const count = session.entries.length;
     title.textContent = `图片条目（${count} 张）`;
     addBtn.disabled = running || deps.isBusy();
-    // 跑分按钮文字按会话态走：空列表只写「跑分」，有条目带张数；跑分中换进度文案
-    scoreBtn.textContent = running ? '跑分中…' : scoreButtonLabel(count);
+    // 跑分按钮文字 = 本次待跑张数（plan.runImageCount）；编辑弹窗里的改动经
+    // onChanged → renderList → 这里即时重算（票面：改参数后待跑数量同步变化）
+    scoreBtn.textContent = running ? '跑分中…' : scoreButtonLabel(currentPlan(), session.entries);
+    // 注意：计划为空时按钮仍可点——点开只弹「无需重跑」提示卡片（票面验收）
     scoreBtn.disabled = running || deps.isBusy() || count === 0;
   };
 
@@ -409,6 +431,7 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
   const openEditor = (entry: ImageEntry): void => {
     if (editorOpen || running || deps.isBusy()) return;
     editorOpen = true;
+    // 弹窗关闭回调里重算列表与跑分按钮（票面：编辑后待跑数量同步变化）
     void openImageEntryEditor(groupId, entry, {
       loadImageCatalog: () => deps.loadImageCatalog(),
       pickImage: () => deps.pickReplacementImage(),
@@ -511,101 +534,40 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
   addBtn.addEventListener('click', () => void addImages());
 
   /**
-   * 跑一张条目：惰性建轮 → 设原图 → 逐卡编码 → 纳入产物 → 跑该轮。
-   *
-   * 回滚口径：本次新建的轮在**一条产物都没产出**时删掉（工作区不留空轮）；一旦
-   * 产物进了轮就保留轮（已有真实内容，留着比删掉干净）。
+   * 把面板依赖包成编排层的执行器：惰性建轮 / 设原图 / 单卡编码 / 纳产物 / 子集跑分。
+   * 所有 IPC 细节留在这里，src/image-queue-run.ts 只负责顺序与失败兜底（node 可测）。
    */
-  const runEntry = async (plan: EntryRunPlan, probe: ImageIdentityProbe): Promise<void> => {
-    const { entry, cards } = plan;
-    const identity = probe(entry.path);
-    // 计划时指纹：参数若在跑分中途被改（T5 起可改），快照写回的是当时真正用的指纹
-    const fingerprints = new Map(cards.map((card) => [card.id, paramFingerprint(card)]));
-    const outcomes: EncoderRunOutcome[] = [];
-    const products: AdvancedProductDto[] = [];
-    let roundId = entry.roundId;
-    let added = false;
-    let createdNow = false;
-    try {
-      if (roundId === null) {
-        const created = await deps.createRound(groupId, entry.path);
-        roundId = created.roundId;
-        attachRound(entry, roundId);
-        createdNow = true;
-      }
-      await deps.setReference(groupId, roundId, entry.path);
-      // 一批评测产物共用一个冲突决策会话（T30「应用到本次全部冲突」的边界）
-      const conflicts = new ConflictSession((name) => askFileConflict(name));
-      for (const card of cards) {
-        deps.setStatus(`正在生成「${fileName(entry.path)}」的 ${card.encoderId} 产物…`);
-        try {
-          const product = await deps.encode(groupId, roundId, entry.path, card, conflicts);
-          products.push(product);
-          // 成功结果先记下（快照写回要带计划时指纹）；跑分若失败，mergeScoreFailures 再降级
-          outcomes.push({
-            kind: 'success',
-            cardId: card.id,
-            artifactPath: product.path,
-            fingerprint: fingerprints.get(card.id) ?? paramFingerprint(card),
-          });
-        } catch (err) {
-          outcomes.push({ kind: 'failure', cardId: card.id, reason: String(err) });
-        }
-      }
-      if (products.length === 0) {
-        // 一条产物都没产出：本次新建的轮没有意义，回滚掉（不能留下空轮）
-        if (createdNow) {
-          await deps.deleteRound(groupId, roundId);
-          entry.roundId = null;
-          roundId = null;
-        }
-        applyRunResults(entry, outcomes, identity);
-        const reasons = outcomes
-          .map((outcome) => (outcome.kind === 'failure' ? outcome.reason : ''))
-          .filter((reason) => reason !== '');
-        deps.setStatus(
-          `「${fileName(entry.path)}」全部生成失败：${reasons.join('；')}`,
-          true,
-        );
-        return;
-      }
-      await deps.addCandidates(
+  const buildExecutor = (): QueueRunExecutor => ({
+    createRound: async (entry) => {
+      const created = await deps.createRound(groupId, entry.path);
+      return created.roundId;
+    },
+    setReference: (entry, roundId) => deps.setReference(groupId, roundId, entry.path),
+    encode: (entry, roundId, planned, conflicts) => {
+      deps.setStatus(`正在生成「${fileName(entry.path)}」的 ${planned.encoder.encoderId} 产物…`);
+      return deps.encode(groupId, roundId, entry.path, planned.encoder, conflicts);
+    },
+    addCandidates: (_entry, roundId, products) =>
+      deps.addCandidates(
         groupId,
         roundId,
         products.map((product) => product.path),
         products.map((product) => product.encodingParams),
-      );
-      added = true;
-      const scored = await deps.scoreRound(groupId, roundId);
-      applyRunResults(entry, mergeScoreFailures(outcomes, scored), identity);
-      const failed = entryFailures(entry);
-      if (failed.length > 0) {
-        deps.setStatus(
-          `「${fileName(entry.path)}」跑分完成，${failed.length} 条失败：` +
-            failed.map((failure) => `${failure.encoderId}：${failure.reason}`).join('；'),
-          true,
-        );
-      }
-    } catch (err) {
-      // 建轮/设原图/纳入产物失败：产物还没进轮就把新建的轮回滚掉，避免残留空轮
-      if (createdNow && !added && roundId !== null) {
-        try {
-          await deps.deleteRound(groupId, roundId);
-          entry.roundId = null;
-        } catch (rollbackErr) {
-          console.warn('回滚空评测轮失败（工作区可能留下一个空轮）:', rollbackErr);
-        }
-      }
-      if (outcomes.length > 0) applyRunResults(entry, outcomes, identity);
-      deps.setStatus(`「${fileName(entry.path)}」跑分出错：${String(err)}`, true);
-    }
-  };
+      ),
+    scoreCandidates: (_entry, roundId, paths) => deps.scoreRound(groupId, roundId, [...paths]),
+    deleteRound: (_entry, roundId) => deps.deleteRound(groupId, roundId),
+  });
 
-  /** 点「跑分」：本版本跑全量（每个条目各自一轮），面板不关闭、列表原地刷新。 */
+  /**
+   * 点「跑分 / 重跑」：按 planScore 只跑计划内的编码器条目。
+   *
+   * 无待跑条目时只弹提示卡片、不执行任何编码或跑分调用（runScorePlan 在计划为空时
+   * 不会碰执行器的任何方法）；有待跑时逐图执行、每张跑完原地刷新列表，最后弹汇总
+   * 卡片。面板全程不关闭。
+   */
   const runScoring = async (): Promise<void> => {
     if (running || deps.isBusy()) return;
-    const plans = planQueueRun(session.entries);
-    if (plans.length === 0) {
+    if (session.entries.length === 0) {
       deps.setStatus('还没有可跑分的图片：先添加图片（新条目自带一条 JPEG 有损配置）', true);
       return;
     }
@@ -613,20 +575,38 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
     renderList();
     deps.rerender();
     try {
-      await deps.withBusy(async () => {
-        // 跑分前把标识读新：快照里记的必须是这次真正用的原图标识
-        await refreshIdentities();
-        const probe = probeFromCache(identityCache);
-        for (const [index, plan] of plans.entries()) {
-          deps.setStatus(
-            `正在跑分 第 ${index + 1}/${plans.length} 张（${fileName(plan.entry.path)}）…`,
-          );
-          await runEntry(plan, probe);
-          renderList();
-        }
-      });
-      const ok = plans.filter((plan) => entryFailures(plan.entry).length === 0).length;
-      deps.setStatus(`跑分完成：${plans.length} 张图片已更新（${ok} 张全部成功）`);
+      // 跑分前把标识读新：计划与快照比对必须基于当前文件大小/修改时间
+      await refreshIdentities();
+      const probe = probeFromCache(identityCache);
+      const report = await deps.withBusy(() =>
+        runScorePlan(session.entries, probe, buildExecutor(), {
+          onImageStart: ({ path, index, total }) => {
+            deps.setStatus(`正在跑分 第 ${index + 1}/${total} 张（${fileName(path)}）…`);
+          },
+          onImageDone: () => renderList(),
+          askConflict: (name) => askFileConflict(name),
+        }),
+      );
+      if (!report.ran) {
+        // 无待跑：只弹提示卡片，runScorePlan 未执行任何编码/跑分调用
+        deps.setStatus(NOTHING_TO_RUN_MESSAGE);
+        showQueueNotice([NOTHING_TO_RUN_MESSAGE], { title: '无需重跑' });
+        return;
+      }
+      const failedCount = report.images.reduce((sum, image) => sum + image.failures.length, 0);
+      const systemErrors = report.images.filter((image) => image.error !== null).length;
+      if (failedCount === 0 && systemErrors === 0) {
+        deps.setStatus(`跑分完成：${report.plan.runImageCount} 张图片已更新`);
+      } else {
+        deps.setStatus(
+          `跑分完成：${report.plan.runImageCount} 张图片已更新；${failedCount} 条失败` +
+            (systemErrors > 0 ? `，${systemErrors} 张图出错` : '') +
+            '（详情见列表徽章）',
+          true,
+        );
+      }
+      // 汇总卡片：本次跑分 N 张，跳过 M 张 + 逐张跳过原因
+      showQueueNotice(summaryLines(report.plan), { title: '跑分汇总' });
     } catch (err) {
       deps.setStatus(`跑分失败：${String(err)}`, true);
     } finally {

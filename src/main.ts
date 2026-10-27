@@ -557,8 +557,16 @@ async function startScoring(): Promise<void> {
  *
  * T3：groupId / roundId 可显式传入（条目列表面板跑的是它自己建的轮，不是当前
  * 激活轮）；省略时取当前激活轮，既有调用点行为不变。
+ *
+ * T5：`paths` 可选——条目列表面板的增量跑分只传本次新增产物的路径子集，后端只重算
+ * 这些行、未列入行逐 bit 不变。省略时（主界面「开始跑分」、一站式、CLI）行为与今天
+ * 一字不差，仍是整轮全量。
  */
-async function scoreAllCandidates(groupId?: string, roundId?: string): Promise<void> {
+async function scoreAllCandidates(
+  groupId?: string,
+  roundId?: string,
+  paths?: readonly string[],
+): Promise<void> {
   const session = activeRound();
   const targetGroupId = groupId ?? session?.group.id;
   const targetRoundId = roundId ?? session?.round.id;
@@ -568,8 +576,14 @@ async function scoreAllCandidates(groupId?: string, roundId?: string): Promise<v
   if (!round || !round.referencePath) return;
   if (round.candidates.length === 0) return;
 
-  // 本轮待跑清单快照：并行期间行内状态按它显示「跑分中…」
-  scoringPaths = new Set(round.candidates.map((c) => c.path));
+  // 本轮待跑清单快照：并行期间行内状态按它显示「跑分中…」。
+  // 增量跑分只把传入的路径子集标成「跑分中」，其余行保持原样。
+  const targetPaths =
+    paths === undefined
+      ? round.candidates.map((c) => c.path)
+      : round.candidates.filter((c) => paths.includes(c.path)).map((c) => c.path);
+  if (targetPaths.length === 0) return;
+  scoringPaths = new Set(targetPaths);
   const total = scoringPaths.size;
 
   const channel = new Channel<{ completed: number; total: number }>();
@@ -582,6 +596,8 @@ async function scoreAllCandidates(groupId?: string, roundId?: string): Promise<v
   ws = await invoke('round_score_candidates', {
     groupId: targetGroupId,
     roundId: targetRoundId,
+    // undefined = 不传过滤（整轮全量）；数组 = 只跑这些路径
+    paths: paths === undefined ? null : [...paths],
     onProgress: channel,
   });
   render();
@@ -1889,10 +1905,11 @@ function openImageQueueCreation(group: Group): void {
     deleteRound: async (groupId, roundId) => {
       await mutate(() => invoke('round_delete', { groupId, roundId }));
     },
-    scoreRound: async (groupId, roundId): Promise<ScoredCandidate[]> => {
+    scoreRound: async (groupId, roundId, paths): Promise<ScoredCandidate[]> => {
       // 复用主界面的整轮跑分入口（同一条 IPC、同一份并发度与进度条）；
+      // T5：paths = 本次新增产物路径，只重算这些行（未列入行逐 bit 不变）。
       // 跑完从最新工作区读出逐行结果，供面板判定「编码成功但跑分失败」
-      await scoreAllCandidates(groupId, roundId);
+      await scoreAllCandidates(groupId, roundId, paths);
       const group = ws?.groups.find((g) => g.id === groupId);
       const round = group?.rounds.find((r) => r.id === roundId);
       return (round?.candidates ?? []).map((c) => ({ path: c.path, error: c.error }));

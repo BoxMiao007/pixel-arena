@@ -1,0 +1,318 @@
+// 增量跑分编排（票 #79 / T5）：把 T2 的 ScorePlan 变成可执行批次，并在注入的执行器上
+// 跑完「惰性建轮 → 设原图 → 只编码计划内的卡 → 只把本次新增产物纳入本轮 →
+// 只对本次新增产物跑分 → 按计划时指纹写回快照」。
+//
+// 三条设计约束：
+// 1. **零 DOM、零 IPC**：面板把 IPC 包进 QueueRunExecutor 注入进来，所以「只跑计划内」
+//    「无待跑零调用」「失败不阻断」都能在 node 环境用假执行器真跑，不靠文本守卫。
+// 2. **计划时指纹**：PlannedEncoder.fingerprint 是计划时快照，编码与写回都用它——
+//    跑分中途用户改参数（延迟落库）不会把没跑过的参数记成已跑。
+// 3. **子集跑分**：把本次新增产物的路径作为 paths 传给 round_score_candidates，
+//    未参与条目的指标与失败原因由后端逐 bit 保持不变（T3 已用黄金基准钉住）。
+
+import { ConflictSession, type ConflictAnswer } from './conflict';
+import {
+  applyRunResults,
+  attachRound,
+  entryFailures,
+  isPlanEmpty,
+  planScore,
+  planSummary,
+  type EncoderRunOutcome,
+  type EntryFailureView,
+  type ImageEntry,
+  type ImageIdentityProbe,
+  type PlannedEncoder,
+  type ScorePlan,
+} from './image-queue';
+
+// ---------- IPC 薄契约（与 image-queue-panel 的 deps 共用） ----------
+
+/** 一轮跑分后的逐行结果（面板据此把「编码成功但跑分失败」折成失败）。 */
+export interface ScoredCandidate {
+  path: string;
+  error: string | null;
+}
+
+/**
+ * 把「编码成功但跑分失败」的卡折成失败结果。
+ *
+ * 为什么需要它：编码成功只说明产物写出来了，跑分（解码 + 指标计算）仍可能失败，
+ * 失败原因由核心库写进产物行的 error 字段。T2 的 applyRunResults 只在成功时写快照，
+ * 所以这里必须把这类行降级成失败——否则一张解不开的图会被记成「已跑分」。
+ * 产物行没出现（例如没进轮）时保持原结论，交给快照比对兜底。
+ */
+export function mergeScoreFailures(
+  outcomes: EncoderRunOutcome[],
+  scored: readonly ScoredCandidate[],
+): EncoderRunOutcome[] {
+  const failureByPath = new Map<string, string>();
+  for (const row of scored) {
+    if (row.error !== null && row.error !== undefined) failureByPath.set(row.path, row.error);
+  }
+  if (failureByPath.size === 0) return outcomes;
+  return outcomes.map((outcome) => {
+    if (outcome.kind !== 'success') return outcome;
+    const reason = failureByPath.get(outcome.artifactPath);
+    return reason === undefined
+      ? outcome
+      : { kind: 'failure', cardId: outcome.cardId, reason };
+  });
+}
+
+// ---------- 计划 → 执行批次 ----------
+
+/** 一张图在本次跑分里的执行批次：按条目分组、只含计划内的编码器卡。 */
+export interface RunBatch {
+  imageId: string;
+  path: string;
+  /** 本次要跑的编码器卡（条目内顺序；携带计划时指纹）。 */
+  encoders: PlannedEncoder[];
+}
+
+/** 把 ScorePlan 按图分组（与 plannedImages 同口径，但保留计划时指纹与原因）。 */
+export function planRunBatches(plan: ScorePlan): RunBatch[] {
+  const batches = new Map<string, RunBatch>();
+  for (const planned of plan.encoders) {
+    let batch = batches.get(planned.imageId);
+    if (!batch) {
+      batch = { imageId: planned.imageId, path: planned.path, encoders: [] };
+      batches.set(planned.imageId, batch);
+    }
+    batch.encoders.push(planned);
+  }
+  return [...batches.values()];
+}
+
+// ---------- 按钮文案与汇总 ----------
+
+/** 无待跑条目时的提示文案（单一来源，面板与测试都从这里取）。 */
+export const NOTHING_TO_RUN_MESSAGE = '所有图片已跑分且无变更，无需重跑';
+
+/**
+ * 「跑分 / 重跑」按钮文案，N = 本次待跑张数（plan.runImageCount）。
+ *
+ * 只要计划里有一张图此前跑过（有成功快照、显式换过图或上次失败），这次就是「重跑」；
+ * 全是新图才是「跑分」。计划为空时仍显示「跑分（0 张）」——按钮必须可点，点开只弹
+ * 「无需重跑」提示卡片（票面：没有待跑时只提示、不执行）。
+ */
+export function scoreButtonLabel(plan: ScorePlan, entries: readonly ImageEntry[]): string {
+  if (entries.length === 0) return '跑分';
+  const plannedIds = new Set(plan.encoders.map((item) => item.imageId));
+  const rerun = entries.some(
+    (entry) =>
+      plannedIds.has(entry.id) &&
+      (entry.snapshot !== null || entry.replaced || entry.failures.length > 0),
+  );
+  if (plan.runImageCount === 0) return '跑分（0 张）';
+  return `${rerun ? '重跑' : '跑分'}（${plan.runImageCount} 张）`;
+}
+
+/** 汇总卡片正文行：标题（本次跑分 N 张，跳过 M 张）+ 逐张跳过原因。 */
+export function summaryLines(plan: ScorePlan): string[] {
+  const summary = planSummary(plan);
+  return [summary.headline, ...summary.skipLines];
+}
+
+// ---------- 执行编排 ----------
+
+/** 编码产物（只需面板接线要用的两个字段，AdvancedProductDto 结构性兼容）。 */
+export interface EncodedProduct {
+  path: string;
+  encodingParams: string;
+}
+
+/**
+ * 跑分执行器：面板用真实 IPC 实现，测试用记录调用的假实现。
+ * 所有方法只处理单张图条目；编排层负责顺序、失败兜底与结果回写。
+ */
+export interface QueueRunExecutor {
+  /** 惰性建轮：只在 entry.roundId === null 时调用，返回新轮 id。 */
+  createRound(entry: ImageEntry): Promise<string>;
+  /** 设置该轮原图（实现方可在「已经是同一张」时跳过 IPC）。 */
+  setReference(entry: ImageEntry, roundId: string): Promise<void>;
+  /** 编码一张卡；抛错 = 编码失败（编排层折成失败结果，不中断其它卡）。 */
+  encode(
+    entry: ImageEntry,
+    roundId: string,
+    planned: PlannedEncoder,
+    conflicts: ConflictSession,
+  ): Promise<EncodedProduct>;
+  /** 把本次新增产物纳入该轮。 */
+  addCandidates(
+    entry: ImageEntry,
+    roundId: string,
+    products: readonly EncodedProduct[],
+  ): Promise<void>;
+  /** 只跑指定路径的跑分图（本次新增产物），返回逐行结果。 */
+  scoreCandidates(
+    entry: ImageEntry,
+    roundId: string,
+    paths: readonly string[],
+  ): Promise<ScoredCandidate[]>;
+  /** 回滚本次新建、且一条产物都没进轮的空轮。 */
+  deleteRound(entry: ImageEntry, roundId: string): Promise<void>;
+}
+
+/** 编排层的界面回调（保持本模块零 DOM：面板负责弹卡片、刷新列表）。 */
+export interface QueueRunHooks {
+  /** 计划为空：只该弹「无需重跑」提示卡片，未调用执行器任何方法。 */
+  onNothingToRun?(plan: ScorePlan): void;
+  /** 开始跑一张图（面板用来显示进度文案）。 */
+  onImageStart?(info: { path: string; index: number; total: number }): void;
+  /** 一张图跑完（面板用来原地刷新列表状态）。 */
+  onImageDone?(entry: ImageEntry): void;
+  /** 产物命名冲突询问（面板接 askFileConflict；缺省时冲突会按失败处理）。 */
+  askConflict?(fileName: string): Promise<ConflictAnswer>;
+}
+
+/** 单张图的跑分结果（供面板汇总状态栏与失败详情）。 */
+export interface QueueRunImageResult {
+  entry: ImageEntry;
+  /** 条目级错误（建轮 / 设原图 / 纳产物 / 跑分调用本身失败），null = 没有系统级错误。 */
+  error: string | null;
+  /** 跑完后该条目仍有效的失败明细（编码失败 + 产物行内跑分失败）。 */
+  failures: EntryFailureView[];
+}
+
+/** 一次增量跑分的报告。plan 是**跑之前**的计划（汇总计数与跳过原因都用它）。 */
+export interface QueueRunReport {
+  plan: ScorePlan;
+  /** 是否真的执行了跑分；false = 计划为空，只触发了 onNothingToRun。 */
+  ran: boolean;
+  images: QueueRunImageResult[];
+}
+
+function errorText(err: unknown): string {
+  return String((err as Error)?.message ?? err);
+}
+
+/**
+ * 执行一张图的跑分批次：
+ * 惰性建轮 → 设原图 → 逐卡编码（失败收集、不中断）→ 纳入本次新增产物 →
+ * 只对本次新增产物跑分 → 按计划时指纹回写快照。
+ *
+ * 兜底口径：
+ * - 一条产物都没产出：本次新建的轮回滚（工作区不留空轮），失败写回条目；
+ * - 已有轮全部失败：保留轮（里面可能还有上一轮结果，不能删）；
+ * - 编码成功但后续步骤（纳产物 / 跑分调用）抛错：成功结果降级成失败（没跑出指标
+ *   就不算已跑分，下次自动重试），避免「产物存在但没指标」被误记成已跑分。
+ */
+async function runOneImage(
+  entry: ImageEntry,
+  batch: RunBatch,
+  probe: ImageIdentityProbe,
+  executor: QueueRunExecutor,
+  hooks: QueueRunHooks,
+): Promise<QueueRunImageResult> {
+  const identity = probe(entry.path);
+  const outcomes: EncoderRunOutcome[] = [];
+  const products: EncodedProduct[] = [];
+  let roundId = entry.roundId;
+  let createdNow = false;
+  let added = false;
+  let error: string | null = null;
+
+  try {
+    if (roundId === null) {
+      roundId = await executor.createRound(entry);
+      attachRound(entry, roundId);
+      createdNow = true;
+    }
+    await executor.setReference(entry, roundId);
+    const conflicts = new ConflictSession(
+      hooks.askConflict ?? (() => Promise.reject(new Error('缺少产物冲突询问入口'))),
+    );
+    for (const planned of batch.encoders) {
+      try {
+        const product = await executor.encode(entry, roundId, planned, conflicts);
+        products.push(product);
+        outcomes.push({
+          kind: 'success',
+          cardId: planned.encoder.id,
+          artifactPath: product.path,
+          // 计划时指纹：跑分中途改参数时，下一轮必须如实判成「参数改了」
+          fingerprint: planned.fingerprint,
+        });
+      } catch (err) {
+        outcomes.push({ kind: 'failure', cardId: planned.encoder.id, reason: errorText(err) });
+      }
+    }
+
+    if (products.length === 0) {
+      // 一条产物都没产出：本次新建的轮没有意义，回滚掉（不能留下空轮）
+      if (createdNow) {
+        try {
+          await executor.deleteRound(entry, roundId!);
+          entry.roundId = null;
+          roundId = null;
+        } catch (rollbackErr) {
+          console.warn('回滚空评测轮失败（工作区可能留下一个空轮）:', rollbackErr);
+        }
+      }
+      applyRunResults(entry, outcomes, identity);
+      return { entry, error, failures: entryFailures(entry) };
+    }
+
+    await executor.addCandidates(entry, roundId, products);
+    added = true;
+    const scored = await executor.scoreCandidates(entry, roundId, products.map((product) => product.path));
+    applyRunResults(entry, mergeScoreFailures(outcomes, scored), identity);
+  } catch (err) {
+    error = errorText(err);
+    // 产物还没进轮就把本次新建的轮回滚掉，避免残留空轮
+    if (createdNow && !added && roundId !== null) {
+      try {
+        await executor.deleteRound(entry, roundId);
+        entry.roundId = null;
+      } catch (rollbackErr) {
+        console.warn('回滚空评测轮失败（工作区可能留下一个空轮）:', rollbackErr);
+      }
+    }
+    if (outcomes.length > 0) {
+      // 没完成跑分的编码成功结果降级成失败：没跑出指标就不算已跑分
+      const downgraded: EncoderRunOutcome[] = outcomes.map((outcome) =>
+        outcome.kind === 'success'
+          ? { kind: 'failure', cardId: outcome.cardId, reason: `本次未完成跑分：${error}` }
+          : outcome,
+      );
+      applyRunResults(entry, downgraded, identity);
+    }
+  }
+
+  return { entry, error, failures: entryFailures(entry) };
+}
+
+/**
+ * 执行一次增量跑分计划。
+ *
+ * 先算计划：为空时**不调用执行器的任何方法**，只触发 onNothingToRun（面板据此弹
+ * 「所有图片已跑分且无变更，无需重跑」提示卡片）；非空时按图逐批执行，每张图跑完
+ * 回调 onImageDone，最后返回跑前计划供汇总卡片使用。
+ */
+export async function runScorePlan(
+  entries: readonly ImageEntry[],
+  probe: ImageIdentityProbe,
+  executor: QueueRunExecutor,
+  hooks: QueueRunHooks = {},
+): Promise<QueueRunReport> {
+  const plan = planScore([...entries], probe);
+  if (isPlanEmpty(plan)) {
+    hooks.onNothingToRun?.(plan);
+    return { plan, ran: false, images: [] };
+  }
+
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const batches = planRunBatches(plan);
+  const images: QueueRunImageResult[] = [];
+  for (let index = 0; index < batches.length; index++) {
+    const batch = batches[index];
+    const entry = byId.get(batch.imageId);
+    // 计划生成后条目被删：按「不再需要跑」处理，不制造幽灵调用
+    if (!entry) continue;
+    hooks.onImageStart?.({ path: batch.path, index, total: batches.length });
+    images.push(await runOneImage(entry, batch, probe, executor, hooks));
+    hooks.onImageDone?.(entry);
+  }
+  return { plan, ran: true, images };
+}
