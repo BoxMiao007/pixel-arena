@@ -1952,6 +1952,12 @@ body {
   border-radius: 8px;
   background: var(--panel);
   min-width: 0;
+  /* T4：整行可点 = 打开这一条的编辑弹窗（不是选中态） */
+  cursor: pointer;
+}
+
+.queue-row:hover {
+  border-color: var(--border-hover);
 }
 
 .queue-name {
@@ -2038,3 +2044,126 @@ body {
   gap: 0.5rem;
   justify-content: flex-end;
 }
+
+/* ---------- T4（票 #78）：逐图编辑弹窗（左图右参两栏） ----------
+   复用 settings-overlay / settings-panel 观感；本节的唯一职责是把「右栏整体滚动」
+   与「窄窗口单列」这两条布局约束钉死：面板本身 overflow:hidden，高度交给两栏栅格，
+   右栏自己滚动——参数再多也不把窗口撑爆。 */
+
+.queue-editor-panel {
+  width: min(1000px, calc(100vw - 2rem));
+  /* 面板不整体滚动：滚动条只出现在右栏内部（见 .queue-editor-main） */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* 固定高度上限，让内部 min-height:0 的栅格真正能收缩 */
+  max-height: calc(100vh - 4rem);
+}
+
+.queue-editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 1rem;
+}
+
+/* 左栏：图片区（文件名 / 状态 / 更换图片）。窄窗口下与右栏并排退化为上下。 */
+.queue-editor-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding-right: 0.9rem;
+}
+
+.queue-editor-side h3,
+.queue-editor-main-head h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* 头部右侧：状态徽章与关闭按钮同组（标题过长时徽章仍贴着关闭按钮，不挤压它） */
+.queue-editor-head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+.queue-editor-file {
+  margin: 0;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.queue-editor-path {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.queue-editor-side-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.queue-editor-side-hint {
+  margin: 0;
+  font-size: 0.75rem;
+}
+
+/* 右栏：参数区。整体滚动（含卡内的折叠区一起滚），min-height:0 是 flex 子项
+   能收缩出滚动条的前提。 */
+.queue-editor-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.queue-editor-main-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.queue-editor-cards {
+  margin: 0;
+}
+
+/* 窄窗口：左右两栏叠成单列（不重叠、不横向溢出），右栏保持自己的滚动区 */
+@media (max-width: 640px) {
+  .queue-editor-body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .queue-editor-side {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 0.6rem;
+    overflow-y: visible;
+  }
+
+  .queue-editor-main {
+    overflow-y: visible;
+  }
+}
+
