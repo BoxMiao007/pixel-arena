@@ -38,7 +38,9 @@ import {
   type ImageIdentityProbe,
   type ImageIdentityReading,
 } from './image-queue';
+import type { ImageSpec } from './advanced';
 import type { AdvancedProductDto } from './advanced-ui';
+import { openImageEntryEditor } from './image-entry-editor';
 import { fileName, truncateFileName } from './util';
 
 // ---------- 与后端的薄契约 ----------
@@ -101,6 +103,10 @@ export interface ImageQueueDeps {
   isBusy(): boolean;
   /** 当前工作区里某轮的名字与结果条数；轮已不在工作区时返回 null。 */
   describeRound(groupId: string, roundId: string): ImageQueueRoundInfo | null;
+  /** 逐图编辑弹窗（T4）：拉图片编码器目录（advanced_image_catalog）。 */
+  loadImageCatalog(): Promise<ImageSpec[]>;
+  /** 逐图编辑弹窗（T4）：系统单选对话框选一张新图片（换图）；取消返回 null。 */
+  pickReplacementImage(): Promise<string | null>;
   /** 新建了评测轮之后刷新主界面（轮次栏与标签页）。 */
   rerender(): void;
   setStatus(text: string, isError?: boolean, title?: string): void;
@@ -301,6 +307,8 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
   const session = imageQueueFor(groupId);
   /** 面板自己的跑分进行中标志（按钮置灰；宿主的 scoring 忙标志由 withBusy 维护）。 */
   let running = false;
+  /** 同一时间只开一个逐图编辑弹窗（弹窗关闭时 resolve，列表原地刷新）。 */
+  let editorOpen = false;
 
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay queue-overlay';
@@ -384,6 +392,41 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
     }
   };
 
+  /** 只读一张图的标识并写入缓存（换图后用：判定要按新文件的大小/修改时间算）。 */
+  const refreshOneIdentity = async (path: string): Promise<void> => {
+    try {
+      const dtos = await deps.probeIdentities([path]);
+      for (const [readPath, reading] of identityReadingsOf(dtos)) identityCache.set(readPath, reading);
+    } catch (err) {
+      console.warn('读取新原图信息失败（判定将按已变更保守处理）:', err);
+    }
+  };
+
+  /**
+   * 点列表某行 → 打开该条目的编辑弹窗（T4）。不是选中态：弹窗里有独立的图片区与
+   * 参数区，关闭后回列表、列表状态同步刷新（弹窗内的改动全程直接落在会话态）。
+   */
+  const openEditor = (entry: ImageEntry): void => {
+    if (editorOpen || running || deps.isBusy()) return;
+    editorOpen = true;
+    void openImageEntryEditor(groupId, entry, {
+      loadImageCatalog: () => deps.loadImageCatalog(),
+      pickImage: () => deps.pickReplacementImage(),
+      clearCandidates: (groupIdOfCall, roundId) => deps.clearCandidates(groupIdOfCall, roundId),
+      describeRound: (roundId) => deps.describeRound(groupId, roundId),
+      refreshIdentity: (path) => refreshOneIdentity(path),
+      identityProbe: () => probeFromCache(identityCache),
+      onChanged: () => renderList(),
+      setStatus: deps.setStatus,
+    }).finally(() => {
+      editorOpen = false;
+      renderList();
+    }).catch((err: unknown) => {
+      // 弹窗自身的异常不该把整个面板带崩（会话态与列表保持原样，可重开）
+      deps.setStatus(`打开编辑窗口失败：${String(err)}`, true);
+    });
+  };
+
   /** 渲染整张列表（跑完原地刷新也走这里，面板不关闭）。 */
   const renderList = (): void => {
     listBox.replaceChildren();
@@ -433,10 +476,17 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
       del.textContent = '×';
       del.title = '删除这个图片条目（有评测轮时连带删除）';
       del.disabled = running || deps.isBusy();
-      del.addEventListener('click', () => void deleteEntry(entry));
+      // 点 × 是删除，不该顺手把编辑弹窗一起打开（行点击的默认动作）
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void deleteEntry(entry);
+      });
       cells.push(del);
 
       row.append(...cells);
+      // 点行 = 打开这一条的编辑弹窗（不是选中态）；跑分中/忙时点不开
+      row.title = '点开编辑这张图的参数与图片';
+      row.addEventListener('click', () => openEditor(entry));
       listBox.append(row);
     });
     syncChrome();

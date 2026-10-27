@@ -20,6 +20,7 @@ import { openSettingsPanel } from './settings-ui';
 // T29-3 接线点：高级创建（多编码器 + 独立参数 + 命令行预览；面板与纯逻辑在
 // src/advanced-ui.ts / src/advanced.ts）
 import { openAdvancedPanel, type AdvancedEncodeOutcome } from './advanced-ui';
+import type { ImageSpec } from './advanced';
 import { openImageQueuePanel, type ScoredCandidate } from './image-queue-panel';
 import { dropImageQueue, roundName } from './image-queue';
 import { askFileConflict } from './conflict';
@@ -1911,6 +1912,20 @@ function openImageQueueCreation(group: Group): void {
       const group = ws?.groups.find((g) => g.id === groupId);
       const round = group?.rounds.find((r) => r.id === roundId);
       return round ? { name: round.name, candidateCount: round.candidates.length } : null;
+    },
+    // T4（票 #78）：逐图编辑弹窗的宿主依赖。编码器目录与旧面板同一个 IPC（不另造
+    // 一份规格表）；更换图片是**单选**系统对话框；清行走 T3 已交付的薄命令。
+    loadImageCatalog: () => invoke<ImageSpec[]>('advanced_image_catalog'),
+    pickReplacementImage: async () => {
+      const selected = await open({
+        title: '更换图片（选一个新文件替换这张原图）',
+        multiple: false,
+        filters: [IMAGE_FILTER],
+        defaultPath: defaultOpenPath(),
+      });
+      if (typeof selected !== 'string') return null;
+      notePickedPath(selected);
+      return selected;
     },
     rerender: () => render(),
     setStatus,
