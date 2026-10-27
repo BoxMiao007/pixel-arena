@@ -132,7 +132,9 @@ describe('换图编排（换图 = 清旧跑分行 → 换原图 → 读新标识
     expect(plan.roundId).toBeNull();
   });
 
-  it('选回同一张图：不清行、不换路径（误点一下不该白跑一轮）', async () => {
+  // 文档 0031 / README 把「更换图片」当作抓不到修改时间时的自救路径（外部工具原地
+  // 覆写同名同大小文件），所以选回同一路径必须照样走换图：清行 + 置 replaced 强制置脏。
+  it('选回同一张图：照样清行 + 置 replaced（同一路径也要能强制重跑）', async () => {
     const entry = scoredEntry('/photos/a.png');
     attachRound(entry, 'r-3');
     const observed: string[] = [];
@@ -147,11 +149,38 @@ describe('换图编排（换图 = 清旧跑分行 → 换原图 → 读新标识
       },
     });
 
-    expect(plan.steps).toEqual([]);
-    expect(plan.message).toContain('未做更改');
-    expect(observed).toEqual([]);
-    expect(entry.replaced).toBe(false);
-    expect(judgeImageEntry(entry, probeOf('/photos/a.png')).state).toBe('scored');
+    expect(plan.steps).toEqual([
+      { kind: 'clear-candidates', roundId: 'r-3' },
+      { kind: 'replace-path', path: '/photos/a.png' },
+    ]);
+    expect(observed).toEqual(['clear:r-3', 'identity:/photos/a.png']);
+    // 旧结果整体作废：状态必须变「将重跑（图片换了）」，否则原始 no-op 会让人白等
+    expect(entry.snapshot).toBeNull();
+    expect(entry.replaced).toBe(true);
+    const verdict = judgeImageEntry(entry, probeOf('/photos/a.png'));
+    expect(verdict.state).toBe('stale');
+    expect(verdict.reasons).toContain('image');
+    expect(plan.message, '同一路径也要说清楚做了什么').toContain('同一路径');
+    expect(plan.message, '不再有「未做更改」的 no-op 文案').not.toContain('未做更改');
+  });
+
+  it('同一路径且还没有评测轮：只置 replaced（工作区未改动，状态同样变将重跑）', async () => {
+    const entry = scoredEntry('/photos/a.png');
+    const observed: string[] = [];
+
+    await runReplaceImage(planReplaceImage(entry, '/photos/a.png', null), entry, {
+      clearCandidates: async (roundId) => {
+        observed.push(`clear:${roundId}`);
+      },
+      refreshIdentity: async (path) => {
+        observed.push(`identity:${path}`);
+      },
+    });
+
+    expect(observed).toEqual(['identity:/photos/a.png']);
+    expect(entry.replaced).toBe(true);
+    expect(entry.snapshot).toBeNull();
+    expect(judgeImageEntry(entry, probeOf('/photos/a.png')).state).toBe('stale');
   });
 
   it('按计划执行：可观察的顺序是「清行 → 换图 → 读新标识」', async () => {

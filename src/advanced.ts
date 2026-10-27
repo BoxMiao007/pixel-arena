@@ -103,7 +103,9 @@ export interface AdvancedEntry {
 
 /** 一个跑分组的高级创建会话态（D19：仅会话态，重启归零）。票 T6 起只由视频组创建。 */
 export interface AdvancedSession {
-  kind: 'image' | 'video';
+  /** 会话类型。票 T6 把旧面板收缩为视频专用后只剩 'video'（图片侧走条目队列），
+   * 类型收成字面量是为了让「图片组误进旧面板」在编译期就不可能。 */
+  kind: 'video';
   /** 视频高级创建的原视频（命令行预览的输入路径；不参与自动编码）。 */
   referencePath: string | null;
   entries: AdvancedEntry[];
@@ -120,11 +122,16 @@ export function newEntryId(): string {
   return `adv-${nextId++}`;
 }
 
-/** 取跑分组的高级创建会话；首次用到时建空会话（用户再加编码器条目）。 */
-export function sessionFor(groupId: string, kind: 'image' | 'video'): AdvancedSession {
+/**
+ * 取跑分组的高级创建会话；首次用到时建空会话（用户再加编码器条目）。
+ *
+ * 票 T6 起只服务视频组：图片组走条目队列（src/image-queue-panel.ts），不再进旧面板，
+ * 所以这里没有 kind 参数——会话类型恒为 'video'（原先的 'image' 分支已无读者）。
+ */
+export function sessionFor(groupId: string): AdvancedSession {
   let session = sessions.get(groupId);
   if (!session) {
-    session = { kind, referencePath: null, entries: [] };
+    session = { kind: 'video', referencePath: null, entries: [] };
     sessions.set(groupId, session);
   }
   return session;

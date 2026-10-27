@@ -18,11 +18,13 @@ import {
   isPlanEmpty,
   planScore,
   planSummary,
+  skipReasonLine,
   type EncoderRunOutcome,
   type EntryFailureView,
   type ImageEntry,
   type ImageIdentityProbe,
   type PlannedEncoder,
+  type RoundSummary,
   type ScorePlan,
 } from './image-queue';
 
@@ -34,27 +36,34 @@ export interface ScoredCandidate {
   error: string | null;
 }
 
+/** 跑分回包里找不到该产物行时的失败原因（单一来源，测试从这里取）。 */
+export const MISSING_SCORE_ROW_REASON = '跑分结果里没有该产物的行，未确认指标';
+
 /**
- * 把「编码成功但跑分失败」的卡折成失败结果。
+ * 把「编码成功但没跑出指标」的卡折成失败结果（**保守口径：缺行也算失败**）。
  *
  * 为什么需要它：编码成功只说明产物写出来了，跑分（解码 + 指标计算）仍可能失败，
- * 失败原因由核心库写进产物行的 error 字段。T2 的 applyRunResults 只在成功时写快照，
- * 所以这里必须把这类行降级成失败——否则一张解不开的图会被记成「已跑分」。
- * 产物行没出现（例如没进轮）时保持原结论，交给快照比对兜底。
+ * 失败原因由核心库写进产物行的 error 字段；而回包里**根本没有该产物的行**时，
+ * 同样意味着没有确认过指标（例如产物没进轮、回包被截断、轮被删）。T2 的
+ * applyRunResults 只在成功时写快照，所以这两种情况都必须降级成失败——否则一张
+ * 没真正跑出指标的图会被记成「已跑分」并被永久跳过（fail-open 是最贵的错误方向：
+ * 多跑一次只是慢，误记已跑分会让用户永远看不到真实指标）。
  */
 export function mergeScoreFailures(
   outcomes: EncoderRunOutcome[],
   scored: readonly ScoredCandidate[],
 ): EncoderRunOutcome[] {
-  const failureByPath = new Map<string, string>();
+  const errorByPath = new Map<string, string | null>();
   for (const row of scored) {
-    if (row.error !== null && row.error !== undefined) failureByPath.set(row.path, row.error);
+    errorByPath.set(row.path, row.error ?? null);
   }
-  if (failureByPath.size === 0) return outcomes;
   return outcomes.map((outcome) => {
     if (outcome.kind !== 'success') return outcome;
-    const reason = failureByPath.get(outcome.artifactPath);
-    return reason === undefined
+    if (!errorByPath.has(outcome.artifactPath)) {
+      return { kind: 'failure', cardId: outcome.cardId, reason: MISSING_SCORE_ROW_REASON };
+    }
+    const reason = errorByPath.get(outcome.artifactPath);
+    return reason === null || reason === undefined
       ? outcome
       : { kind: 'failure', cardId: outcome.cardId, reason };
   });
@@ -70,7 +79,7 @@ export interface RunBatch {
   encoders: PlannedEncoder[];
 }
 
-/** 把 ScorePlan 按图分组（与 plannedImages 同口径，但保留计划时指纹与原因）。 */
+/** 把 ScorePlan 按图分组：只含至少有一条卡要跑的条目，并保留计划时指纹与原因。 */
 export function planRunBatches(plan: ScorePlan): RunBatch[] {
   const batches = new Map<string, RunBatch>();
   for (const planned of plan.encoders) {
@@ -88,6 +97,32 @@ export function planRunBatches(plan: ScorePlan): RunBatch[] {
 
 /** 无待跑条目时的提示文案（单一来源，面板与测试都从这里取）。 */
 export const NOTHING_TO_RUN_MESSAGE = '所有图片已跑分且无变更，无需重跑';
+
+/** 空计划、原因是「没有编码器配置」时的提示文案（单一来源）。 */
+export const NO_ENCODERS_MESSAGE = '没有可跑的编码器配置，请先在编辑窗口里添加编码器卡';
+
+/** 应用内提示卡片的正文来源：标题 + 正文行。 */
+export interface NothingToRunNotice {
+  title: string;
+  lines: string[];
+}
+
+/**
+ * 计划为空时该弹什么（标题 + 正文行）。
+ *
+ * 计划为空不止「已跑分且无变更」一种原因：条目没有编码器配置时同样没有待跑项，这时
+ * 再说「所有图片已跑分且无变更」是失真提示（用户会以为它已经跑好了，实际它压根没配置
+ * 可跑的东西）。按 plan.skippedImages 的原因分流：「没有编码器配置」优先（它要求用户
+ * 动手），并逐张点名跳过原因（复用 skipReasonLine）；全部是 clean 时才用票面文案。
+ */
+export function nothingToRunNotice(plan: ScorePlan): NothingToRunNotice {
+  const hasNoEncoders = plan.skippedImages.some((item) => item.reason.code === 'no-encoders');
+  if (!hasNoEncoders) return { title: '无需重跑', lines: [NOTHING_TO_RUN_MESSAGE] };
+  return {
+    title: '没有可跑的编码器配置',
+    lines: [NO_ENCODERS_MESSAGE, ...plan.skippedImages.map(skipReasonLine)],
+  };
+}
 
 /**
  * 「跑分 / 重跑」按钮文案，N = 本次待跑张数（plan.runImageCount）。
@@ -127,6 +162,11 @@ export interface EncodedProduct {
  * 所有方法只处理单张图条目；编排层负责顺序、失败兜底与结果回写。
  */
 export interface QueueRunExecutor {
+  /**
+   * 读该条目记着的评测轮是否还在工作区（只读）。轮被主界面删掉时返回 null——
+   * 编排层据此丢弃失效 id、走惰性建轮，否则每次跑分都会报「评测轮不存在」。
+   */
+  describeRound(entry: ImageEntry, roundId: string): RoundSummary | null;
   /** 惰性建轮：只在 entry.roundId === null 时调用，返回新轮 id。 */
   createRound(entry: ImageEntry): Promise<string>;
   /** 设置该轮原图（实现方可在「已经是同一张」时跳过 IPC）。 */
@@ -156,7 +196,8 @@ export interface QueueRunExecutor {
 
 /** 编排层的界面回调（保持本模块零 DOM：面板负责弹卡片、刷新列表）。 */
 export interface QueueRunHooks {
-  /** 计划为空：只该弹「无需重跑」提示卡片，未调用执行器任何方法。 */
+  /** 计划为空：只该弹提示卡片（内容按跳过原因分流，见 nothingToRunNotice），
+   * 未调用执行器任何方法。 */
   onNothingToRun?(plan: ScorePlan): void;
   /** 开始跑一张图（面板用来显示进度文案）。 */
   onImageStart?(info: { path: string; index: number; total: number }): void;
@@ -196,7 +237,9 @@ function errorText(err: unknown): string {
  * - 一条产物都没产出：本次新建的轮回滚（工作区不留空轮），失败写回条目；
  * - 已有轮全部失败：保留轮（里面可能还有上一轮结果，不能删）；
  * - 编码成功但后续步骤（纳产物 / 跑分调用）抛错：成功结果降级成失败（没跑出指标
- *   就不算已跑分，下次自动重试），避免「产物存在但没指标」被误记成已跑分。
+ *   就不算已跑分，下次自动重试），避免「产物存在但没指标」被误记成已跑分；
+ * - 系统级错误（建轮 / 设原图 / 纳产物 / 跑分调用本身抛错）：**计划内每张卡**都记一条
+ *   失败（编码本身失败的卡保留它更具体的原因），徽章显示「上次失败」、下次自动重试。
  */
 async function runOneImage(
   entry: ImageEntry,
@@ -212,6 +255,13 @@ async function runOneImage(
   let createdNow = false;
   let added = false;
   let error: string | null = null;
+
+  // 条目记着的轮可能已被主界面删掉：用旧 id 去设原图/跑分只会每次报「评测轮不存在」，
+  // 条目再也跑不动。这里先只读确认一次，失效就丢弃 id 走惰性建轮。
+  if (roundId !== null && executor.describeRound(entry, roundId) === null) {
+    entry.roundId = null;
+    roundId = null;
+  }
 
   try {
     if (roundId === null) {
@@ -269,15 +319,17 @@ async function runOneImage(
         console.warn('回滚空评测轮失败（工作区可能留下一个空轮）:', rollbackErr);
       }
     }
-    if (outcomes.length > 0) {
-      // 没完成跑分的编码成功结果降级成失败：没跑出指标就不算已跑分
-      const downgraded: EncoderRunOutcome[] = outcomes.map((outcome) =>
-        outcome.kind === 'success'
-          ? { kind: 'failure', cardId: outcome.cardId, reason: `本次未完成跑分：${error}` }
-          : outcome,
-      );
-      applyRunResults(entry, downgraded, identity);
-    }
+    // 系统级错误（建轮 / 设原图 / 纳产物 / 跑分调用本身抛错）也要落成**计划内每张卡**
+    // 的失败：面板提示「详情见列表徽章」，而徽章只读 entry.failures——一条都不写会让
+    // 条目停在「未跑分」，用户既看不到原因，也不确定下次会不会重试。编码本身失败的卡
+    // 保留它更具体的原因，其余（编码成功但没跑成、还没轮到编码）记系统错误文案。
+    const systemReason = `本次未完成跑分：${error}`;
+    const failures: EncoderRunOutcome[] = batch.encoders.map((planned) => {
+      const outcome = outcomes.find((item) => item.cardId === planned.encoder.id);
+      if (outcome !== undefined && outcome.kind === 'failure') return outcome;
+      return { kind: 'failure', cardId: planned.encoder.id, reason: systemReason };
+    });
+    applyRunResults(entry, failures, identity);
   }
 
   return { entry, error, failures: entryFailures(entry) };
@@ -287,8 +339,8 @@ async function runOneImage(
  * 执行一次增量跑分计划。
  *
  * 先算计划：为空时**不调用执行器的任何方法**，只触发 onNothingToRun（面板据此弹
- * 「所有图片已跑分且无变更，无需重跑」提示卡片）；非空时按图逐批执行，每张图跑完
- * 回调 onImageDone，最后返回跑前计划供汇总卡片使用。
+ * 提示卡片，内容由 nothingToRunNotice 按跳过原因分流：全部 clean ≠ 没有编码器配置）；
+ * 非空时按图逐批执行，每张图跑完回调 onImageDone，最后返回跑前计划供汇总卡片使用。
  */
 export async function runScorePlan(
   entries: readonly ImageEntry[],

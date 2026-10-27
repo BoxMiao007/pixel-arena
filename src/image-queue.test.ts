@@ -28,7 +28,6 @@ import {
   newImageEntry,
   paramFingerprint,
   planScore,
-  plannedImages,
   planSummary,
   probeFromCache,
   removeImageEntry,
@@ -595,21 +594,6 @@ describe('跑分计划', () => {
     expect(plan.runEncoderCount).toBe(0);
     expect(plan.runImageCount).toBe(0);
     expect(plan.skippedImageCount).toBe(2);
-  });
-
-  it('plannedImages 按条目分组：只含要跑的图，每张带本次要跑的编码器卡', () => {
-    const target = entry({
-      id: 'imgX',
-      path: '/photos/x.png',
-      encoders: [card({ id: 'c1' }), card({ id: 'c2', encoderId: 'webp', quality: 40 })],
-    });
-    const clean = scoredEntry({ id: 'imgA' });
-    const plan = planScore([target, clean], probeOf({}));
-    const images = plannedImages(plan);
-    expect(images).toHaveLength(1);
-    expect(images[0].imageId).toBe('imgX');
-    expect(images[0].encoders.map((item) => item.id)).toEqual(['c1', 'c2']);
-    expect(plannedImages(planScore([clean], probeOf({})))).toEqual([]);
   });
 
   it('完全没有条目时计划为空', () => {

@@ -37,9 +37,10 @@ import {
   type EncoderCard,
   type ImageEntry,
   type ImageIdentityReading,
+  type RoundSummary,
 } from './image-queue';
 import {
-  NOTHING_TO_RUN_MESSAGE,
+  nothingToRunNotice,
   runScorePlan,
   scoreButtonLabel,
   summaryLines,
@@ -50,6 +51,7 @@ import type { ImageSpec } from './advanced';
 import type { AdvancedProductDto } from './advanced-ui';
 import { openImageEntryEditor } from './image-entry-editor';
 import { fileName, truncateFileName } from './util';
+import { openModalCard } from './modal-card';
 
 export type { ScoredCandidate } from './image-queue-run';
 
@@ -65,12 +67,6 @@ export interface ImageIdentityDto {
   sizeBytes: number | null;
   modifiedMs: number | null;
   error: string | null;
-}
-
-/** 删除确认需要知道的评测轮信息（宿主从工作区读，面板不自己持有工作区）。 */
-export interface ImageQueueRoundInfo {
-  name: string;
-  candidateCount: number;
 }
 
 /**
@@ -109,7 +105,7 @@ export interface ImageQueueDeps {
   /** 主界面忙标志（忙时面板不再发起新的跑分）。 */
   isBusy(): boolean;
   /** 当前工作区里某轮的名字与结果条数；轮已不在工作区时返回 null。 */
-  describeRound(groupId: string, roundId: string): ImageQueueRoundInfo | null;
+  describeRound(groupId: string, roundId: string): RoundSummary | null;
   /** 逐图编辑弹窗（T4）：拉图片编码器目录（advanced_image_catalog）。 */
   loadImageCatalog(): Promise<ImageSpec[]>;
   /** 逐图编辑弹窗（T4）：系统单选对话框选一张新图片（换图）；取消返回 null。 */
@@ -165,7 +161,7 @@ export interface DeletePlan {
  * （用户在主界面删过），就不拿旧 id 去删——否则会得到一个「找不到评测轮」的错误，
  * 而条目其实已经只存在于会话里了。
  */
-export function planDelete(entry: ImageEntry, round: ImageQueueRoundInfo | null): DeletePlan {
+export function planDelete(entry: ImageEntry, round: RoundSummary | null): DeletePlan {
   const name = fileName(entry.path);
   const roundId = entry.roundId !== null && round !== null ? entry.roundId : null;
   const message =
@@ -184,7 +180,11 @@ export function planDelete(entry: ImageEntry, round: ImageQueueRoundInfo | null)
 /** 标识缓存（模块级：标识是文件元数据，跨面板开关与跑分组共用一份，读新即可）。 */
 const identityCache = new Map<string, ImageIdentityReading>();
 
-/** 模态卡片：确认返回 true，× / 点遮罩 / Esc 三路关闭返回 false（范式照抄 main.ts 的 openStatusCard）。 */
+/**
+ * 删除确认卡片：返回 true = 用户点了「删除」，false = × / 点遮罩 / Esc / 「取消」。
+ * 脚手架（遮罩 / 标题 / × / 正文 <pre> / 底部按钮 / 三路关闭 + 监听清理）走共享实现
+ * src/modal-card.ts，与 main.ts 的状态全文卡片同一份。
+ */
 interface ConfirmCardOptions {
   title: string;
   message: string;
@@ -192,60 +192,30 @@ interface ConfirmCardOptions {
 
 function confirmCard(options: ConfirmCardOptions): Promise<boolean> {
   return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'settings-overlay';
-    const panel = document.createElement('div');
-    panel.className = 'status-card queue-confirm-card';
-    const head = document.createElement('div');
-    head.className = 'status-card-head';
-    const heading = document.createElement('h2');
-    heading.textContent = options.title;
-    const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.className = 'settings-mini-btn';
-    closeBtn.textContent = '×';
-    closeBtn.title = '关闭';
-    head.append(heading, closeBtn);
-
-    const body = document.createElement('pre');
-    body.className = 'status-card-body';
-    body.textContent = options.message;
-
-    const actions = document.createElement('div');
-    actions.className = 'status-card-actions';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'settings-mini-btn';
-    cancelBtn.textContent = '取消';
-    const confirmBtn = document.createElement('button');
-    confirmBtn.type = 'button';
-    confirmBtn.className = 'settings-primary-btn';
-    confirmBtn.textContent = '删除';
-    actions.append(cancelBtn, confirmBtn);
-
-    let settled = false;
-    /** 收口：先摘 keydown 监听再移除遮罩（三路关闭共用，防监听泄漏）。 */
-    const finish = (answer: boolean): void => {
-      if (settled) return;
-      settled = true;
-      document.removeEventListener('keydown', onKey);
-      overlay.remove();
-      resolve(answer);
-    };
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') finish(false);
-    };
-    document.addEventListener('keydown', onKey);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) finish(false);
+    // 只有点「删除」才置 true；其余关闭路径（含 × / 遮罩 / Esc）保持 false
+    let confirmed = false;
+    openModalCard({
+      title: options.title,
+      lines: [options.message],
+      cardClassName: 'queue-confirm-card',
+      actions: [
+        {
+          label: '取消',
+          onClick: () => {
+            confirmed = false;
+          },
+        },
+        {
+          label: '删除',
+          className: 'settings-primary-btn',
+          onClick: () => {
+            confirmed = true;
+          },
+        },
+      ],
+      // 卡片关闭（三路之一）之后再交答案：按钮回调一定先于关闭执行
+      onClose: () => resolve(confirmed),
     });
-    closeBtn.addEventListener('click', () => finish(false));
-    cancelBtn.addEventListener('click', () => finish(false));
-    confirmBtn.addEventListener('click', () => finish(true));
-
-    panel.append(head, body, actions);
-    overlay.append(panel);
-    document.body.append(overlay);
   });
 }
 
@@ -256,61 +226,20 @@ export interface QueueNoticeOptions {
 }
 
 /**
- * 应用内提示 / 汇总卡片（票 #79）：结构照抄 main.ts 的 openStatusCard 范式——
- * `settings-overlay` 遮罩 + `.status-card` + × / 点遮罩 / Esc 三路关闭，
- * 关闭时先摘 document 上的 keydown 监听再移除遮罩（防监听泄漏）。
+ * 应用内提示 / 汇总卡片（票 #79）：结构走共享实现 src/modal-card.ts
+ * （`settings-overlay` 遮罩 + `.status-card` + × / 点遮罩 / Esc 三路关闭，
+ * 关闭时先摘 document 上的 keydown 监听再移除遮罩）。
  *
- * 汇总卡片正文 = 本次跑分 N 张，跳过 M 张 + 逐张跳过原因；无待跑提示 = 单行提示。
+ * 汇总卡片正文 = 本次跑分 N 张，跳过 M 张 + 逐张跳过原因；无待跑提示 = 提示文案
+ * （可能带逐张点名）+ 跳过原因行。
  */
 export function showQueueNotice(lines: string[], options: QueueNoticeOptions): void {
-  const overlay = document.createElement('div');
-  overlay.className = 'settings-overlay';
-  const panel = document.createElement('div');
-  panel.className = 'status-card queue-notice-card';
-  const head = document.createElement('div');
-  head.className = 'status-card-head';
-  const heading = document.createElement('h2');
-  heading.textContent = options.title;
-  const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'settings-mini-btn';
-  closeBtn.textContent = '×';
-  closeBtn.title = '关闭';
-  head.append(heading, closeBtn);
-
-  const body = document.createElement('pre');
-  body.className = 'status-card-body';
-  body.textContent = lines.join('\n');
-
-  const actions = document.createElement('div');
-  actions.className = 'status-card-actions';
-  const okBtn = document.createElement('button');
-  okBtn.type = 'button';
-  okBtn.className = 'settings-primary-btn';
-  okBtn.textContent = '知道了';
-  actions.append(okBtn);
-
-  let settled = false;
-  /** 收口：先摘 keydown 监听再移除遮罩（三路关闭共用，防监听泄漏）。 */
-  const close = (): void => {
-    if (settled) return;
-    settled = true;
-    document.removeEventListener('keydown', onKey);
-    overlay.remove();
-  };
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') close();
-  };
-  document.addEventListener('keydown', onKey);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close();
+  openModalCard({
+    title: options.title,
+    lines,
+    cardClassName: 'queue-notice-card',
+    actions: [{ label: '知道了', className: 'settings-primary-btn' }],
   });
-  closeBtn.addEventListener('click', close);
-  okBtn.addEventListener('click', close);
-
-  panel.append(head, body, actions);
-  overlay.append(panel);
-  document.body.append(overlay);
 }
 
 /**
@@ -534,10 +463,13 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
   addBtn.addEventListener('click', () => void addImages());
 
   /**
-   * 把面板依赖包成编排层的执行器：惰性建轮 / 设原图 / 单卡编码 / 纳产物 / 子集跑分。
+   * 把面板依赖包成编排层的执行器：查轮存活 / 惰性建轮 / 设原图 / 单卡编码 / 纳产物 /
+   * 子集跑分。
    * 所有 IPC 细节留在这里，src/image-queue-run.ts 只负责顺序与失败兜底（node 可测）。
    */
   const buildExecutor = (): QueueRunExecutor => ({
+    // 跑分前确认条目记着的轮还在工作区（被主界面删掉时编排层丢弃 id、惰性重建轮）
+    describeRound: (_entry, roundId) => deps.describeRound(groupId, roundId),
     createRound: async (entry) => {
       const created = await deps.createRound(groupId, entry.path);
       return created.roundId;
@@ -588,9 +520,11 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
         }),
       );
       if (!report.ran) {
-        // 无待跑：只弹提示卡片，runScorePlan 未执行任何编码/跑分调用
-        deps.setStatus(NOTHING_TO_RUN_MESSAGE);
-        showQueueNotice([NOTHING_TO_RUN_MESSAGE], { title: '无需重跑' });
+        // 无待跑：只弹提示卡片，runScorePlan 未执行任何编码/跑分调用。
+        // 原因按 skippedImages 分流——「没有编码器配置」不等于「已跑分且无变更」。
+        const notice = nothingToRunNotice(report.plan);
+        deps.setStatus(notice.lines.join('；'));
+        showQueueNotice(notice.lines, { title: notice.title });
         return;
       }
       const failedCount = report.images.reduce((sum, image) => sum + image.failures.length, 0);

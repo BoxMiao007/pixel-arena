@@ -26,6 +26,7 @@ import {
   type ImageEntry,
   type ImageIdentityProbe,
   type ImageVerdict,
+  type RoundSummary,
 } from './image-queue';
 import { copyText, fileName, truncateFileName } from './util';
 
@@ -71,12 +72,6 @@ export interface ReplaceImagePlan {
   message: string;
 }
 
-/** 评测轮的最小信息（宿主从工作区读；结构上与 panel 的 ImageQueueRoundInfo 一致）。 */
-export interface EditorRoundInfo {
-  name: string;
-  candidateCount: number;
-}
-
 /**
  * 算换图计划。
  *
@@ -84,26 +79,22 @@ export interface EditorRoundInfo {
  * vs 新原图」的骗人对比。清行只摘评测记录，磁盘文件不动（后端 round_clear_candidates
  * 的语义），所以这里不需要也不应该删除任何文件。
  *
+ * **选回同一路径也走正常换图**（这里曾经是「相同就不做更改」的 no-op，是个坑）：
+ * 文档与 README 都说「用外部工具原地覆写同名同大小的文件只有修改时间能抓到，所以换
+ * 图请用界面的『更换图片』」——同一路径恰恰是这条自救路径唯一能用的形态，no-op 会把它
+ * 彻底堵死。显式换图一律置 replaced，旧结果整体作废、下次跑分重新生成。
+ *
  * 轮已不在工作区（用户在主界面删过）时不拿旧 id 去清：那会得到一个「找不到评测轮」
  * 的错误，而条目其实已经只活在会话里。
  */
 export function planReplaceImage(
   entry: ImageEntry,
   newPath: string,
-  round: EditorRoundInfo | null,
+  round: RoundSummary | null,
 ): ReplaceImagePlan {
   const from = fileName(entry.path);
   const to = fileName(newPath);
-  // 选回同一张图不是「换图」：不清跑分行、不作废旧结果（否则误点一下就白跑一轮）
-  if (newPath === entry.path) {
-    return {
-      fromPath: entry.path,
-      toPath: newPath,
-      roundId: null,
-      steps: [],
-      message: '所选图片与当前图片相同，未做更改。',
-    };
-  }
+  const samePath = newPath === entry.path;
   const roundId = entry.roundId !== null && round !== null ? entry.roundId : null;
   const steps: ReplaceImageStep[] = [];
   if (roundId !== null) steps.push({ kind: 'clear-candidates', roundId });
@@ -112,10 +103,12 @@ export function planReplaceImage(
     round !== null && round.candidateCount > 0
       ? `评测轮『${round.name}』里这张图的 ${round.candidateCount} 条跑分结果已清掉，下次跑分重新生成；`
       : `评测轮『${round?.name ?? ''}』里这张图还没有跑分结果；`;
+  // 同一路径的文案说「重新读取」而不是「换成同一张」——后者读起来像没做事
+  const lead = samePath ? `已按同一路径重新读取「${to}」：` : `已把「${from}」换成「${to}」：`;
   const message =
     roundId !== null && round !== null
-      ? `已把「${from}」换成「${to}」：编码器配置保留；${clearText}磁盘上的产物文件保留。`
-      : `已把「${from}」换成「${to}」：编码器配置保留；` +
+      ? `${lead}编码器配置保留；${clearText}磁盘上的产物文件保留。`
+      : `${lead}编码器配置保留；` +
         `这条还没有评测轮，工作区未改动；磁盘上的产物文件保留。`;
   return { fromPath: entry.path, toPath: newPath, roundId, steps, message };
 }
@@ -224,7 +217,7 @@ export interface ImageEntryEditorDeps {
   /** 清掉某条目对应评测轮里的跑分行（round_clear_candidates）。 */
   clearCandidates(groupId: string, roundId: string): Promise<void>;
   /** 读某轮的名字与结果条数；轮已不在工作区返回 null。 */
-  describeRound(roundId: string): EditorRoundInfo | null;
+  describeRound(roundId: string): RoundSummary | null;
   /** 读一次原图标识并写入判定缓存（换图后调用）。 */
   refreshIdentity(path: string): Promise<void>;
   /** 判定用的同步探针（列表与弹窗共用同一份标识缓存）。 */
@@ -307,7 +300,8 @@ export async function openImageEntryEditor(
     sideHint.className = 'settings-hint queue-editor-side-hint';
     sideHint.textContent =
       '更换图片会保留这一条的全部编码器配置与参数，只把原图换掉；' +
-      '旧跑分记录会从评测轮里清掉，磁盘上的产物文件保留。';
+      '旧跑分记录会从评测轮里清掉，磁盘上的产物文件保留。' +
+      '用外部工具原地覆写过原图时，再选同一个文件也会强制重跑（旧结果作废）。';
     sideActions.append(replaceBtn);
     side.append(sideTitle, sideName, sideBadge, pathEl, sideActions, sideHint);
 
