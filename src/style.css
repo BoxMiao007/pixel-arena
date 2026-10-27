@@ -1907,3 +1907,134 @@ body {
   margin: 0.4rem 0 0;
   white-space: normal;
 }
+
+/* ---------- T3（票 #77）：图片条目列表面板 ----------
+   面板本体复用 settings-overlay / settings-panel / settings-actions 的既有观感，
+   本节只补列表面板特有的行、徽章与底部动作区；不新造设计体系。 */
+
+.queue-panel {
+  width: min(720px, calc(100vw - 2rem));
+}
+
+.queue-actions-top {
+  justify-content: flex-start;
+  align-items: center;
+  border-top: none;
+  padding: 0.25rem 0 0.5rem;
+}
+
+/* 添加按钮旁的一句口径说明（新条目自带 JPEG 有损配置，添加完可直接跑） */
+.queue-add-hint {
+  font-size: 0.78rem;
+  min-width: 0;
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.25rem 0 0.5rem;
+  max-height: min(52vh, 30rem);
+  overflow-y: auto;
+}
+
+.queue-empty {
+  margin: 0.5rem 0;
+}
+
+/* 一行 = 文件名（中间截断）+ 徽章（+ 重复提示）+ 删除按钮 */
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  min-width: 0;
+}
+
+.queue-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+}
+
+/* 徽章：四态各自一色（与结果表/状态栏的绿红语义一致；「将重跑」用强调色） */
+.queue-badge {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.queue-badge-unscored {
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.queue-badge-scored {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.queue-badge-stale {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.queue-badge-failed {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+/* 重复图片提示：只提示不禁止（同一张图配两套参数是正当用法） */
+.queue-badge-dup {
+  color: var(--text);
+  border-style: dashed;
+  border-color: var(--border-hover);
+}
+
+.queue-delete {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.queue-delete:hover {
+  background: var(--danger-hover-bg);
+  color: var(--red);
+}
+
+.queue-delete:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.queue-actions {
+  align-items: center;
+}
+
+/* 确认卡片：正文保留换行（<pre> 已由 .status-card-body 提供），底部按钮右对齐 */
+.queue-confirm-card .status-card-body {
+  white-space: pre-wrap;
+}
+
+.status-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}

@@ -20,6 +20,8 @@ import { openSettingsPanel } from './settings-ui';
 // T29-3 接线点：高级创建（多编码器 + 独立参数 + 命令行预览；面板与纯逻辑在
 // src/advanced-ui.ts / src/advanced.ts）
 import { openAdvancedPanel, type AdvancedEncodeOutcome } from './advanced-ui';
+import { openImageQueuePanel, type ScoredCandidate } from './image-queue-panel';
+import { dropImageQueue, roundName } from './image-queue';
 import { askFileConflict } from './conflict';
 // T11/T22 接线点：一站式跑分升级为两种模式（质量优先拉杆 / 大小优先逼近），
 // 编码格式用胶囊多选；取点全部走核心库（onestop_quality_ladder / onestop_size_search），
@@ -551,14 +553,22 @@ async function startScoring(): Promise<void> {
  * （默认一半逻辑核）同时计算，进度经 Channel 以 N/M 推回状态栏，跑分期间
  * 界面不阻塞。行内「跑分中…」按本轮全部待跑行显示，单张失败照旧行内标「失败」。
  * 忙标志（scoring）由调用方管理：手动「开始跑分」与一站式跑分（runOnestop）共用本函数。
+ *
+ * T3：groupId / roundId 可显式传入（条目列表面板跑的是它自己建的轮，不是当前
+ * 激活轮）；省略时取当前激活轮，既有调用点行为不变。
  */
-async function scoreAllCandidates(): Promise<void> {
+async function scoreAllCandidates(groupId?: string, roundId?: string): Promise<void> {
   const session = activeRound();
-  if (!session || !session.round.referencePath) return;
-  if (session.round.candidates.length === 0) return;
+  const targetGroupId = groupId ?? session?.group.id;
+  const targetRoundId = roundId ?? session?.round.id;
+  if (!targetGroupId || !targetRoundId) return;
+  const group = ws?.groups.find((g) => g.id === targetGroupId);
+  const round = group?.rounds.find((r) => r.id === targetRoundId);
+  if (!round || !round.referencePath) return;
+  if (round.candidates.length === 0) return;
 
   // 本轮待跑清单快照：并行期间行内状态按它显示「跑分中…」
-  scoringPaths = new Set(session.round.candidates.map((c) => c.path));
+  scoringPaths = new Set(round.candidates.map((c) => c.path));
   const total = scoringPaths.size;
 
   const channel = new Channel<{ completed: number; total: number }>();
@@ -569,8 +579,8 @@ async function scoreAllCandidates(): Promise<void> {
   render();
 
   ws = await invoke('round_score_candidates', {
-    groupId: session.group.id,
-    roundId: session.round.id,
+    groupId: targetGroupId,
+    roundId: targetRoundId,
     onProgress: channel,
   });
   render();
@@ -1150,6 +1160,9 @@ function renderTabs(): void {
     close.title = '关闭跑分组';
     close.addEventListener('click', (e) => {
       e.stopPropagation();
+      // T3：关掉跑分组时一并丢弃它的条目队列会话态——组都没了，队列留着只会
+      // 白占内存（组 id 不复用，重启归零的同一口径也要求它不该跨组存活）
+      dropImageQueue(group.id);
       void apply(() => invoke('group_close', { id: group.id }));
     });
 
@@ -1774,13 +1787,151 @@ document.addEventListener('keydown', (e) => {
 });
 
 /**
+ * T3（票 #77）：图片组「高级创建」的宿主依赖（面板在 src/image-queue-panel.ts）。
+ *
+ * 与旧面板的差别只在界面形态：编码走同一个 advanced_encode（参数合并 / 命名 /
+ * 冲突协议都在核心库），产物带 encodingParams 纳入新建的评测轮后跑分。工作区写入
+ * 全部收在这里，面板只做会话态编排——关面板不跑分 = 工作区零变更。
+ */
+function openImageQueueCreation(group: Group): void {
+  /** 不吞错误的改动流程（面板的失败要进状态栏，与 apply 的口径并存）。 */
+  const mutate = async (action: () => Promise<Workspace>): Promise<Workspace> => {
+    ws = await action();
+    render();
+    markSaved();
+    return ws;
+  };
+
+  openImageQueuePanel(group.id, {
+    pickImages: async () => {
+      const selected = await open({
+        title: '添加图片（可多选）',
+        multiple: true,
+        filters: [IMAGE_FILTER],
+        defaultPath: defaultOpenPath(),
+      });
+      if (selected === null) return [];
+      const paths = Array.isArray(selected) ? selected : [selected];
+      if (paths.length > 0) notePickedPath(paths[0]);
+      return paths;
+    },
+    probeIdentities: (paths) => invoke('image_identities', { paths }),
+    createRound: async (groupId, sourcePath) => {
+      // 用面板传来的组 id（不是 activeGroup：跑分期间用户可能切走了标签页，
+      // 建轮必须落在发起跑分的那一组里）
+      const before = ws?.groups.find((g) => g.id === groupId);
+      if (!before) throw new Error('跑分组不存在或已被关闭');
+      const beforeIds = new Set(before.rounds.map((r) => r.id));
+      // 轮名带图片文件名（文件系统非法字符由 roundName 替换为下划线）；
+      // 轮号 = 现有轮数 + 1（父规格「轮命名」）
+      const name = roundName(before.rounds.length + 1, sourcePath);
+      const updated = await mutate(() =>
+        invoke<Workspace>('round_create', { groupId, name }),
+      );
+      const createdGroup = updated.groups.find((g) => g.id === groupId);
+      const newRound = createdGroup?.rounds.find((r) => !beforeIds.has(r.id));
+      if (!newRound) throw new Error('无法定位新建的评测轮');
+      await mutate(() => invoke('round_activate', { groupId, roundId: newRound.id }));
+      return { groupId, roundId: newRound.id };
+    },
+    setReference: (groupId, roundId, path) => {
+      // 已经是这张原图时跳过 IPC：round_set_reference 会清掉已有跑分行的指标，
+      // 而「同一张图重跑」不需要重设原图（否则旧行会被无谓清成未跑分）
+      const round = ws?.groups.find((g) => g.id === groupId)?.rounds.find((r) => r.id === roundId);
+      if (round?.referencePath === path) return Promise.resolve();
+      return mutate(() =>
+        invoke('round_set_reference', { groupId, roundId, path }),
+      ).then(() => undefined);
+    },
+    encode: async (groupId, roundId, referencePath, entry, conflicts) => {
+      const invokeEncode = (overwrite: boolean): Promise<AdvancedEncodeOutcome> =>
+        invoke<AdvancedEncodeOutcome>('advanced_encode', {
+          groupId,
+          roundId,
+          referencePath,
+          conflictDecision: overwrite ? 'overwrite' : null,
+          job: {
+            formatId: entry.encoderId,
+            lossless: entry.lossless,
+            mode: entry.mode,
+            quality: entry.quality,
+            targetBytes: entry.targetBytes,
+            rows: entry.rows.map((row) => ({
+              name: row.name,
+              flag: row.flag,
+              value: row.value.trim() === '' ? null : row.value.trim(),
+              note: row.note === '' ? null : row.note,
+              enabled: row.enabled,
+            })),
+          },
+        });
+      const outcome = await invokeEncode(false);
+      if (outcome.kind === 'conflict') {
+        if ((await conflicts.decide(outcome.proposedName)) === 'skip') {
+          // 跳过：产物不生成、不进轮；抛中文原因进面板失败清单（与编码失败同路）
+          throw new Error(`已跳过（${outcome.proposedName} 已存在）`);
+        }
+        const retry = await invokeEncode(true);
+        if (retry.kind !== 'done') throw new Error('覆盖重调后不应再返回冲突');
+        return retry.product;
+      }
+      return outcome.product;
+    },
+    addCandidates: async (groupId, roundId, paths, params) => {
+      await mutate(() =>
+        invoke('round_add_candidates', { groupId, roundId, paths, encodingParams: params }),
+      );
+    },
+    clearCandidates: async (groupId, roundId) => {
+      await mutate(() => invoke('round_clear_candidates', { groupId, roundId }));
+    },
+    deleteRound: async (groupId, roundId) => {
+      await mutate(() => invoke('round_delete', { groupId, roundId }));
+    },
+    scoreRound: async (groupId, roundId): Promise<ScoredCandidate[]> => {
+      // 复用主界面的整轮跑分入口（同一条 IPC、同一份并发度与进度条）；
+      // 跑完从最新工作区读出逐行结果，供面板判定「编码成功但跑分失败」
+      await scoreAllCandidates(groupId, roundId);
+      const group = ws?.groups.find((g) => g.id === groupId);
+      const round = group?.rounds.find((r) => r.id === roundId);
+      return (round?.candidates ?? []).map((c) => ({ path: c.path, error: c.error }));
+    },
+    withBusy: async (task) => {
+      scoring = true;
+      render();
+      try {
+        return await task();
+      } finally {
+        scoring = false;
+        render();
+      }
+    },
+    isBusy: () => scoring,
+    describeRound: (groupId, roundId) => {
+      const group = ws?.groups.find((g) => g.id === groupId);
+      const round = group?.rounds.find((r) => r.id === roundId);
+      return round ? { name: round.name, candidateCount: round.candidates.length } : null;
+    },
+    rerender: () => render(),
+    setStatus,
+  });
+}
+
+/**
  * T29-3 接线点：高级创建面板（src/advanced-ui.ts）的宿主依赖。编码流程走
  * advanced_encode（参数合并在核心库），产物带 encodingParams 纳入新建的评测轮
  * 后复用整轮跑分循环。会话态在 advanced.ts 按跑分组键控（重启归零，D19）。
+ *
+ * T3（票 #77）起按组类型分派：图片组打开条目列表面板（本函数是「入口」，不再是
+ * 面板本身）；视频组仍走旧的 openAdvancedPanel，行为不变。
  */
 function openAdvancedCreation(): void {
   const group = activeGroup();
   if (!group || scoring) return;
+  if (group.kind === 'image') {
+    openImageQueueCreation(group);
+    return;
+  }
 
   /** 不吞错误的改动流程（面板要在错误行里汇总报错，与 apply 的状态栏口径并存）。 */
   const mutate = async (action: () => Promise<Workspace>): Promise<void> => {
