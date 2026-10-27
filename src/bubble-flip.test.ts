@@ -2,14 +2,14 @@
 // 沿用 ?raw 导入源码压平空白断言的接缝（先例 status-bar.test.ts）。
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import settingsUi from './settings-ui.ts?raw';
-import advancedUi from './advanced-ui.ts?raw';
 import encoderCard from './encoder-card.ts?raw';
 import css from './style.css?raw';
 
 const flat = settingsUi.replace(/\s+/g, '');
-// 票 #75：编码器卡的 ⓘ 气泡随卡片渲染搬进 src/encoder-card.ts 共享实现，
-// 挂点断言扫描面板 + 共享卡片两份源码
-const flatAdv = [advancedUi, encoderCard].map((source) => source.replace(/\s+/g, '')).join('\n');
+// 票 #75 把编码器卡的 ⓘ 气泡随卡片渲染搬进 src/encoder-card.ts；票 T6 起旧高级创建
+// 面板收缩为视频专用、不再持有卡片 DOM，所以挂点守卫直接指向卡片实现（不再把面板
+// 源码并进扫描范围——否则面板一旦残留同名调用会遮蔽真正的归属）。
+const flatCard = encoderCard.replace(/\s+/g, '');
 const flatCss = css.replace(/\s+/g, '');
 
 describe('ⓘ 气泡出界约束（票 #57）', () => {
@@ -34,10 +34,12 @@ describe('ⓘ 气泡出界约束（票 #57）', () => {
     expect(flat, '上下都放不下 → 压回允许区顶 + 限高').toContain('bubble.style.maxHeight=');
   });
 
-  it('挂点接线：设置页两处 + 高级面板 buildInfoBubble（状态栏已改错误卡片，票 #58）', () => {
+  it('挂点接线：设置页两处 + 编码器卡 buildInfoBubble（状态栏已改错误卡片，票 #58）', () => {
     expect(flat).toContain('wireBubbleFlip(ffmpegWrap,ffmpegBubble)');
     expect(flat).toContain('wireBubbleFlip(infoWrap,infoBubble)');
-    expect(flatAdv).toContain('wireBubbleFlip(info,bubble)');
+    expect(flatCard, '卡片内的 ⓘ 挂点（面板只负责把卡挂进列表）').toContain(
+      'wireBubbleFlip(info,bubble)',
+    );
   });
 
   it('CSS：--up 变体翻到上方且箭头移到下缘；气泡限高后可滚动读全', () => {

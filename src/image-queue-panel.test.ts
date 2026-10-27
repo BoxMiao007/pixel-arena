@@ -371,14 +371,22 @@ describe('CSS 复用既有 settings 视觉语言（不新造设计体系）', ()
 // ---------- 主界面接线（main.ts 分派）：图片组走新面板、视频组走旧面板 ----------
 
 describe('主界面分派（票面：图片组第一次进的就是新界面）', () => {
-  it('openAdvancedCreation 按组类型分派：image → 新列表面板，video → 旧面板', () => {
+  it('openAdvancedCreation 按组类型分派：image → 新列表面板，video → 旧面板（视频专用）', () => {
     const start = flatMain.indexOf('functionopenAdvancedCreation(');
     expect(start, '应有高级创建入口').toBeGreaterThanOrEqual(0);
     const body = flatMain.slice(start, start + 400);
-    expect(body, '图片组走条目列表面板').toContain("if(group.kind==='image'){openImageQueueCreation(group);return;}");
-    // 旧面板只在视频分支被打开：kind 传的是 group.kind，图片分支提前 return 不会走到
+    expect(body, '图片组走条目列表面板并立即返回').toContain(
+      "if(group.kind==='image'){openImageQueueCreation(group);return;}",
+    );
+    // T6：旧面板收缩为视频专用——deps.kind 硬编码为 video（不再是联合类型够不着
+    // 编译期兜底），图片组在分派处提前 return，且面板自身另有运行期防御性断言
     const rest = flatMain.slice(start);
-    expect(rest, '视频组仍走旧的 openAdvancedPanel').toContain('openAdvancedPanel(group.id,{kind:group.kind,');
+    expect(rest, '视频组仍走旧的 openAdvancedPanel').toContain(
+      "openAdvancedPanel(group.id,{kind:'video',",
+    );
+    expect(rest, '旧面板接线不再透传组类型（图片组没有第二个入口）').not.toContain(
+      'kind:group.kind',
+    );
   });
 
   it('deps 实现齐全：多选对话框、标识读取、惰性建轮用 roundName、跑分复用主界面入口', () => {

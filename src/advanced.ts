@@ -10,8 +10,9 @@
 // 以后端报错为准。
 //
 // 会话态（决策 D19）：高级创建的编码器配置按跑分组存内存（Map），切标签保留、
-// 重启归零；不写任何文件。产物与 encodingParams 经既有 round_add_candidates 随
-// 评测轮持久化（由 advanced-ui 的创建流程负责）。
+// 重启归零；不写任何文件。票 T6 起这份会话态只服务视频高级创建面板（图片侧改为
+// 条目队列的逐图配置）：图片产物与 encodingParams 经 round_add_candidates 随评测轮
+// 持久化，视频侧则把配置摘要与命令行写进轮备注（见 src/advanced-ui.ts）。
 
 /** 后端 ParamValueKind 的 serde tag=type 输出（camelCase）。 */
 export type ParamValueKind =
@@ -100,10 +101,10 @@ export interface AdvancedEntry {
   rows: AdvancedParamRow[];
 }
 
-/** 一个跑分组的高级创建会话态（D19：仅会话态，重启归零）。 */
+/** 一个跑分组的高级创建会话态（D19：仅会话态，重启归零）。票 T6 起只由视频组创建。 */
 export interface AdvancedSession {
   kind: 'image' | 'video';
-  /** 图片高级创建的原图（创建时传给后端编码）。 */
+  /** 视频高级创建的原视频（命令行预览的输入路径；不参与自动编码）。 */
   referencePath: string | null;
   entries: AdvancedEntry[];
 }

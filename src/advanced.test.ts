@@ -1,6 +1,10 @@
 // 高级创建（T29-3）纯函数与会话态的单测：参数合并/冲突（决策 D10/D11）、会话态
 // 生命周期（决策 D19：仅会话态、重启归零）、命令行预览的 shell 引用。期望值来自
 // 决策文本的字面推演与核心库同名实现的钉死行为，不复制实现表达式。
+//
+// 票 T6 起旧高级创建面板收缩为视频专用：本文件里的会话态断言改用视频编码器，图片
+// 预览（previewImageCommand）保留——它现在服务逐图编辑弹窗里的图片编码器卡（T4 /
+// 票 #78），与视频面板共用 src/advanced.ts 这份共享地基。
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
@@ -121,69 +125,72 @@ beforeEach(() => {
 });
 
 // ---------- 会话态（决策 D19：仅会话态；切标签保留、重启归零） ----------
+// 票 T6 起旧高级创建面板收缩为视频专用，AdvancedSession 只剩视频组会创建：图片侧的
+// 逐图配置走 src/image-queue.ts 的 ImageEntry.encoders（编辑弹窗，票 #78），不再经
+// 这里。断言随之改用视频编码器，钉的仍是「按跑分组键控、只活在本次运行」的语义。
 
-describe('高级创建会话态', () => {
-  it('首次取会话得到空配置（无条目、无原图），不触碰任何持久化通道', () => {
-    const session = sessionFor('g1', 'image');
-    expect(session.kind).toBe('image');
+describe('高级创建会话态（视频专用，T6）', () => {
+  it('首次取会话得到空配置（无条目、无原视频），不触碰任何持久化通道', () => {
+    const session = sessionFor('g1', 'video');
+    expect(session.kind).toBe('video');
     expect(session.referencePath).toBeNull();
     expect(session.entries).toEqual([]);
   });
 
   it('同一跑分组的会话跨多次取用共享（切标签保留）；不同跑分组互不串扰', () => {
-    const a1 = sessionFor('g1', 'image');
-    addEntry(a1, 'jpeg', jpegSpec);
-    const a2 = sessionFor('g1', 'image');
+    const a1 = sessionFor('g1', 'video');
+    addEntry(a1, 'libx264', h264Spec);
+    const a2 = sessionFor('g1', 'video');
     expect(a2.entries).toHaveLength(1);
     expect(a2).toBe(a1);
 
-    const b = sessionFor('g2', 'image');
+    const b = sessionFor('g2', 'video');
     expect(b.entries).toHaveLength(0);
     expect(b.entries).not.toBe(a1.entries);
   });
 
   it('addEntry 支持同一编码器添加多次（票面验收 1）', () => {
-    const session = sessionFor('g1', 'image');
-    addEntry(session, 'avif', jpegSpec);
-    addEntry(session, 'avif', jpegSpec);
-    addEntry(session, 'webp', jpegSpec);
-    expect(session.entries.map((e) => e.encoderId)).toEqual(['avif', 'avif', 'webp']);
+    const session = sessionFor('g1', 'video');
+    addEntry(session, 'libx264', h264Spec);
+    addEntry(session, 'libx264', h264Spec);
+    addEntry(session, 'libx265', h264Spec);
+    expect(session.entries.map((e) => e.encoderId)).toEqual(['libx264', 'libx264', 'libx265']);
     // 两次添加得到两个独立条目（各自参数互不影响）
     expect(session.entries[0].id).not.toBe(session.entries[1].id);
   });
 
   it('removeEntry 删除指定位置，越界不动', () => {
-    const session: AdvancedSession = sessionFor('g1', 'image');
-    addEntry(session, 'jpeg', jpegSpec);
-    addEntry(session, 'webp', jpegSpec);
+    const session: AdvancedSession = sessionFor('g1', 'video');
+    addEntry(session, 'libx264', h264Spec);
+    addEntry(session, 'libx265', h264Spec);
     removeEntry(session, 0);
-    expect(session.entries.map((e) => e.encoderId)).toEqual(['webp']);
+    expect(session.entries.map((e) => e.encoderId)).toEqual(['libx265']);
     removeEntry(session, 5);
     expect(session.entries).toHaveLength(1);
   });
 
   it('moveEntry 上移下移排序，边界不动（票面验收 3）', () => {
-    const session = sessionFor('g1', 'image');
-    addEntry(session, 'jpeg', jpegSpec);
-    addEntry(session, 'webp', jpegSpec);
-    addEntry(session, 'avif', jpegSpec);
-    moveEntry(session, 2, -1); // avif 上移到中间
-    expect(session.entries.map((e) => e.encoderId)).toEqual(['jpeg', 'avif', 'webp']);
+    const session = sessionFor('g1', 'video');
+    addEntry(session, 'libx264', h264Spec);
+    addEntry(session, 'libx265', h264Spec);
+    addEntry(session, 'libaom-av1', h264Spec);
+    moveEntry(session, 2, -1); // av1 上移到中间
+    expect(session.entries.map((e) => e.encoderId)).toEqual(['libx264', 'libaom-av1', 'libx265']);
     moveEntry(session, 0, -1); // 已在顶部，不动
-    expect(session.entries.map((e) => e.encoderId)).toEqual(['jpeg', 'avif', 'webp']);
+    expect(session.entries.map((e) => e.encoderId)).toEqual(['libx264', 'libaom-av1', 'libx265']);
     moveEntry(session, 2, 1); // 已在底部，不动
-    expect(session.entries.map((e) => e.encoderId)).toEqual(['jpeg', 'avif', 'webp']);
+    expect(session.entries.map((e) => e.encoderId)).toEqual(['libx264', 'libaom-av1', 'libx265']);
     moveEntry(session, 0, 1);
-    expect(session.entries.map((e) => e.encoderId)).toEqual(['avif', 'jpeg', 'webp']);
+    expect(session.entries.map((e) => e.encoderId)).toEqual(['libaom-av1', 'libx264', 'libx265']);
   });
 
   it('dropSession 丢弃后回到空配置；clearAdvancedSessions 模拟重启归零', () => {
-    const session = sessionFor('g1', 'image');
-    addEntry(session, 'jpeg', jpegSpec);
-    session.referencePath = '/tmp/a.png';
+    const session = sessionFor('g1', 'video');
+    addEntry(session, 'libx264', h264Spec);
+    session.referencePath = '/v/原.mp4';
     dropSession('g1');
-    expect(sessionFor('g1', 'image').entries).toHaveLength(0);
-    expect(sessionFor('g1', 'image').referencePath).toBeNull();
+    expect(sessionFor('g1', 'video').entries).toHaveLength(0);
+    expect(sessionFor('g1', 'video').referencePath).toBeNull();
   });
 });
 
@@ -291,6 +298,8 @@ describe('validateEntry（必填缺失/范围/冲突的汇总报错）', () => {
 });
 
 // ---------- 命令行预览（shell 引用；与核心库 layout_words 同布局） ----------
+// 图片预览服务逐图编辑弹窗的编码器卡（T4），视频预览服务视频高级创建面板（T6 后
+// 旧面板仅剩这一侧），两者共用宽松合并与 shell 引用。
 
 describe('命令行预览（可复制、可直接在 shell 执行）', () => {
   it('shellQuote：稳妥字符不加引号，空格与单引号按 POSIX 引用', () => {
@@ -336,6 +345,20 @@ describe('命令行预览（可复制、可直接在 shell 执行）', () => {
       null,
     );
     expect(line).toBe(`ffmpeg -y -i '<原图>' -c:v my-obscure-enc -mode fast '<产物>'`);
+  });
+
+  it('视频预览：半填的参数行跳过，不打断预览（与图片卡同一宽松口径）', () => {
+    const line = previewVideoCommand(
+      h264Spec,
+      entry({
+        kind: 'video',
+        encoderId: 'libx264',
+        quality: 23,
+        rows: [row({ name: '', flag: '' }), row({ name: '速度档', flag: '-preset', value: 'slow' })],
+      }),
+      '/v/原.mp4',
+    );
+    expect(line).toBe(`ffmpeg -y -i '/v/原.mp4' -c:v libx264 -crf 23 -preset slow '<产物>'`);
   });
 });
 
