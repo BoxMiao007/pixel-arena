@@ -1,12 +1,11 @@
-// 票 #77（T3 图片条目列表面板）的前端测试，两类断言：
+// 票 #77（T3 图片条目列表面板）/ 票 #79（T5 增量跑分）的前端测试，两类断言：
 //
-// 1. **行为**（node 环境可直接跑）：面板的编排决策抽成了纯函数——标识回包折成
-//    探针缓存、惰性建轮条件、本次跑分清单、删条目是否连带删轮、删除确认文案、
-//    按钮计数、编码成功但跑分失败的行折成失败。这些是「面板决定做什么」的部分，
-//    不依赖 DOM，真跑比文本守卫可靠得多。
+// 1. **行为**（node 环境可直接跑）：面板的纯逻辑——标识回包折成探针缓存、删条目是否
+//    连带删轮、删除确认文案、编码成功但跑分失败的行折成失败。跑分编排本身（只跑计划内、
+//    无待跑零调用、失败不阻断、汇总文案）在 src/image-queue-run.test.ts 用假执行器真跑。
 // 2. **机制**（?raw 导入源码文本）：面板 DOM 无法在 node 环境渲染（本仓库约定不引
-//    jsdom），沿用 advanced-ui.test.ts 的先例，压平空白后断言机制在位——添加不
-//    弹窗、四态徽章文案、模态卡片三路关闭、删除文案包含「不会删除」。
+//    jsdom），沿用 advanced-ui.test.ts 的先例，压平空白后断言机制在位——添加不弹窗、
+//    四态徽章文案、模态卡片三路关闭、无待跑提示卡片、汇总卡片、面板不关闭。
 //
 // 判定算法本身（四态 / 脏原因 / 计划拆分）已在 src/image-queue.test.ts 由 T2 覆盖，
 // 这里只测「面板怎么用这些结论」。
@@ -17,22 +16,13 @@ import {
   clearImageQueues,
   imageQueueFor,
   IMAGE_ENTRY_STATE_LABELS,
-  judgeImageEntry,
   newImageEntry,
-  paramFingerprint,
-  probeFromCache,
   type EncoderRunOutcome,
-  type ImageEntry,
-  type ImageIdentityReading,
 } from './image-queue';
-import {
-  identityReadingsOf,
-  mergeScoreFailures,
-  planDelete,
-  planQueueRun,
-  scoreButtonLabel,
-} from './image-queue-panel';
+import { mergeScoreFailures } from './image-queue-run';
+import { identityReadingsOf, planDelete } from './image-queue-panel';
 import panelSource from './image-queue-panel.ts?raw';
+import runSource from './image-queue-run.ts?raw';
 import queueSource from './image-queue.ts?raw';
 import mainSource from './main.ts?raw';
 import css from './style.css?raw';
@@ -40,21 +30,6 @@ import css from './style.css?raw';
 beforeEach(() => {
   clearImageQueues();
 });
-
-/** 造一个「已成功跑过一次」的条目（快照与当前配置、原图标识都对得上）。 */
-function scoredEntry(path: string, identity: ImageIdentityReading): ImageEntry {
-  const entry = newImageEntry(path);
-  if (identity.kind !== 'ok') throw new Error('夹具需要可读的原图标识');
-  entry.snapshot = {
-    identity: identity.identity,
-    encoders: entry.encoders.map((card) => ({
-      cardId: card.id,
-      fingerprint: paramFingerprint(card),
-      artifactPath: `${path}.out.jpg`,
-    })),
-  };
-  return entry;
-}
 
 describe('图片标识回包 → 探针缓存（接后端 image_identities）', () => {
   it('读到的行给出 ok 标识，读不到的行给出带后端原因的失败分支', () => {
@@ -89,53 +64,6 @@ describe('图片标识回包 → 探针缓存（接后端 image_identities）', 
       expect(readings.get(path)?.kind, `${path} 应按读取失败`).toBe('failed');
     }
   });
-
-  it('接成同步探针后，缓存里没有的路径按失败返回（probeFromCache 同一口径）', () => {
-    const probe = probeFromCache(
-      identityReadingsOf([{ path: '/a.png', sizeBytes: 1, modifiedMs: 2, error: null }]),
-    );
-    expect(probe('/a.png').kind).toBe('ok');
-    expect(probe('/没读过的.png')).toMatchObject({ kind: 'failed', path: '/没读过的.png' });
-  });
-});
-
-describe('惰性建轮（票面：第一次真正产出产物才建轮，仅添加图片不建轮）', () => {
-  it('没有轮的条目本次要建轮，已有轮的条目复用已有轮', () => {
-    const fresh = newImageEntry('/photos/fresh.png');
-    const ran = newImageEntry('/photos/ran.png');
-    attachRound(ran, 'r-9');
-
-    const plans = planQueueRun([fresh, ran]);
-
-    expect(plans.map((plan) => [plan.entry.path, plan.createsRound])).toEqual([
-      ['/photos/fresh.png', true],
-      ['/photos/ran.png', false],
-    ]);
-  });
-
-  it('没有编码器卡的条目进不了跑分清单（没有东西可编码）', () => {
-    const empty = newImageEntry('/photos/empty.png');
-    empty.encoders = [];
-    const titled = newImageEntry('/photos/titled.png');
-
-    expect(planQueueRun([empty, titled]).map((plan) => plan.entry.path)).toEqual([
-      '/photos/titled.png',
-    ]);
-  });
-
-  it('T3 跑全量：已跑分且无变更的条目照样进清单（脏标记留给 T5）', () => {
-    const identity: ImageIdentityReading = {
-      kind: 'ok',
-      identity: { path: '/photos/done.png', sizeBytes: 10, modifiedMs: 20 },
-    };
-    const entry = scoredEntry('/photos/done.png', identity);
-
-    // 先确认它按 T2 的判定确实是「已跑分」（否则这条用例证明不了「全量」）
-    const probe = probeFromCache(new Map([['/photos/done.png', identity]]));
-    expect(judgeImageEntry(entry, probe).state).toBe('scored');
-
-    expect(planQueueRun([entry]), '已跑分条目仍进本次跑分清单').toHaveLength(1);
-  });
 });
 
 describe('删条目：有轮就连带删轮，确认文案点名轮名与结果条数', () => {
@@ -168,13 +96,6 @@ describe('删条目：有轮就连带删轮，确认文案点名轮名与结果�
     attachRound(entry, 'r-7');
 
     expect(planDelete(entry, null).roundId).toBeNull();
-  });
-});
-
-describe('跑分按钮计数（T3 全量：显示总张数）', () => {
-  it('空列表只写「跑分」，有条目时带上张数', () => {
-    expect(scoreButtonLabel(0)).toBe('跑分');
-    expect(scoreButtonLabel(3)).toBe('跑分（3 张）');
   });
 });
 
@@ -219,6 +140,8 @@ const flat = panelSource.replace(/\s+/g, '');
 const rawSource = panelSource;
 const flatCss = css.replace(/\s+/g, '');
 const flatQueue = queueSource.replace(/\s+/g, '');
+const flatRun = runSource.replace(/\s+/g, '');
+const flatMain = mainSource.replace(/\s+/g, '');
 
 describe('添加图片不弹窗（票面验收：多选后直接入列）', () => {
   it('添加动作只调 pickImages + addImagePaths，不经任何编辑/确认面板', () => {
@@ -271,12 +194,12 @@ describe('四态徽章文案（单一来源 IMAGE_ENTRY_STATE_LABELS）', () => 
 });
 
 describe('模态卡片三路关闭（× / 点遮罩 / Esc + keydown 清理）', () => {
-  it('确认卡片是 settings-overlay + status-card 的应用内模态（不抢系统焦点）', () => {
+  it('删除确认卡片是 settings-overlay + status-card 的应用内模态（不抢系统焦点）', () => {
     expect(flat).toContain("overlay.className='settings-overlay'");
     expect(flat).toContain("panel.className='status-cardqueue-confirm-card'");
   });
 
-  it('三路关闭：× 按钮、点遮罩本身、Esc；关闭时摘掉 document 上的 keydown 监听', () => {
+  it('确认卡片三路关闭：× 按钮、点遮罩本身、Esc；关闭时摘掉 document 上的 keydown 监听', () => {
     const start = flat.indexOf('functionconfirmCard(');
     expect(start, '应有确认卡片实现').toBeGreaterThanOrEqual(0);
     const end = flat.indexOf('exportfunctionopenImageQueuePanel', start);
@@ -309,11 +232,38 @@ describe('模态卡片三路关闭（× / 点遮罩 / Esc + keydown 清理）', 
   });
 });
 
+describe('提示 / 汇总卡片（showQueueNotice）：三路关闭 + keydown 清理', () => {
+  it('应用内模态：settings-overlay + status-card，正文按行渲染', () => {
+    const start = flat.indexOf('exportfunctionshowQueueNotice(');
+    expect(start, '应有 showQueueNotice 实现').toBeGreaterThanOrEqual(0);
+    const end = flat.indexOf('exportfunctionopenImageQueuePanel', start);
+    expect(end).toBeGreaterThan(start);
+    const body = flat.slice(start, end);
+    expect(body).toContain("overlay.className='settings-overlay'");
+    expect(body).toContain("panel.className='status-cardqueue-notice-card'");
+    expect(body, '正文按行拼接').toContain("body.textContent=lines.join('\\n')");
+  });
+
+  it('× / 点遮罩 / Esc 三路关闭，关闭时先摘 keydown 监听再移除遮罩', () => {
+    const start = flat.indexOf('exportfunctionshowQueueNotice(');
+    const end = flat.indexOf('exportfunctionopenImageQueuePanel', start);
+    const body = flat.slice(start, end);
+    expect(body).toContain("closeBtn.addEventListener('click',close)");
+    expect(body).toContain("overlay.addEventListener('click',(e)=>{if(e.target===overlay)close()");
+    expect(body).toContain("if(e.key==='Escape')close()");
+    expect(body).toContain("document.addEventListener('keydown',onKey)");
+    expect(body).toContain("document.removeEventListener('keydown',onKey)");
+    const remove = body.indexOf("document.removeEventListener('keydown',onKey)");
+    const detach = body.indexOf('overlay.remove()');
+    expect(detach, '先摘监听再移除遮罩').toBeGreaterThan(remove);
+  });
+});
+
 describe('删除文案包含「不会删除」（票面验收）', () => {
   it('删除确认文案点名轮名与结果条数，并写明不删磁盘产物', () => {
     const start = flat.indexOf('exportfunctionplanDelete(');
     expect(start).toBeGreaterThanOrEqual(0);
-    const end = flat.indexOf('exportfunctionscoreButtonLabel', start);
+    const end = flat.indexOf('//----------面板DOM', start);
     const body = flat.slice(start, end);
     expect(body).toContain('评测轮『${round.name}』与它的${round.candidateCount}条跑分结果');
     expect(body, '文案必须写明不会删除磁盘文件').toContain('磁盘上的产物文件不会被删除');
@@ -346,35 +296,61 @@ describe('列表行与徽章（中间截断文件名 / 删除按钮 / 重复提�
   });
 });
 
-describe('惰性建轮的编排（第一次真正产出产物才建轮）', () => {
-  it('只有 roundId 为 null 的条目才在跑分里建轮，且有产物才保留轮', () => {
-    const start = flat.indexOf('construnEntry=');
+describe('增量跑分接线（T5：按钮待跑数量 / 只跑计划内 / 无待跑提示 / 汇总卡片）', () => {
+  it('按钮文案按当前计划算 N = plan.runImageCount（编辑弹窗改参数后同一路径重算）', () => {
+    expect(flat, '按钮文案取 scoreButtonLabel(计划, 条目)').toContain(
+      "scoreBtn.textContent=running?'跑分中…':scoreButtonLabel(currentPlan(),session.entries)",
+    );
+    // 编辑弹窗关闭回调里 renderList → syncChrome → 重算按钮
+    expect(flat).toContain('editorOpen=false;renderList();})');
+  });
+
+  it('跑分流程走 runScorePlan（只跑计划内的编码器卡），计划为空只弹提示卡片', () => {
+    const start = flat.indexOf('construnScoring=');
+    expect(start, '应有跑分动作').toBeGreaterThanOrEqual(0);
+    const end = flat.indexOf("scoreBtn.addEventListener('click'", start);
+    const body = flat.slice(start, end);
+    expect(body, '跑分交给增量编排层').toContain(
+      'runScorePlan(session.entries,probe,buildExecutor()',
+    );
+    expect(body, '无待跑时只弹提示卡片').toContain(
+      'showQueueNotice([NOTHING_TO_RUN_MESSAGE],{title:',
+    );
+    expect(body, '有待跑时弹汇总卡片').toContain('showQueueNotice(summaryLines(report.plan),{title:');
+    // 面板不得自行按全量重建任务清单：计划与跳过全部来自 planScore/runScorePlan
+    expect(body).not.toContain('planQueueRun');
+  });
+
+  it('无待跑提示文案是单一来源，且编排层在计划为空时不碰执行器', () => {
+    expect(flatRun, '提示文案住在 image-queue-run.ts').toContain(
+      "NOTHING_TO_RUN_MESSAGE='所有图片已跑分且无变更，无需重跑'",
+    );
+    const start = flatRun.indexOf('exportasyncfunctionrunScorePlan(');
     expect(start).toBeGreaterThanOrEqual(0);
-    const body = flat.slice(start, flat.indexOf('construnScoring=', start));
-    // 建轮在编码之前，且条件来自 plan.createsRound
-    expect(body).toContain('if(roundId===null)');
-    expect(body).toContain('createdNow=true');
-    // 一条产物都没产出 → 回滚本次新建的轮
-    expect(body).toContain('if(createdNow)');
-    expect(body).toContain('awaitdeps.deleteRound(groupId,roundId)');
-    // 否则纳入产物并跑分
-    expect(body).toContain('awaitdeps.addCandidates(');
-    expect(body).toContain('awaitdeps.scoreRound(groupId,roundId)');
+    const end = flatRun.indexOf('constbyId=newMap', start);
+    const body = flatRun.slice(start, end);
+    expect(body, '先算计划').toContain('constplan=planScore(');
+    expect(body, '计划为空直接返回、不调用执行器').toContain('if(isPlanEmpty(plan)){');
+    expect(body).toContain('onNothingToRun?.(plan)');
+    expect(body).toContain('return{plan,ran:false,images:[]}');
   });
 
-  it('添加图片不改工作区（无 setReference / createRound / addCandidates 调用）', () => {
-    const start = flat.indexOf('constaddImages=');
-    const body = flat.slice(start, flat.indexOf("addBtn.addEventListener('click'", start));
-    for (const banned of ['createRound', 'setReference', 'addCandidates', 'scoreRound']) {
-      expect(body, `添加流程不得调用 ${banned}`).not.toContain(banned);
-    }
-  });
-
-  it('跑完面板不关闭：跑分流程里没有 close() 调用', () => {
+  it('跑完面板不关闭：跑分流程里没有 close() 调用，跑完原地重渲染列表', () => {
     const start = flat.indexOf('construnScoring=');
     const body = flat.slice(start, flat.indexOf("scoreBtn.addEventListener('click'", start));
     expect(body).not.toContain('close()');
-    expect(body, '跑完原地重渲染列表').toContain('renderList()');
+    expect(body, '每张跑完原地刷新').toContain('onImageDone:()=>renderList()');
+    expect(body, '跑完 finally 重渲染').toContain('renderList()');
+  });
+
+  it('执行器把本次新增产物路径传给 scoreRound（子集跑分，不重跑整轮）', () => {
+    const start = flat.indexOf('constbuildExecutor=');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = flat.indexOf('construnScoring=', start);
+    const body = flat.slice(start, end);
+    expect(body, '只传本次产物路径').toContain(
+      'scoreCandidates:(_entry,roundId,paths)=>deps.scoreRound(groupId,roundId,[...paths])',
+    );
   });
 });
 
@@ -393,8 +369,6 @@ describe('CSS 复用既有 settings 视觉语言（不新造设计体系）', ()
 });
 
 // ---------- 主界面接线（main.ts 分派）：图片组走新面板、视频组走旧面板 ----------
-
-const flatMain = mainSource.replace(/\s+/g, '');
 
 describe('主界面分派（票面：图片组第一次进的就是新界面）', () => {
   it('openAdvancedCreation 按组类型分派：image → 新列表面板，video → 旧面板', () => {
@@ -415,8 +389,18 @@ describe('主界面分派（票面：图片组第一次进的就是新界面）'
     expect(body, '多选系统对话框').toContain('multiple:true');
     expect(body, '标识读取走 image_identities').toContain("invoke('image_identities',{paths})");
     expect(body, '轮名带文件名').toContain('roundName(before.rounds.length+1,sourcePath)');
-    expect(body, '跑分复用主界面整轮入口').toContain('awaitscoreAllCandidates(groupId,roundId)');
+    expect(body, '跑分复用主界面整轮入口（只传本次产物路径子集）').toContain(
+      'awaitscoreAllCandidates(groupId,roundId,paths)',
+    );
     expect(body, '跑分期间置主界面忙标志').toContain('scoring=true');
+  });
+
+  it('主界面「开始跑分」按钮行为不变：仍整轮全量（不传 paths）', () => {
+    const start = flatMain.indexOf('asyncfunctionstartScoring(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = flatMain.indexOf('asyncfunctionscoreAllCandidates(', start);
+    const body = flatMain.slice(start, end);
+    expect(body, '主界面入口仍整轮全量').toContain('awaitscoreAllCandidates();');
   });
 
   it('关跑分组时丢弃它的条目队列会话态（组没了队列不该留着）', () => {
