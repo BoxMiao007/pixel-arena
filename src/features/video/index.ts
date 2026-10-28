@@ -1,9 +1,12 @@
-// 视频域注册入口：舞台 / 检视器三分区 / 结果坞页签 / 命令 / 舞台键位。
+// 视频域注册入口：舞台 / 检视器分区 / 结果坞页签 / 命令 / 舞台键位。
 //
 // 由 boot.ts 以副作用方式 import 一次；本模块不做任何渲染，只声明契约。
 // 键位由 shell/registry 统一派发（输入框与浮层打开时不派发）；外壳的全局组合键
 // （Ctrl+O / Ctrl+Shift+O / Ctrl+Enter）按 id 直接命中这里的命令。
 
+import { onGroupRemoved } from '../../core/actions';
+import { activeRound } from '../../core/model';
+import { getState, isBusy } from '../../core/store';
 import { isTypingTarget } from '../../ui/dom';
 import {
   registerCommand,
@@ -17,9 +20,13 @@ import {
   pickVideoReferenceForActiveRound,
   runVideoScoringForActiveRound,
 } from './actions';
+import { dropSession } from './advanced/catalog';
+import { openAdvancedVideoPanel } from './advanced/panel';
 import { mountVideoMetricsTab } from './dock';
+import { mountAdvancedVideoSection } from './inspector/advanced';
 import { mountCandidatesPanel } from './inspector/candidates';
 import { mountReferencePanel } from './inspector/reference';
+import { mountRoundNoteSection } from './inspector/round-note';
 import { mountScoringPanel } from './inspector/scoring';
 import { activeVideoCommands, mountVideoStage, type VideoStageMode } from './stage';
 
@@ -30,6 +37,15 @@ registerStageView({
   label: '视频对比',
   kinds: ['video'],
   mount: mountVideoStage,
+});
+
+registerPanelSection({
+  id: 'round-note',
+  title: '本轮备注',
+  order: 5,
+  // 轮备注是跨域数据（图片组也会有），两个组类型都展示；空备注时分区不出现。
+  kinds: ['image', 'video'],
+  mount: mountRoundNoteSection,
 });
 
 registerPanelSection({
@@ -56,6 +72,14 @@ registerPanelSection({
   mount: mountScoringPanel,
 });
 
+registerPanelSection({
+  id: 'advanced-video',
+  title: '高级',
+  order: 50,
+  kinds: ['video'],
+  mount: mountAdvancedVideoSection,
+});
+
 registerDockTab({
   id: 'video-metrics',
   label: '视频指标',
@@ -80,6 +104,21 @@ registerCommand({
   id: 'run-score-video',
   run: () => runVideoScoringForActiveRound(),
 });
+
+// 高级创建（视频）：检视器「高级」分区的按钮经 runCommand 调用；打开面板做
+// 编码器选择 / 参数配置 / 命令行预览，确认后建轮 + 写轮备注（不自动编码）。
+registerCommand({
+  id: 'advanced-video-create',
+  enabled: () => !isBusy(),
+  run: () => {
+    const session = activeRound(getState().workspace);
+    if (!session || session.group.kind !== 'video') return;
+    openAdvancedVideoPanel(session.group.id, session.round.id);
+  },
+});
+
+// 跑分组关闭：丢弃该组的高级创建会话（组 id 不复用，留着只会白占内存）
+onGroupRemoved((groupId) => dropSession(groupId));
 
 // ---------- 舞台键位 ----------
 //

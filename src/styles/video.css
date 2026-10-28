@@ -244,7 +244,7 @@
   align-items: center;
   justify-content: center;
   padding: var(--s-4);
-  background: rgba(10, 11, 13, 0.55);
+  background: var(--scrim);
   pointer-events: none;
 }
 
@@ -611,4 +611,180 @@
   .video-stage__select {
     max-width: 9rem;
   }
+}
+
+/* ============ 高级创建（视频） ============ */
+
+/* 检视器入口：说明 + 入口按钮 + 会话里已有的配置数 */
+.adv-video-entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.adv-video-entry__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.adv-video-entry__count {
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
+}
+
+.adv-video-entry__hint {
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
+}
+
+/* 模态面板主体（浮层外壳与内边距由 ui/overlay 的 .modal 提供） */
+.adv-video {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.adv-video__hint {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.adv-video__status {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-subtle);
+  overflow-wrap: anywhere;
+}
+
+.adv-video__status.is-warn {
+  color: var(--danger);
+}
+
+/* 原视频：文件名 + 重选（命令行预览的输入，不改当前轮） */
+.adv-video__ref {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  padding: var(--s-1) var(--s-2);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.adv-video__ref-label {
+  flex: none;
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
+}
+
+.adv-video__ref-value {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.adv-video__entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.adv-video__empty {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
+}
+
+/* 校验 / 创建失败：中文原文 + 重试入口（原文可换行、可滚动） */
+.adv-video__error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding: var(--s-2);
+  border: var(--hairline) solid var(--danger);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+}
+
+.adv-video__error[hidden] {
+  display: none;
+}
+
+/* 重试按钮用 hidden 收起时，别被 .btn 的 display:inline-flex 顶出来 */
+.adv-video__error [hidden] {
+  display: none;
+}
+
+.adv-video__error-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  max-height: 8rem;
+  overflow: auto;
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 底部动作条：撑满 .modal__footer 的整行 */
+.adv-video__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+}
+
+.adv-video__spacer {
+  flex: 1;
+}
+
+/* ============ 检视器「本轮备注」 ============ */
+
+.round-note__text {
+  margin: 0;
+  max-height: 12rem;
+  overflow: auto;
+  padding: var(--s-2);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.round-note__details {
+  margin-top: var(--s-1);
+}
+
+.round-note__summary {
+  cursor: pointer;
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
+}
+
+.round-note__summary:hover {
+  color: var(--text-muted);
+}
+
+.round-note__text--rest {
+  max-height: none;
 }

@@ -54,7 +54,7 @@ registerKeyBinding({ id: 'video-step-fwd10',  keys: ['Shift+ArrowRight'],kinds: 
 - 拖放：检视器「原视频区 / 跑分视频区」与舞台三处在 `mount` 时 `registerDropTarget(host, { id, accept: 'video', hint, onDrop })`，`destroy` 调返回的注销函数（`shell/file-drop.ts`）。
 - 文件拖放的默认路由会 `import('../features/video/actions')` 并调用 **`chooseVideoReference(groupId, roundId, path)`** 与 **`chooseVideoCandidates(groupId, roundId, paths)`**（两个都必须导出、都是 async）。
 - 视频组**没有**编码阶梯、没有一站式、没有叠加/差异/闪烁模式、没有连续同步播放（`docs/requirements.md:21,63-64`：第一版明确不做）。
-- 轮级备注 `round.note`（T29-3 视频高级创建写入的配置摘要）由外壳展示，视频域不重复渲染（现状在 `src/main.ts:1341-1347`）。
+- 轮级备注 `round.note`（T29-3 视频高级创建写入的配置摘要）由本域注册的 `round-note` 分区展示（图片组与视频组共用；Phase C 恢复，见 §10）。
 
 ### 0.3 文件归属
 
@@ -658,3 +658,91 @@ src/styles/video.css       视频域全部样式（只用令牌）
 
 1. **分辨率显示 —**：`media.ts` 的 ffprobe 回调原先只写 `meta/fps/duration`，宽高只从 `<video>` 的 `loadeddata` 取；检视器在解码完成前读到的 `peekVideo().width` 是 0。现补：探测成功时若 `entry.width/height === 0` 就用 `meta.width/height` 填；`loadeddata` 侧只在 `videoWidth > 0` 时覆盖，避免内核晚给尺寸时把探测值清零。两条路互补后，帧率 30 fps / 时长 3.000 / 分辨率 — 的复现路径消失。
 2. **空态收敛**：结果坞「视频指标」在没有任何跑分视频时不再挂表格，改为一行 `results-empty-note`（12px，文案「跑分后这里出现视频指标」），与评分表/BD-rate 一致；「原视频」「跑分视频」两个分区的空态从大图标 + 标题 + 双行 hint + primary 按钮收敛为一行：说明 + secondary 按钮 + 「或把视频拖到这里」。
+
+---
+
+## 10. Phase C：高级创建恢复
+
+### 10.1 背景与范围
+
+重构后视频高级创建整块消失：全仓已无 `advanced_video_catalog` 调用，视频组检视器只剩「原视频 / 跑分视频 / 视频跑分」，既有轮级备注 `round.note` 也无处显示。本阶段把旧实现（`git show main:src/advanced-ui.ts` 的 `kind:'video'` 分支 + `main.ts` 的 `openAdvancedCreation`）按新架构恢复，**只改 `src/features/video/**` 与 `src/styles/video.css`**，不动后端 IPC 与其它域。
+
+能力边界保持不变（旧行为，不是自动编码）：本版本**不做视频自动编码**；确认后新建评测轮并自动激活，把「配置摘要 + 每项命令行」写进轮备注，用户复制命令行自行编码后用「添加跑分视频」导入。旧文案「编码链路将在后续版本提供」不再使用，界面直接说明当前能力与导入路径。
+
+### 10.2 文件落点
+
+```
+src/features/video/
+  video-ipc.ts                    + advanced_video_catalog / advanced_encoder_status（本域唯一 invoke 收口）
+  advanced/
+    catalog.ts                    会话态 Map（按组 id，关面板保留、重启归零）+ 目录 DTO 与条目增删排序
+    command.ts                    参数合并 / 冲突校验 / shell 引用 / 命令行预览 / 编码器可用性（纯逻辑）
+    note.ts                       轮备注构建 + 长备注折叠布局（纯逻辑）
+    panel.ts                      模态面板：目录 → 编码器卡 → 校验 → 建轮 / 写备注 / 激活 / 重试
+    catalog.test.ts               会话态 / 条目操作（6）
+    command.test.ts               参数合并 / 预览 / 校验 / 可用性（24）
+    note.test.ts                  备注文案 / 命令行 / 折叠口径（9）
+  inspector/
+    advanced.ts                   「高级」分区：说明 + 「高级创建…」入口（忙时禁用并给原因）
+    round-note.ts                 「本轮备注」分区（图片组 + 视频组共用）
+src/styles/video.css              面板 / 入口 / 轮备注样式（只用 tokens.css 令牌）
+```
+
+硬约束遵守：视频域不 import `features/encoding/**`。参数合并、命令行预览等纯逻辑按 video-spec §0.3 的「复制进本域」规则落在 `advanced/command.ts`；单张编码器卡仍复用 `ui/encoder-card.ts` 的 `renderEncoderCard`（视频目录传 `imageSpecs: []`），删改参数、复制预览与图片侧同一套交互。
+
+### 10.3 注册 id
+
+| 类型 | id | title / 说明 |
+| --- | --- | --- |
+| PanelSection | `round-note`（order 5，kinds `['image','video']`） | 「本轮备注」；空备注时整个分区不出现（不占标题行） |
+| PanelSection | `advanced-video`（order 50，kinds `['video']`） | 「高级」；说明 + 「高级创建…」（忙时禁用并在 title 说明原因） |
+| Command | `advanced-video-create` | 由「高级创建…」按钮经 `runCommand` 调用；忙时 `enabled=false` |
+
+会话清理：`onGroupRemoved` 钩子丢弃该组的高级创建会话（组 id 不复用）。
+
+### 10.4 行为契约（恢复后的原样）
+
+1. **打开**：预填当前轮已选原视频（`round.videoReferencePath`，仅当会话还没有值时），面板内可重选；重选只影响命令行预览，不改当前轮。
+2. **目录**：`advanced_video_catalog` 回传 ffmpeg 可用性 / 路径 / 错误、`ffmpeg -encoders` 枚举名与四条静态规格。ffmpeg 不可用时面板顶部说明原因（可去设置页），编码器仍可选可预览；目录整体加载失败时退回表外编码器（`libx264` 兜底、只支持参数行）。
+3. **配置**：每张编码器卡可选规格内/表外编码器、快速参数（无损 / 质量 / 目标大小 / 模式）、高级参数行；整卡重建时按条目 id 保留「高级参数」「命令行预览」折叠态。同一编码器可添加多次，每个条目独立参数。
+4. **校验**：建轮前汇总「质量越界 / 目标大小非法 / 标志冲突 / 缺参数名 / 非法标志」；再查 `advanced_encoder_status(['ffmpeg'])`，`unavailable` 条目不建轮并在卡片红标（`unconfigured` 对 ffmpeg 放行，与旧口径一致）。任何校验失败都不建轮，错误原文在面板内可读、可复制。
+5. **建轮顺序**：`round_create`（命名「评测轮 N」）→ `round_set_note` → `round_activate`。备注在激活前写入，新轮一挂上检视器就能看到；建轮成功但写备注/激活失败时保留已建轮 id，重试不重复建轮。
+6. **备注**：首行说明「本版本不做视频自动编码；可复制命令行自行编码后用「添加跑分视频」导入」，随后逐项写配置摘要与命令行；成功后丢弃该组会话并提示项数。
+7. **关闭不丢**：面板会话态按组 id 存在模块 Map；关面板/切标签/重开都保留已填配置，应用重启归零；创建成功才丢弃。
+8. **轮备注展示**：`round.note` 非空时以等宽预格式文本展示；超过 6 行默认只显示前 6 行，其余进 `<details>`「展开全部（共 N 行）」；可一键复制完整备注。空备注不渲染分区。
+
+轮备注样例：
+
+```
+高级创建配置（本版本不做视频自动编码；可复制命令行自行编码后用「添加跑分视频」导入）：
+1. H.264（libx264）：-crf 23 -preset slow
+   命令行：ffmpeg -y -i /v/ref.mp4 -c:v libx264 -crf 23 -preset slow '<产物>'
+2. libvpx-vp9：-crf 31 -b:v 0
+   命令行：ffmpeg -y -i /v/ref.mp4 -c:v libvpx-vp9 -crf 31 -b:v 0 '<产物>'
+```
+
+### 10.5 验证结果（实测）
+
+- `npx tsc --noEmit`：全仓 0 错误。
+- `npx vitest run src/features/video`：7 文件 / 87 测试全绿；其中本次新增 39 个（catalog 6 / command 24 / note 9），既有 48 个不变。
+- `npx vitest run src/styles/design-guards.test.ts`：9/9 全绿（当前工作区比票面的 8 项多一条「彩色 rgba 必须走令牌」检查，属其它域并行改动；本域 `video.css` 无字面色值 / rgba / 字面字号 / 粗边框，TS 无 innerHTML、无裸 invoke）。
+- `npx vite build`：通过（新入口模块图可打包，仅有既有的 `features/video/actions` 动静混合导入提示）。
+- 未跑：dev server 与真窗（按约定由 lead 统一验收）；未改 Rust，未跑 cargo。
+
+### 10.6 需要真窗验收的点
+
+1. 视频组检视器出现「高级」入口；没有轮级备注时 **不出现**「本轮备注」标题。
+2. 面板打开后显示 ffmpeg 路径与枚举到的编码器；把设置页 ffmpeg 路径改成失效值后重开，面板给出中文原因且仍可选编码器。
+3. 面板预填本轮原视频；重选原视频后卡片命令行预览即时更新。
+4. 添加两个同编码器条目，各自改质量/参数行；收起重开折叠区、关面板重开，配置与折叠态符合预期；「复制」得到可直接执行的命令行。
+5. 故意制造冲突标志（如快速参数 `-crf` 再加高级行 `-crf`）或越界质量，点创建应汇总中文报错且不建轮。
+6. 正常创建：新轮自动激活并出现在轮列表；「本轮备注」立即显示完整配置；超过 6 行时默认只显示前 6 行，展开/复制可用。
+7. 建轮中途失败（如临时让 ffmpeg 不可执行触发 `advanced_encoder_status` 报错）后修正并点「重试」，不应重复建轮。
+8. 图片组里 `round.note` 非空的旧轮同样显示「本轮备注」。
+9. 深浅两主题下的面板、错误条与等宽备注可读性。
+
+### 10.7 已知限制
+
+- 面板里选择/重选的原视频只用于命令行预览，不会写进新轮；新轮仍需用户选原视频、导入产物后才能跑分（与旧行为一致）。
+- 视频条目没有真实自动编码链路（第二版视频一站式范围），备注不承诺自动化。
+- 表外编码器没有推荐参数、无损信息为空，只有参数行与命令行预览。

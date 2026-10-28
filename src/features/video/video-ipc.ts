@@ -1,14 +1,18 @@
 // 视频域 IPC 收口。
 //
 // core/ipc.ts 只收通用命令；lead 授权视频的六个命令在这里统一 invoke（仍保持
-// 「唯一收口」：本域任何 invoke 都只出现在这个文件里）。
-// 返回 Workspace 的命令一律交给调用方用 store.runWorkspace 写入单一状态源。
+// 「唯一收口」：本域任何 invoke 都只出现在这个文件里）。高级创建另有两个只读命令
+// （编码器目录 / 编码器可用性）同属本域，一并收在这里，避免面板里出现裸 invoke。
+// 返回 Workspace 的命令一律交给调用方用 store.runWorkspace 写入单一状态源；
+// 轮次创建 / 激活 / 备注走 core/ipc 的 ipc.roundCreate / roundActivate / roundSetNote。
 //
 // 注意：核心库的 VideoMeta 没有 rename_all，时长键是 snake_case 的 duration_secs；
 // 这里归一成 camelCase，兼容后端将来改名（两个键都认）。
 
 import { Channel, invoke } from '@tauri-apps/api/core';
+import type { ToolStatus } from '../../core/settings';
 import type { Workspace } from '../../core/model';
+import type { AdvancedVideoCatalog } from './advanced/catalog';
 
 /** ffprobe 读到的视频元信息（fps / durationSecs 为 0 表示未知）。 */
 export interface VideoMeta {
@@ -93,5 +97,15 @@ export const videoIpc = {
   /** 把文件注册到应用内回环流服务，返回 <video> 可用的本地地址。 */
   streamUrl(path: string): Promise<string> {
     return invoke<string>('video_stream_url', { path });
+  },
+
+  /** 高级创建的视频编码器目录：ffmpeg 可用性 + 实际枚举 + 四条静态映射规格。 */
+  advancedVideoCatalog(): Promise<AdvancedVideoCatalog> {
+    return invoke<AdvancedVideoCatalog>('advanced_video_catalog');
+  },
+
+  /** 建轮前批量查编码器可执行文件可用性（与设置页 tool_status 同源）。 */
+  advancedEncoderStatus(keys: readonly string[]): Promise<ToolStatus[]> {
+    return invoke<ToolStatus[]>('advanced_encoder_status', { keys: [...keys] });
   },
 };
