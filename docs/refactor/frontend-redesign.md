@@ -14,7 +14,7 @@
 
 非目标：
 
-- 不改 Rust 端与 IPC 命令名、参数、返回结构（列表见 `docs/refactor/ipc.md`，由 `src/core/ipc.ts` 唯一收口）。
+- 不改 Rust 端与 IPC 命令名、参数、返回结构（核心域由 `src/core/ipc.ts` 收口，功能域命令收口在各域 `ipc.ts`）。
 - 不引入 UI 框架、组件库、CSS 框架、动画库。保持零新增运行时依赖。
 - 不改数据模型（`workspace.json` 字段不变）；新增的纯界面偏好（面板宽度、折叠态、视图模式）只进 localStorage。
 - 不改命令行、导出文件格式、跑分算法。
@@ -39,9 +39,9 @@
 - 顶部栏 44px：品牌名、当前分组 / 轮次面包屑（双击或 F2 改名）、状态文本（可点开全文）、快捷键帮助、设置。
 - 左栏 208px：分组列表（类型图标 + 名称 + 轮数），当前项为填充底；右键菜单（重命名 / 关闭）；关闭有内容的组先确认。底部「新建跑分组」弹出图片 / 视频二选一，选完在弹窗里填名字（预填「跑分组 N」，Enter 确认）。
 - 工作栏 44px：轮次 chips（单击切换、双击改名、右键菜单删除并确认）+ 新建轮；右侧导出菜单。
-- 舞台：图片组为对比查看器（工具栏 + 画布 + 胶片条）；视频组为视频对比（画面 + 时间轴）。无内容时是引导式空态（选原图 / 拖入文件）。支持沉浸模式（隐藏左栏、检视器、结果坞，Esc 退出）。
+- 舞台：图片组为对比查看器（工具栏 + 画布 + 胶片条）；视频组为视频对比（画面 + 时间轴）。无内容时是引导式空态（选原图 / 拖入文件）。支持沉浸模式（隐藏左栏、检视器与结果坞，工作栏保留以便切轮与导出；Esc 退出）。
 - 检视器 328px：可滚动分区，分区标题可折叠（折叠态按分区持久）。图片组分区：原图、跑分图、跑分、编码阶梯、高级。视频组分区：原视频、跑分视频、视频跑分。
-- 结果坞：默认高度 248px，可拖上边缘调整（140–560px），可折叠；页签为 评分表 / BD-rate（视频组为 视频指标）。表格内部滚动，不推动外层。
+- 结果坞：默认高度 248px，可拖上边缘调整（140–560px，且不超过窗口高度的 72%），可折叠；页签为 评分表 / BD-rate（视频组为 视频指标）。表格内部滚动，不推动外层。
 - 空工作区：舞台整块空态，给出「新建图片跑分组」「新建视频跑分组」两个入口与一句拖放提示。
 
 ## 3. 交互契约
@@ -98,16 +98,16 @@
 | `--ok` / `--danger` / `--danger-soft` / `--info` | `#58bf8c` / `#e4695f` / `rgba(228,105,95,.14)` / `#6fa8d6` | 语义色 |
 | `--canvas` / `--canvas-checker` | `#222` / `#272727` | 图像判定用中性底 + 棋盘格 |
 | `--shadow-pop` / `--shadow-modal` | 见代码 | 仅浮层与模态 |
-| `--focus-ring` | `0 0 0 2px var(--surface-0), 0 0 0 4px var(--accent)` | 键盘焦点 |
+| 焦点 | `:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }` | 键盘焦点（不用 box-shadow 环，避免被祖先裁切） |
 
-浅色（`data-theme="light"`）：底 `#f2f3f4`，面板 `#fafafa`，卡片 `#fff`，线 `rgba(20,22,25,.10)`，字 `#191c20` / `#5b646e` / `#8a939d`，琥珀压深为 `#b26a0c`（保证白字对比度），画布 `#c9c9c9`。
+浅色（`data-theme="light"`）：底 `#f2f3f4`，面板 `#fafafa`，卡片 `#fff`，线 `rgba(20,22,25,.12)`（强调 `.22`），字 `#191c20` / `#545d67` / `#6b737d`，琥珀压深为 `#9a5c0d`（白字对比达标），画布 `#c9c9c9`。语义软底色与遮罩收起为 `--ok-soft` / `--info-soft` / `--scrim` / `--scrim-soft` 令牌；非令牌 CSS 只允许纯黑/纯白 rgba 叠层（由 design-guards 断言）。
 
 几何与字号：
 
 - 字号只有三档：`--fs-meta: 12px`、`--fs-body: 13px`、`--fs-title: 15px`。禁止 12px 以下，禁止第四档。
 - 圆角只有四档：`--r-xs: 2px`、`--r-sm: 4px`、`--r-md: 6px`、`--r-lg: 10px`。嵌套时按 `R_inner = max(0, R_outer - padding)` 收紧。
 - 边框统一 `0.5px solid var(--line)`（高亮态 `--line-strong`），不用 1px 实线。
-- 间距 4 的倍数：`--s-1..--s-8`。面板内边距 12px，控件高 28/32px。
+- 间距 4 的倍数：`--s-1..--s-8`。面板内边距 12px，控件高 `--control-h: 30px`（小号 `--control-h-sm: 26px`）。
 - 阴影只给浮层/模态；卡片、按钮、栏一律无阴影，用底色与发丝线分层。
 - 数字一律 `font-variant-numeric: tabular-nums`；日期/数字格式化走 `Intl`。
 - 禁止：中点「·」分隔符、卡片左边缘彩条、每个卡片一段解释性副标题、全大写 eyebrow、`transition: all`、`outline: none` 无替代、纯装饰性无限动效。
@@ -140,14 +140,14 @@ iconButton({ icon, label, variant?, size?, disabled?, onClick? }): HTMLButtonEle
 chip({ label, active?, title?, onClick?, onRemove?, disabled? }): HTMLElement
 segmented({ items: {id,label,icon?}[], value, onChange, ariaLabel }): HTMLElement       // role=radiogroup，方向键切换
 field({ label, control, hint?, error? }): HTMLElement                                  // <label> 包控件
-switchField({ label, checked, onChange, hint? }): HTMLElement                          // role=switch
-sliderField({ label, min, max, step, value, onInput, format }): { node, setValue }
-selectField({ label, options, value, onChange }): HTMLElement
-textField({ label, value, placeholder?, onInput, onCommit?, mono? }): { node, setValue }
-section({ title, collapsible?, open?, onToggle?, actions?, id? }, ...children): HTMLElement
+switchField({ label, checked, onChange, hint? }): { node, button, setChecked }                          // role=switch
+sliderField({ label, min, max, step, value, onInput, format? }): { node, input, setValue }
+selectField({ label, value, choices, onChange }): HTMLElement
+textField({ label, value, placeholder?, onCommit, type?, mono?, hint? }): { node, input, setValue }
+section({ id?, title, collapsible?, open?, onToggle?, actions?, className? }, ...children): { node, body, setTitle }
 emptyState({ title, hint?, actions? }): HTMLElement
 badge({ text, kind: 'neutral'|'accent'|'ok'|'danger'|'info', title? }): HTMLElement
-progressBar({ value, max, label? }): { node, set(value, max, label?) }
+progressBar({ label? }): { node, set(value, max, label?), setIndeterminate(label) }
 toolbar(...children): HTMLElement
 spinner(): HTMLElement
 ```
@@ -187,7 +187,8 @@ Tauri IPC ──> core/ipc.ts（唯一 invoke 收口，带类型）
 - `core/actions.ts`：分组/轮次 CRUD、文件对话框、原图/跑分图增删、文件冲突询问等跨域动作。
 - 各功能域自己的动作放各自目录（如 `features/encoding/scoring.ts`、`features/results/export.ts`、`features/video/actions.ts`）。
 - 任何 IPC 变更都返回整份 `Workspace`，统一走 `store.setWorkspace()`；不做前端乐观更新（后端是唯一真源）。
-- 长任务：`beginBusy` 时写 `{ label, detail?, running:Set<path> }`，进度回调用 `updateBusy`；结束时 `endBusy`。忙时所有会改数据的动作入口置灰，只保留「取消/关闭浮层」。
+- 长任务：`beginBusy` 时写 `{ label, detail?, running:Set<path> }`，进度回调用 `updateBusy({ completed, total, detail })`（`completed/total` 是结构化真值，`detail` 只放人类可读文案，界面不得反解 `detail`）；结束时 `endBusy`。
+- 忙时置灰所有会改工作区内容或写文件的入口（新建/重命名/关闭/删除、增删跑分项、跑分、导出），并给出原因；**导航（切组、切轮）与设置保存不置灰**——它们只改激活位置/独立设置文件，长任务期间仍然安全。
 - 按轮隔离的界面状态（排序、一站式参数、查看器逐模式选图、滚动位置）以轮 id 为键存在模块内 Map，切轮不串扰、不持久化。
 - 纯界面偏好（左栏/检视器折叠、结果坞高度、分区折叠、查看器模式、主题以外）存 `localStorage`，键前缀 `pixel-arena.ui.`；`settings.recordState === false` 时不读写。
 
@@ -226,6 +227,7 @@ registerStageView(view) / registerPanelSection(section) / registerDockTab(tab)
 ```
 
 - 外壳在「分组或轮次变化」时销毁并重新 `mount`；状态变化时只调 `update()`。
+- 五个注册表（舞台视图/分区/页签/命令/键位）统一「同 id 覆盖」语义：重复注册不报错也不静默丢弃，后注册者生效（热更新与测试替身都靠这个）。
 - 命令 id 约定（快捷键与外壳按钮按此调用，功能域注册时必须同名）：`pick-reference-image` / `pick-reference-video`、`pick-candidates-image` / `pick-candidates-video`、`run-score-image` / `run-score-video`、`rerun-changed-image`、`generate-ladder-image`、`export-menu`、`open-settings`、`open-help`。
 - 舞台键位用 `registerKeyBinding({ id, keys, kinds?, when?, run })` 注册（外壳统一监听 keydown，输入框/浮层打开时不派发）。
 - 拖放落区用 `registerDropTarget(host, { id, accept, hint, onDrop, disabled? })`（`src/shell/file-drop.ts`），外壳负责把系统文件拖放路由到指针下的落区。
