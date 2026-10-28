@@ -1,4 +1,4 @@
-/* results 域样式：评分表 / BD-rate 页签。
+/* results 域样式：评分表 / 效率对比页签。
  *
  * 约定（docs/refactor/frontend-redesign.md §4）：
  * - 只用 tokens.css 的变量，不写字面色值；
@@ -377,9 +377,9 @@
   white-space: nowrap;
 }
 
-/* ---------- BD-rate 页签 ---------- */
+/* ---------- 效率对比页签 ---------- */
 
-.bdrate-tab {
+.efficiency-tab {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -388,47 +388,92 @@
   gap: var(--s-1);
 }
 
-.bdrate-tab__head {
+.efficiency-tab__head {
   display: flex;
   align-items: baseline;
   gap: var(--s-2);
   flex: none;
 }
 
-.bdrate-tab__title {
+.efficiency-tab__title {
   margin: 0;
   color: var(--text);
   font-size: var(--fs-body);
   font-weight: 600;
 }
 
-.bdrate-tab__ref {
+.efficiency-tab__ref {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-muted);
   font-size: var(--fs-meta);
 }
 
-.bdrate-tab__legend,
-.bdrate-tab__note {
+.efficiency-tab__legend,
+.efficiency-tab__note {
   flex: none;
   margin: 0;
   color: var(--text-subtle);
   font-size: var(--fs-meta);
 }
 
-.bdrate-tab__note {
+.efficiency-tab__note {
   color: var(--text-muted);
 }
 
-.bdrate-tab__status-host {
-  flex: none;
-}
-
-.bdrate-tab__table {
+.efficiency-tab__table {
   flex: 1;
   min-height: 0;
 }
 
-.bdrate-tab__loading {
+/* 「不划算」用弱化文字：徽标只留给划算项，一眼扫得到。 */
+.efficiency-tab__verdict {
+  color: var(--text-subtle);
+}
+
+/* BD-rate 是补充节：点数足够才出现，最多占下半屏，表格自己滚动。 */
+.efficiency-tab__bdrate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 48%;
+  padding-top: var(--s-1);
+  border-top: var(--hairline) solid var(--line);
+}
+
+.efficiency-tab__bdrate-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  flex: none;
+}
+
+.efficiency-tab__bdrate-title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+}
+
+.efficiency-tab__bdrate-legend {
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+}
+
+.efficiency-tab__status {
+  flex: none;
+}
+
+.efficiency-tab__bdrate-table {
+  flex: 1;
+  min-height: 0;
+}
+
+.efficiency-tab__loading {
   display: flex;
   align-items: center;
   gap: var(--s-2);
