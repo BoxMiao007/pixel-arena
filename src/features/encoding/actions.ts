@@ -1,11 +1,11 @@
-// encoding 域的动作层：来源选择、跑分、一站式生成、图片条目队列的宿主接线。
+// encoding 域的动作层：来源选择、跑分、一站式生成、参数变体的宿主接线。
 //
 // 分三层，谁也不跳层：
 // - 本文件（动作）：读 store → 调 IPC → 写 store → 状态栏；不含 DOM 结构；
 // - logic/*（纯逻辑）：计划 / 判定 / 编排，零 DOM、零 store；
 // - sections/* 与 overlay/*（界面）：只组合原语并调用这里。
 //
-// 忙状态统一用 store.busy 的任务 id（`score:<轮>` / `ladder:<轮>` / `queue:<组>`），
+// 忙状态统一用 store.busy 的任务 id（`score:<轮>` / `ladder:<轮>`），
 // 所有入口都先查 isBusy，避免长任务重复触发（后端不可取消，见规格 §5.1）。
 
 import {
@@ -20,23 +20,26 @@ import {
 import { ipc as coreIpc } from '../../core/ipc';
 import { errorText } from '../../core/util';
 import {
-  IMAGE_FILTER,
   addCandidates,
   chooseCandidates,
   chooseReference,
-  pickFile,
-  pickFiles,
   removeCandidate,
   setRoundReference,
 } from '../../core/actions';
-import type { Group, Round, Workspace } from '../../core/model';
+import type { CandidateImage, Group, Round, Workspace } from '../../core/model';
 import type { ToolStatus } from '../../core/settings';
 import {
-  addImagePaths,
+  cardForArtifact,
+  entryForArtifact,
+  forgetArtifact,
   imageQueueFor,
+  newVariant,
   planScore,
+  presetCardFor,
   removeImageEntry,
-  roundName,
+  syncEntryReference,
+  variantFromCard,
+  variantSummary,
   type ImageEntry,
   type RoundSummary,
 } from './logic/entries';
@@ -48,8 +51,9 @@ import {
   runQueuePlanOnce,
   type ImageEntryEditorDeps,
   type QueueEditorHostDeps,
+  type QueueRuntimeDeps,
 } from './logic/runtime';
-import type { ScoredCandidate } from './logic/run';
+import { candidatesNeedingScore, type ScoredCandidate } from './logic/run';
 import {
   LOSSLESS_FORMATS,
   LOSSY_FORMATS,
@@ -72,7 +76,6 @@ import {
 } from './session';
 import { askConflictDialog } from './overlay/conflict';
 import { showEncoderIssueCard } from './overlay/encoder-issue';
-import { openQueueModal, type QueueModalActions } from './overlay/queue-modal';
 import { showNoticeCard } from './overlay/notice';
 
 /** 一个评测轮的最小上下文（与 shell/registry 的 ViewCtx 同形）。 */
@@ -82,7 +85,7 @@ export interface RoundCtx {
 }
 
 /** 长任务 id（同一轮同一类任务只允许一个）。 */
-export type BusyScope = 'score' | 'ladder' | 'queue';
+export type BusyScope = 'score' | 'ladder';
 
 export function busyIdOf(scope: BusyScope, key: string): string {
   return `${scope}:${key}`;
@@ -145,19 +148,29 @@ export async function dropOnCandidates(ctx: RoundCtx, paths: readonly string[]):
   await addCandidates(ctx.group.id, ctx.round.id, paths);
 }
 
-/** 移除一张跑分图（行内 ×）；只改评测记录，不删磁盘文件。 */
+/**
+ * 移除一张跑分图（行内 ×）；只改评测记录，不删磁盘文件。
+ *
+ * 若这张图是某个参数变体的产物，同时抹掉变体的那条快照：否则判定仍说「已跑分且无变更」，
+ * 增量跑分会永远跳过它，而它的行已经不在本轮了（变体也再没有入口能重新生成）。
+ */
 export async function removeCandidateAt(ctx: RoundCtx, path: string): Promise<void> {
   if (isBusy()) return;
+  const owner = entryForArtifact(variantEntries(ctx.group.id, ctx.round.id), path);
   await removeCandidate(ctx.group.id, ctx.round.id, path);
+  if (owner !== null && forgetArtifact(owner, path)) {
+    status('已移除跑分图；对应参数变体回到待生成（磁盘文件保留）');
+  }
 }
 
 // ---------- 跑分：整轮全量 ----------
 
 /**
- * 整轮全量跑分（唯一全量入口）。返回是否成功。
+ * 整轮跑分（唯一全量入口）：先把脏参数变体生成出来，再对本轮原有跑分图整轮重算。
  *
- * 进度是后端 Channel 推的真实 N/M：写 busy.completed/total 与状态栏，不重建界面；
- * 完成时用返回的整份工作区刷新（结果坞与 BD-rate 由各自的订阅者更新）。
+ * 为什么先补生成：变体的产物必须先进本轮才能参与跑分（「参与下次跑分」）；新产物由
+ * runQueuePlanOnce 的子集跑分当场出指标，原有行再整轮重算一次——每张图只算一次。
+ * 进度与忙标志统一挂在 `score:<轮>` 上（跑分分区读同一个 id）。
  */
 export async function runFullScore(ctx: RoundCtx): Promise<boolean> {
   const groupId = ctx.group.id;
@@ -166,37 +179,68 @@ export async function runFullScore(ctx: RoundCtx): Promise<boolean> {
   // 否则同轮内刚加的原图/跑分图会被旧快照的校验误拒。
   const fresh = findRound(getState().workspace, groupId, roundId);
   if (fresh) ctx.round = fresh;
-  const total = ctx.round.candidates.length;
-  if (!ctx.round.referencePath) {
+  const round = ctx.round;
+  if (!round.referencePath) {
     status('先选择原图，再开始跑分', true);
     return false;
   }
-  if (total === 0) {
-    status('还没有跑分图：先添加至少一张，再开始跑分', true);
+  const entries = variantEntries(groupId, roundId);
+  syncEntryReference(entries, round.referencePath);
+  const plan = planScore(entries, queueIdentityProbe());
+  const oldPaths = round.candidates.map((candidate) => candidate.path);
+  if (oldPaths.length === 0 && plan.runImageCount === 0) {
+    status('本轮还没有可跑的东西：先添加跑分图或参数变体', true);
     return false;
   }
+  if (plan.encoders.length > 0 && !(await encodersReady(entries))) return false;
+
   const id = busyIdOf('score', roundId);
-  beginBusy(id, '正在跑分', ctx.round.candidates.map((candidate) => candidate.path));
-  setStatus(`跑分中 0/${total}`);
+  beginBusy(id, '正在跑分', oldPaths);
   try {
-    const workspace = await coreIpc.roundScoreCandidates({
-      groupId,
-      roundId,
-      onProgress: (progress) => {
-        updateBusy(id, {
-          completed: progress.completed,
-          total: progress.total,
-          detail: '正在计算指标',
-        });
-        setStatus(`跑分中 ${progress.completed}/${progress.total}`);
-      },
-    });
-    setWorkspace(workspace);
-    const failed = (findRound(workspace, groupId, roundId)?.candidates ?? []).filter(
-      (candidate) => candidate.error !== null,
-    ).length;
+    if (plan.runImageCount > 0) {
+      // 变体编排自己会读标识、写状态栏；这里复用同一份 deps，但不重复占忙标志，
+      // 也不弹「跑分汇总」卡片（整轮跑的收尾在下面一次说清）。
+      const deps: QueueRuntimeDeps = {
+        ...variantRuntimeDeps(groupId, roundId),
+        showNotice: () => undefined,
+      };
+      await refreshQueueIdentities(deps, [round.referencePath]);
+      await runQueuePlanOnce({
+        groupId,
+        roundId,
+        entries,
+        deps,
+        hooks: {
+          onImageStart: ({ label, index, total }) => {
+            updateBusy(id, { completed: 0, total: 1, detail: `正在生成参数变体（${index + 1}/${total}）` });
+            setStatus(`正在生成参数变体 ${index + 1}/${total}：${label}…`);
+          },
+          askConflict: askConflictDialog,
+        },
+      });
+    }
+    if (oldPaths.length > 0) {
+      setStatus(`跑分中 0/${oldPaths.length}`);
+      setWorkspace(
+        await coreIpc.roundScoreCandidates({
+          groupId,
+          roundId,
+          paths: oldPaths,
+          onProgress: (progress) => {
+            updateBusy(id, { completed: progress.completed, total: progress.total, detail: '正在计算指标' });
+            setStatus(`跑分中 ${progress.completed}/${progress.total}`);
+          },
+        }),
+      );
+    }
+    const after = findRound(getState().workspace, groupId, roundId);
+    const total = after?.candidates.length ?? 0;
+    const failed = (after?.candidates ?? []).filter((candidate) => candidate.error !== null).length;
+    const generated = plan.runImageCount;
     if (failed > 0) {
-      status(`跑分完成，共 ${total} 张；${failed} 张失败（结果坞状态列可展开原因）`, true);
+      status(`跑分完成，本轮共 ${total} 张；${failed} 张失败（结果坞状态列可展开原因）`, true);
+    } else if (generated > 0) {
+      status(`跑分完成，本轮共 ${total} 张（新生成 ${generated} 个参数变体）`);
     } else {
       status(`跑分完成，共 ${total} 张`);
     }
@@ -209,7 +253,38 @@ export async function runFullScore(ctx: RoundCtx): Promise<boolean> {
   }
 }
 
-// ---------- 图片条目队列：宿主依赖 ----------
+// ---------- 参数变体：会话态、宿主依赖与动作 ----------
+
+/** 本轮变体列表（会话态；分区渲染与动作入口共用同一份）。 */
+export function variantEntries(groupId: string, roundId: string): ImageEntry[] {
+  return imageQueueFor(groupId, roundId).entries;
+}
+
+/** 同轮活数据：ctx 是挂载快照，入口先按 id 重取（与分区 update 同一口径）。 */
+function liveCtx(ctx: RoundCtx): RoundCtx {
+  const fresh = findRound(getState().workspace, ctx.group.id, ctx.round.id);
+  if (fresh) ctx.round = fresh;
+  return ctx;
+}
+
+/** 让变体跟上本轮原图（原图换了 ⇒ 旧结果整体作废）；返回是否有变体被改写。 */
+export function syncVariants(ctx: RoundCtx): boolean {
+  const round = liveCtx(ctx).round;
+  return syncEntryReference(variantEntries(ctx.group.id, round.id), round.referencePath);
+}
+
+/**
+ * 读一次本轮原图的标识并写入判定缓存（分区挂载后自举用）。
+ *
+ * 没有这份自举，刚挂载的变体会因为「标识还没读过」被保守判成「将重跑」，徽章失真；
+ * 跑分 / 新建变体等动作本来就会读，这里只是把界面首次呈现也变成事实。
+ */
+export async function refreshRoundIdentity(referencePath: string): Promise<void> {
+  await refreshQueueIdentities(
+    { probeIdentities: (paths) => ipc.imageIdentities(paths) },
+    [referencePath],
+  );
+}
 
 /** 跑分后把逐行结果摊成 {path,error}（编排层据此把「编码成功但没跑出指标」折成失败）。 */
 function rowsOf(workspace: Workspace, groupId: string, roundId: string): ScoredCandidate[] {
@@ -221,39 +296,22 @@ function rowsOf(workspace: Workspace, groupId: string, roundId: string): ScoredC
 }
 
 /**
- * 条目流程的宿主依赖（队列面板、候选就地编辑、「只跑改过的」三处共用一份）。
+ * 变体流程的宿主依赖（分区、编辑弹窗、整轮跑分与「重跑改过的」共用一份）。
  *
  * 这里的每个方法只做「IPC → setWorkspace」；增量语义（跑哪张、跳过哪张、失败怎么记）
  * 全部由 logic/run 的编排决定，不在这一层重写。
  */
-export function queueDeps(groupId: string): QueueEditorHostDeps {
+export function variantRuntimeDeps(
+  _groupId: string,
+  roundId: string,
+): QueueRuntimeDeps & QueueEditorHostDeps {
   return {
     probeIdentities: (paths) => ipc.imageIdentities(paths),
-    createRound: async (targetGroupId, sourcePath) => {
-      const before = getState().workspace?.groups.find((group) => group.id === targetGroupId);
-      if (!before) throw new Error('跑分组不存在或已被关闭');
-      const name = roundName(before.rounds.length + 1, sourcePath);
-      const created = await coreIpc.roundCreate(targetGroupId, name);
-      setWorkspace(created);
-      const group = created.groups.find((g) => g.id === targetGroupId);
-      const newRound = group?.rounds.find(
-        (round) => !before.rounds.some((old) => old.id === round.id),
-      );
-      if (!group || !newRound) throw new Error('无法定位新建的评测轮');
-      setWorkspace(await coreIpc.roundActivate(targetGroupId, newRound.id));
-      return { groupId: targetGroupId, roundId: newRound.id };
-    },
-    setReference: async (targetGroupId, roundId, path) => {
-      const round = findRound(getState().workspace, targetGroupId, roundId);
-      // 同一张原图不重复写：round_set_reference 会清掉已有跑分行的指标
-      if (round?.referencePath === path) return;
-      setWorkspace(await coreIpc.roundSetReference(targetGroupId, roundId, path));
-    },
-    encode: async (targetGroupId, roundId, referencePath, card, conflicts) => {
+    encode: async (targetGroupId, targetRoundId, referencePath, card, conflicts) => {
       const encodeOnce = (overwrite: boolean) =>
         ipc.advancedEncode({
           groupId: targetGroupId,
-          roundId,
+          roundId: targetRoundId,
           referencePath,
           job: jobPayloadOf(card),
           overwrite,
@@ -267,19 +325,16 @@ export function queueDeps(groupId: string): QueueEditorHostDeps {
       if (retry.kind !== 'done') throw new Error('覆盖重调后不应再返回冲突');
       return retry.product;
     },
-    addCandidates: async (targetGroupId, roundId, paths, params) => {
-      setWorkspace(await coreIpc.roundAddCandidates(targetGroupId, roundId, paths, params));
+    addCandidates: async (targetGroupId, targetRoundId, paths, params) => {
+      setWorkspace(await coreIpc.roundAddCandidates(targetGroupId, targetRoundId, paths, params));
     },
-    deleteRound: async (targetGroupId, roundId) => {
-      setWorkspace(await coreIpc.roundDelete(targetGroupId, roundId));
-    },
-    scoreRound: async (targetGroupId, roundId, paths) => {
+    scoreRound: async (targetGroupId, targetRoundId, paths) => {
       const workspace = await coreIpc.roundScoreCandidates({
         groupId: targetGroupId,
-        roundId,
+        roundId: targetRoundId,
         paths,
         onProgress: (progress) => {
-          updateBusy(busyIdOf('queue', groupId), {
+          updateBusy(busyIdOf('score', roundId), {
             completed: progress.completed,
             total: progress.total,
             detail: '正在计算指标',
@@ -288,27 +343,97 @@ export function queueDeps(groupId: string): QueueEditorHostDeps {
         },
       });
       setWorkspace(workspace);
-      return rowsOf(workspace, targetGroupId, roundId);
-    },
-    describeRound: (_targetGroupId, roundId) => describeRound(roundId),
-    withBusy: async (task) => {
-      const id = busyIdOf('queue', groupId);
-      beginBusy(id, '正在跑分');
-      try {
-        return await task();
-      } finally {
-        endBusy(id);
-      }
+      return rowsOf(workspace, targetGroupId, targetRoundId);
     },
     showNotice: (lines, options) => showNoticeCard(options.title, lines),
     setStatus: status,
     loadImageCatalog: () => ipc.advancedImageCatalog(),
-    pickReplacementImage: () =>
-      pickFile({ title: '更换图片（选一个新文件替换这张原图）', filters: [IMAGE_FILTER] }),
-    clearCandidates: async (targetGroupId, roundId) => {
-      setWorkspace(await coreIpc.roundClearCandidates(targetGroupId, roundId));
-    },
   };
+}
+
+/** 参数编辑区的依赖（分区就地展开与「高级选项」弹窗共用一份接线）。 */
+export function entryEditorDeps(
+  groupId: string,
+  roundId: string,
+  onChanged: () => void,
+): ImageEntryEditorDeps {
+  return queueEditorDeps(variantRuntimeDeps(groupId, roundId), onChanged);
+}
+
+/**
+ * 新建一个参数变体（「跑分图」分区的「＋ 新建参数变体」与「高级」分区共用）。
+ *
+ * 变体永远编码本轮原图：没有原图就先拒绝并给下一步（选择原图），
+ * 不制造「看起来能跑其实没有基准」的假入口。
+ */
+export async function addParamVariant(ctx: RoundCtx): Promise<ImageEntry | null> {
+  if (isBusy()) return null;
+  const live = liveCtx(ctx);
+  const referencePath = live.round.referencePath;
+  if (!referencePath) {
+    status('先选择原图，再加参数变体', true);
+    return null;
+  }
+  const entries = variantEntries(live.group.id, live.round.id);
+  syncEntryReference(entries, referencePath);
+  const entry = newVariant(referencePath);
+  entries.push(entry);
+  await refreshQueueIdentities(variantRuntimeDeps(live.group.id, live.round.id), [referencePath]);
+  status(`已添加参数变体（${variantSummary(entry)}）：调完参数点「生成并跑分」，它就成了本轮的一张跑分图`);
+  return entry;
+}
+
+/**
+ * 右键「高级选项」的落点：复制选中的跑分图，生成一个待调参的新变体。
+ *
+ * 参数口径（票面）：由变体产出的图复制**产出它的那张编码器卡**；人工导入 / 一站式
+ * 生成的图没有参数可依，按同格式的**预设参数**起头（认不出格式时退回默认 JPEG）。
+ * 原条目保持不变：复制体是独立的新图，改参数不会回头影响原图。
+ */
+export async function duplicateCandidateVariant(
+  ctx: RoundCtx,
+  candidate: CandidateImage,
+): Promise<ImageEntry | null> {
+  if (isBusy()) return null;
+  const live = liveCtx(ctx);
+  const referencePath = live.round.referencePath;
+  if (!referencePath) {
+    status('先选择原图，再复制参数变体', true);
+    return null;
+  }
+  const entries = variantEntries(live.group.id, live.round.id);
+  syncEntryReference(entries, referencePath);
+  const owner = entryForArtifact(entries, candidate.path);
+  const card = owner === null ? null : cardForArtifact(owner, candidate.path);
+  let entry: ImageEntry;
+  if (card !== null) {
+    entry = variantFromCard(referencePath, card);
+  } else {
+    let specs: ImageSpec[] = [];
+    try {
+      specs = await ensureImageSpecs();
+    } catch (err) {
+      console.warn('加载编码器目录失败，复制体按默认 JPEG 预设起头:', err);
+    }
+    entry = newVariant(referencePath, [presetCardFor(candidate.path, specs)]);
+  }
+  entries.push(entry);
+  await refreshQueueIdentities(variantRuntimeDeps(live.group.id, live.round.id), [referencePath]);
+  status(
+    card !== null
+      ? `已复制「${fileNameOf(candidate.path)}」的参数：调完点「完成」，下次跑分生成新图`
+      : '已按预设参数新建参数变体：调完点「完成」，下次跑分生成新图',
+  );
+  return entry;
+}
+
+/** 删除一个参数变体（只删会话态与列表行，磁盘产物保留；已被复制的原图不受影响）。 */
+export function removeVariantAt(ctx: RoundCtx, entryId: string): boolean {
+  if (isBusy()) return false;
+  const removed = removeImageEntry(variantEntries(ctx.group.id, ctx.round.id), entryId);
+  if (!removed) return false;
+  status('已删除参数变体（磁盘上的产物文件保留）');
+  return true;
 }
 
 /** 读某轮的名字与结果条数（轮已不在工作区返回 null）。 */
@@ -320,40 +445,93 @@ export function describeRound(roundId: string): RoundSummary | null {
   return null;
 }
 
-// ---------- 图片条目队列：动作 ----------
-
-/** 条目队列的会话态（按组键控；关闭分组时由 index.ts 的 onGroupRemoved 丢弃）。 */
-export function queueEntries(groupId: string): ImageEntry[] {
-  return imageQueueFor(groupId).entries;
-}
-
-/** 把一批已选好的图片加进条目队列（拖放与对话框共用）。 */
-export async function addQueuePaths(groupId: string, paths: readonly string[]): Promise<number> {
-  if (paths.length === 0) return 0;
-  addImagePaths(imageQueueFor(groupId), [...paths]);
-  await refreshQueueIdentities(queueDeps(groupId), paths);
-  status(`已加入 ${paths.length} 张图片（尚未跑分，工作区未改动）`);
-  return paths.length;
-}
-
-/** 「＋ 添加图片」：多选后直接入列（不弹窗），并读新这些原图的标识。 */
-export async function pickQueueImages(groupId: string): Promise<number> {
-  const paths = await pickFiles({ title: '添加图片（可多选）', filters: [IMAGE_FILTER] });
-  return addQueuePaths(groupId, paths);
-}
-
-/** 删条目：有轮则连带删轮（确认卡片由调用方弹，这里只落库）。 */
-export async function deleteQueueEntry(groupId: string, entry: ImageEntry): Promise<void> {
-  if (entry.roundId !== null && describeRound(entry.roundId) !== null) {
-    try {
-      setWorkspace(await coreIpc.roundDelete(groupId, entry.roundId));
-    } catch (err) {
-      status(`删除评测轮失败：${errorText(err)}（条目未删除）`, true);
-      return;
-    }
+/** 「重跑改过的」与分区的「生成并跑分」共用：只补生成脏变体 + 只跑缺指标的跑分图。 */
+export async function runChangedEntries(ctx: RoundCtx): Promise<void> {
+  if (isBusy()) return;
+  const live = liveCtx(ctx);
+  const groupId = live.group.id;
+  const roundId = live.round.id;
+  const round = live.round;
+  if (!round.referencePath) {
+    status('先选择原图，再跑参数变体', true);
+    return;
   }
-  removeImageEntry(imageQueueFor(groupId), entry.id);
-  status('已删除图片条目；磁盘上的产物文件保留');
+  const entries = variantEntries(groupId, roundId);
+  syncEntryReference(entries, round.referencePath);
+  const deps: QueueRuntimeDeps = variantRuntimeDeps(groupId, roundId);
+  await refreshQueueIdentities(deps, [round.referencePath]);
+  const plan = planScore(entries, queueIdentityProbe());
+  const pending = candidatesNeedingScore(round.candidates);
+  if (plan.encoders.length === 0 && pending.length === 0) {
+    const message = '没有需要跑的：参数变体与跑分图都已跑分且无变更';
+    status(message);
+    showNoticeCard('无需重跑', [message]);
+    return;
+  }
+  if (plan.encoders.length > 0 && !(await encodersReady(entries))) return;
+
+  const busy = busyIdOf('score', roundId);
+  beginBusy(busy, '正在跑分', round.candidates.map((candidate) => candidate.path));
+  try {
+    if (plan.runImageCount > 0) {
+      await runQueuePlanOnce({
+        groupId,
+        roundId,
+        entries,
+        deps,
+        hooks: {
+          onImageStart: ({ label, index, total }) => {
+            updateBusy(busy, { completed: index, total, detail: `正在生成参数变体 ${index + 1}/${total}` });
+            setStatus(`正在生成参数变体 ${index + 1}/${total}：${label}…`);
+          },
+          askConflict: askConflictDialog,
+        },
+      });
+    }
+    if (pending.length > 0) {
+      setWorkspace(
+        await coreIpc.roundScoreCandidates({
+          groupId,
+          roundId,
+          paths: pending.map((candidate) => candidate.path),
+          onProgress: (progress) => {
+            updateBusy(busy, { completed: progress.completed, total: progress.total, detail: '正在计算指标' });
+            setStatus(`跑分中 ${progress.completed}/${progress.total}`);
+          },
+        }),
+      );
+    }
+    const after = findRound(getState().workspace, groupId, roundId);
+    const failed = (after?.candidates ?? []).filter((candidate) => candidate.error !== null).length;
+    const parts: string[] = [];
+    if (plan.runImageCount > 0) parts.push(`${plan.runImageCount} 个参数变体已更新`);
+    if (pending.length > 0) parts.push(`${pending.length} 张跑分图已更新`);
+    if (failed > 0) parts.push(`${failed} 张失败`);
+    status(`跑分完成${parts.length > 0 ? `：${parts.join('；')}` : ''}`, failed > 0);
+  } catch (err) {
+    status(`跑分失败：${errorText(err)}`, true);
+  } finally {
+    endBusy(busy);
+  }
+}
+
+/**
+ * 跑变体之前预检编码器：缺哪个当场说清楚（含发布页），不让 N 项各自失败一遍。
+ * 返回 true 表示可以继续跑。
+ */
+async function encodersReady(entries: readonly ImageEntry[]): Promise<boolean> {
+  let specs: ImageSpec[];
+  try {
+    specs = await ensureImageSpecs();
+  } catch (err) {
+    status(`加载编码器目录失败：${errorText(err)}`, true);
+    return false;
+  }
+  const issue = await precheckEntries(entries, specs);
+  if (!issue) return true;
+  status(issue.message.split('\n')[0], true, issue.message);
+  showEncoderIssueCard(issue, () => void openSettingsPage());
+  return false;
 }
 
 /** 图片编码器目录只拉一次（advanced_image_catalog；工具键来自它的规格表）。 */
@@ -375,73 +553,6 @@ export async function openSettingsPage(): Promise<void> {
     status('设置入口还没就绪：请从顶栏「设置」打开编码器区指定外部路径', true);
   }
 }
-
-/**
- * 跑条目之前预检编码器：缺哪个当场说清楚（含发布页），不让 N 项各自失败一遍。
- * 返回 true 表示可以继续跑。
- */
-async function encodersReady(entries: readonly ImageEntry[]): Promise<boolean> {
-  let specs: ImageSpec[];
-  try {
-    specs = await ensureImageSpecs();
-  } catch (err) {
-    status(`加载编码器目录失败：${errorText(err)}`, true);
-    return false;
-  }
-  const issue = await precheckEntries(entries, specs);
-  if (!issue) return true;
-  status(issue.message.split('\n')[0], true, issue.message);
-  showEncoderIssueCard(issue, () => void openSettingsPage());
-  return false;
-}
-
-/** 「只跑改过的（N 张）」与队列面板的「跑分」共用同一份增量编排。 */
-export async function runChangedEntries(groupId: string): Promise<void> {
-  if (isBusy()) return;
-  const entries = queueEntries(groupId);
-  const plan = planScore(entries, queueIdentityProbe());
-  if (plan.encoders.length > 0 && !(await encodersReady(entries))) return;
-  await runQueuePlanOnce({
-    groupId,
-    entries: queueEntries(groupId),
-    deps: queueDeps(groupId),
-    hooks: {
-      onImageStart: ({ path, index, total }) => {
-        updateBusy(busyIdOf('queue', groupId), {
-          completed: index,
-          total,
-          detail: `正在跑分 ${fileNameOf(path)}`,
-        });
-        setStatus(`正在跑分 第 ${index + 1}/${total} 张（${fileNameOf(path)}）…`);
-      },
-      askConflict: askConflictDialog,
-    },
-  });
-}
-
-/** 队列模态的宿主动作（模态自己不碰 IPC）。 */
-export function queueModalActions(groupId: string): QueueModalActions {
-  return {
-    pickImages: () => pickQueueImages(groupId),
-    runPlan: () => runChangedEntries(groupId),
-    deleteEntry: (entry) => deleteQueueEntry(groupId, entry),
-    editorDeps: (_entry, onChanged) => entryEditorDeps(groupId, onChanged),
-    describeRound: (roundId) => describeRound(roundId),
-    isBusy: () => isBusy(),
-    setStatus: status,
-  };
-}
-
-/** 打开条目队列模态（图片组「高级」分区与命令共用）。 */
-export function openQueue(groupId: string): boolean {
-  return openQueueModal(groupId, queueModalActions(groupId));
-}
-
-/** 候选分区的就地编辑依赖（与队列面板同一份接线）。 */
-export function entryEditorDeps(groupId: string, onChanged: () => void): ImageEntryEditorDeps {
-  return queueEditorDeps(groupId, queueDeps(groupId), onChanged);
-}
-
 
 // ---------- 编码器可用性预检（决策 0025：缺失时给设置页与发布页，不让 15 项各自失败） ----------
 
@@ -497,7 +608,7 @@ export async function precheckLadder(items: readonly LadderItem[]): Promise<Enco
   }
 }
 
-/** 图片条目队列的编码器预检（工具键来自 advanced_image_catalog 的规格）。 */
+/** 参数变体的编码器预检（工具键来自 advanced_image_catalog 的规格）。 */
 export async function precheckEntries(
   entries: readonly ImageEntry[],
   specs: readonly ImageSpec[],

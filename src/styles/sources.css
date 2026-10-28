@@ -84,6 +84,11 @@
   background: var(--surface-2);
 }
 
+/* 还没生成的参数变体：虚线边区分「计划中的图」，与已生成的实图同列表但不抢视觉 */
+.cand--variant .cand__row {
+  border: var(--hairline) dashed var(--line-strong);
+}
+
 .cand__row {
   display: flex;
   flex-direction: column;

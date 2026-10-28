@@ -1,10 +1,13 @@
-// 逐图参数编辑区（就地编辑版）：候选分区里展开的一块，或队列模态的第 2 步。
+// 参数变体编辑区（就地展开版）：跑分图列表里展开的一块，或「高级选项」弹窗的主体。
 //
 // 与旧整屏弹窗的差别：只提供「内容视图」（renderEntryEditor 返回节点），由调用方决定
-// 放在检视器分区里还是模态步骤里——同一份实现，两处不漂移。
+// 放在检视器分区里还是模态里——同一份实现，两处不漂移。
 //
-// 即时生效：没有「确定 / 应用」，所有修改直接落在会话态的 ImageEntry 上；只有回队列
-// 点「跑分」才写工作区。卡片本身走 src/ui/encoder-card（与视频域共享一份）。
+// 即时生效：没有「确定 / 应用」，所有修改直接落在会话态的 ImageEntry 上；只有点
+// 「生成并跑分」才写工作区。卡片本身走 src/ui/encoder-card（与视频域共享一份）。
+//
+// 变体不再自带原图（永远编码本轮原图），所以这里没有「更换图片」：换原图是轮级动作，
+// 由来源分区负责；头部只如实显示本变体基于哪张原图。
 
 import { el } from '../../../ui/dom';
 import { badge, button } from '../../../ui/primitives';
@@ -21,8 +24,6 @@ import {
   addEncoderCard,
   editorHeader,
   moveCard,
-  planReplaceImage,
-  runReplaceImage,
 } from '../logic/editor-plan';
 
 /** 四态 → 徽标语义色。 */
@@ -91,16 +92,8 @@ function restoreOpenRegions(root: ParentNode, previous: Map<string, Map<string, 
   }
 }
 
-/**
- * 渲染一个条目的编辑视图。
- *
- * groupId 只用于换图时清行（后端命令要组 id）；其余全部经 deps 注入。
- */
-export function renderEntryEditor(
-  groupId: string,
-  entry: ImageEntry,
-  deps: ImageEntryEditorDeps,
-): EntryEditorView {
+/** 渲染一个参数变体的编辑视图（纯 DOM，不碰 IPC；依赖全部经 deps 注入）。 */
+export function renderEntryEditor(entry: ImageEntry, deps: ImageEntryEditorDeps): EntryEditorView {
   const specs: ImageSpec[] = [];
   let loading = true;
   let loadError: string | null = null;
@@ -108,31 +101,26 @@ export function renderEntryEditor(
   const catalog: EncoderCardCatalog = { kind: 'image', imageSpecs: specs, videoCatalog: null };
 
   const nameEl = el('span', { class: 'enc-editor__name' });
+  const referenceEl = el('span', { class: 'enc-editor__reference' });
   const badgeSlot = el('span', { class: 'enc-editor__badge' });
-  const replaceBtn = button({
-    label: '更换图片',
-    variant: 'secondary',
-    size: 'sm',
-    title: '用新文件替换这张原图：编码器配置保留，旧跑分记录清掉（磁盘产物文件不删）',
-    onClick: () => void replaceImage(),
-  });
   const head = el(
     'div',
     { class: 'enc-editor__head' },
     el('div', { class: 'enc-editor__title' }, nameEl, badgeSlot),
-    replaceBtn,
+    referenceEl,
   );
 
   const cardsBox = el('div', { class: 'enc-editor__cards' });
   const hintBox = el('p', { class: 'enc-editor__hint' });
   const node = el('div', { class: 'enc-editor' }, head, hintBox, cardsBox);
 
-  /** 头部：文件名 + 四态徽章（判定与列表同一份来源）。 */
+  /** 头部：变体摘要 + 基于哪张原图 + 四态徽章（判定与列表同一份来源）。 */
   const syncHead = (): void => {
     const verdict = judgeImageEntry(entry, deps.identityProbe());
     const header = editorHeader(entry, verdict);
     nameEl.textContent = header.fileName;
-    nameEl.title = entry.path;
+    referenceEl.textContent = `本轮原图：${header.referenceName}`;
+    referenceEl.title = entry.path;
     const failures = entryFailures(entry);
     const badgeEl = badge(
       header.status,
@@ -158,7 +146,7 @@ export function renderEntryEditor(
         el('p', {
           class: 'enc-editor__error',
           text: loadError
-            ? `编码器目录加载失败：${loadError}。可重开这个条目重试。`
+            ? `编码器目录加载失败：${loadError}。可重开这个变体重试。`
             : '编码器目录为空：到设置页检查编码器配置后重试。',
         }),
       );
@@ -204,7 +192,7 @@ export function renderEntryEditor(
           label: '＋ 添加编码器',
           variant: 'secondary',
           size: 'sm',
-          title: '给这张图再加一条编码器配置（同一编码器可以重复添加，各自参数独立）',
+          title: '给这个变体再加一条编码器配置（同一编码器可以重复添加，各自参数独立）',
           onClick: () => {
             if (!addEncoderCard(entry, specs)) return;
             renderCards();
@@ -220,54 +208,24 @@ export function renderEntryEditor(
     deps.onChanged();
   };
 
-  // 连续输入（质量滑杆 / 文本）不重建卡片，只同步徽章与列表
+  // 连续输入（质量滑杆 / 文本）不重建卡片，只同步徽章；提交（change）时才通知宿主，
+  // 让列表里的变体摘要与计数跟着变——否则改完参数回到列表还显示旧摘要（q75 → q40）。
   cardsBox.addEventListener('input', () => syncHead());
-  cardsBox.addEventListener('change', () => syncHead());
-
-  let replacing = false;
-  async function replaceImage(): Promise<void> {
-    if (replacing) return;
-    replacing = true;
-    replaceBtn.disabled = true;
-    try {
-      let picked: string | null;
-      try {
-        picked = await deps.pickImage();
-      } catch (err) {
-        deps.setStatus(`选择图片失败：${String(err)}`, true);
-        return;
-      }
-      if (!picked) return;
-      const info = entry.roundId === null ? null : deps.describeRound(entry.roundId);
-      const plan = planReplaceImage(entry, picked, info);
-      try {
-        await runReplaceImage(plan, entry, {
-          clearCandidates: (roundId) => deps.clearCandidates(groupId, roundId),
-          refreshIdentity: (path) => deps.refreshIdentity(path),
-        });
-      } catch (err) {
-        deps.setStatus(`更换图片失败：${String(err)}（旧图片与跑分结果未改动）`, true);
-        return;
-      }
-      renderCards(); // 命令行预览的输入路径随原图变化
-      notifyChanged();
-      deps.setStatus(plan.message);
-    } finally {
-      replacing = false;
-      replaceBtn.disabled = false;
-    }
-  }
+  cardsBox.addEventListener('change', () => {
+    syncHead();
+    deps.onChanged();
+  });
 
   /** 外部状态变化（徽章判定 / 列表刷新）后同步头部；结构变化由卡片回调重建。 */
   const refresh = (): void => syncHead();
 
-  // 目录异步拉取：失败只影响参数区（换图仍可用）
+  // 目录异步拉取：失败只影响参数区
   void loadCatalog(deps)
     .then((loaded) => {
       specs.push(...loaded);
       loading = false;
       hintBox.textContent =
-        loaded.length === 0 ? '' : '改动即时生效；点队列里的「跑分」才会写工作区。';
+        loaded.length === 0 ? '' : '改动即时生效；点「生成并跑分」才会写工作区。';
     })
     .catch((err: unknown) => {
       loading = false;

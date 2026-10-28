@@ -2,7 +2,7 @@
 
 > 本文件是 `docs/refactor/frontend-redesign.md` 之下、由 **encoding** 域负责的落地规格。
 > 覆盖：右侧检视器里的**来源（原图 / 跑分图）**、**跑分触发与进度**、**编码阶梯（一站式）**、
-> **高级（条目队列 + 参数编辑）**，以及它们的纯逻辑、IPC 契约、测试守护与风险。
+> **参数变体（右键「高级选项」+ 参数编辑）**，以及它们的纯逻辑、IPC 契约、测试守护与风险。
 >
 > 读法：第 1 节是「现状事实」（写过一次就不再重复查代码）；第 2 节定下哪些能原样搬、
 > 哪些必须重写；第 3 节是问题清单；第 4 节是提案（按价值排序，≤6 条）；第 5 节是坑。
@@ -21,16 +21,15 @@
 
 ### 0.1 检视器分区（PanelSection）
 
-图片组五个分区，`kinds: ['image']`。注意 `PanelSection` 接口本身没有 `collapsible` 字段——折叠由
+图片组四个分区，`kinds: ['image']`。注意 `PanelSection` 接口本身没有 `collapsible` 字段——折叠由
 分区内部用 `ui/primitives.section({ collapsible })` 实现，展开态经 `getPref/setPref` 持久。
 
 | 分区 id | 标题 | order | 现状来源 | 归属 |
 | --- | --- | --- | --- | --- |
 | `reference` | 原图 | 10 | `renderImageGroupContent` 的 `pickReference` + `pill-reference` 槽 | encoding（`sources.css`） |
-| `candidates` | 跑分图 | 20 | 「添加跑分图」+ 已选跑分图胶囊列 | encoding（`sources.css`） |
-| `score` | 跑分 | 30 | 「开始跑分」+「重跑改过的」+ 行内状态 + 进度 | encoding |
+| `candidates` | 跑分图 | 20 | 跑分图清单 + 参数变体（混排，含「＋ 新建参数变体」与右键「高级选项」） | encoding（`sources.css`） |
+| `score` | 跑分 | 30 | 「开始跑分」（先补生成脏变体再整轮重算）+「重跑改过的」+ 进度 | encoding |
 | `ladder` | 编码阶梯 | 40 | `buildOnestopControls` | encoding |
-| `advanced` | 高级 | 50 | 「新建评测轮 → 高级创建…」图片分支（条目队列） | encoding |
 
 视频组的「原视频 / 跑分视频 / 视频跑分」归 video 域，但其中**编码器卡**（`renderEncoderCard`）
 由本域提供的共享实现消费（见 2.4，需 lead 裁决归属）。
@@ -41,9 +40,9 @@
 | --- | --- | --- |
 | `sources:pick-reference` | 选/换原图 | `Ctrl+O` |
 | `sources:pick-candidates` | 追加跑分图 | `Ctrl+Shift+O` |
-| `score:run` | 整轮全量跑分（`enabled: 有原图 && 有跑分图 && !isBusy()`） | `Ctrl+Enter` |
+| `score:run` | 整轮跑分：先补生成脏变体，再整轮重算（`enabled: 有原图 && (有跑分图 || 有变体) && !isBusy()`） | `Ctrl+Enter` |
 | `encoding:generate` | 一站式生成并跑分 | — |
-| `encoding:rerun-changed` | 只跑改过的（N 张） | — |
+| `encoding:rerun-changed` | 只补生成脏变体 + 只跑缺指标的图（N 张） | — |
 
 ### 0.2 归属边界
 
@@ -71,7 +70,7 @@
 
 ### 0.4 本域仍需 lead 补的三件事
 
-1. **`actions.addCandidates` 需要 `encodingParams`**：一站式与条目队列必须把参数文本与路径成对写入
+1. **`actions.addCandidates` 需要 `encodingParams`**：一站式与参数变体都必须把参数文本与路径成对写入
    （`ipc.roundAddCandidates` 已支持第 4 个可选参数，`actions` 层没透传）。要么扩参，要么本域直调
    `ipc.roundAddCandidates` + `setWorkspace`（推荐前者，保持一致状态栏文案）。
 2. **拖放入口**：`shell/` 目前只有 `controller.ts` 与 `registry.ts`，没有统一的拖放路由；
@@ -85,7 +84,7 @@
 
 术语与数据：
 
-- **图片条目**：一张原图 + 一整套编码器卡，`ImageEntry`；**仅会话态**（模块级 Map，按 `groupId` 键控）。
+- **参数变体**：本轮原图 + 一套独立编码器卡，`ImageEntry`；**仅会话态**（模块级 Map，按 `groupId → roundId` 两级键控）。
 - **跑分快照**：该条目最近一次**成功**跑分的原图标识（path+size+mtime）+ 逐卡参数指纹/产物路径。
 - **失败永远不算已跑分**：失败只进 `entry.failures`，不进快照。
 
@@ -168,56 +167,56 @@
 - **持久化**：无（纯会话态）。
 - **守护测试**：`onestop.test.ts`；按钮计数逻辑在 `main-image-queue.test.ts`（一站式整轮调用点不变）。
 
-### 1.6 高级创建（图片组）= 条目队列 + 惰性建轮
+### 1.6 参数变体（图片组）= 并入当前轮 + 混在跑分图列表里
 
-- **触发入口**：「新建评测轮 ⌄」→「高级创建…」→ `openAdvancedCreation()` 按组类型分派 →
-  `openImageQueueCreation(group)` → `openImageQueuePanel(groupId, imageQueueHostDeps())`（整屏模态）。
-- **添加**：`pickImages()` 多选 → `addImagePaths` 直接入列（**不弹窗**）→ `refreshQueueIdentities`
-  → 渲染 → 状态栏「已加入 N 张图片（尚未跑分，工作区未改动）」；新条目自带 1 条 JPEG 有损卡。
-- **行**：中间截断文件名 + 四态徽章（`未跑分 / 已跑分 / 将重跑（原因）/ 上次失败`）+「重复图片」提示 + ×。
-- **判定**：`judgeEntries(entries, queueIdentityProbe())`；标识来自 `image_identities { paths }` →
-  `identityReadingsOf` → 模块级 `identityCache`（面板与主界面共用一份）；缓存缺失按「读取失败」→ 保守重跑。
-- **跑分按钮**：`scoreButtonLabel(plan, entries)`（「跑分 / 重跑（N 张）」，N = 待跑**图片张数**）；
-  0 张仍可点，只弹「无需重跑」卡片。
-- **执行顺序**（`image-queue-run.ts:runOneImage`）：
-  1. `describeRound` 只读确认轮还活着（被删则丢弃 `entry.roundId`）；
-  2. 惰性建轮 `round_create { groupId, name: '评测轮 N（文件名）' }` + `round_activate`；
-  3. `round_set_reference`（同图时前端跳过，避免清空已有指标）；
-  4. 逐卡 `advanced_encode { job{formatId,lossless,mode,quality,targetBytes,rows[]}, conflictDecision }`；
-  5. `round_add_candidates { paths, encodingParams }`；
-  6. `round_score_candidates { paths: 本次新产物 }`（**子集**，未列入行逐 bit 不变）；
-  7. `applyRunResults`（写回**计划时**参数指纹）→ 每张 `onImageDone`。
+- **触发入口**：
+  - 右键**已跑分**的跑分图 →「高级选项：复制并调参」→ `duplicateCandidateVariant`；
+  - 「跑分图」分区的「＋ 新建参数变体」→ `addParamVariant`（没有原图时拒绝并指向「选择原图」）；
+  - 两者都会打开「高级选项」参数弹窗（`overlay/entry-editor-modal.ts`，与就地编辑同一份 `renderEntryEditor`）。
+- **数据归属**：变体（`ImageEntry`）按 **组 → 轮** 两级键控，永远编码**本轮原图**；不再建轮——
+  产物直接 `round_add_candidates` 进当前评测轮，与人工导入 / 一站式产物同列表混合展示、不做分组隔离。
+- **行**：已生成的变体由它产出的跑分图行代表（文件名 +「高级」角标 + 四态徽章）；
+  还没生成的变体是列表尾部一行「参数变体：JPEG q75」，虚线边 + 未跑分徽章，点开就地调参、× 删除变体。
+- **判定**：`judgeEntries(entries, queueIdentityProbe())`；标识来自 `image_identities` →
+  `identityReadingsOf` → 模块级 `identityCache`（分区、编辑弹窗与跑分入口共用一份）；
+  缓存缺失按「读取失败」→ 保守重跑。分区挂载后经 `refreshRoundIdentity` 自举一次，避免误报「将重跑」。
+- **复制口径**：由变体产出的图复制**产出它的那张编码器卡**（`cardForArtifact` + `cloneCard`：深拷贝、新 id）；
+  人工导入 / 一站式生成的图没有参数可依，按同格式的**预设参数**起头（`presetCardFor`，认不出格式退回 JPEG q75）。
+  原条目（原跑分图、原变体）保持不变——复制体是独立的新图。
+- **执行顺序**（`actions.runQueuePlanOnce` → `run.runScorePlan` → `runOneImage`）：
+  1. `refreshQueueIdentities` 读新原图标识；
+  2. 逐卡 `advanced_encode { job, conflictDecision }`；
+  3. `round_add_candidates { paths, encodingParams }`（进**当前轮**）；
+  4. `round_score_candidates { paths: 本次新产物 }`（**子集**，未列入行逐 bit 不变）；
+  5. `applyRunResults`（写回**计划时**参数指纹）→ 每个 `onImageDone`。
 - **失败语义**：编码失败 → 该卡失败；编码成功但跑分行缺失/带 error → `mergeScoreFailures` 折成失败；
-  系统级错误（建轮/设原图/纳产物/跑分调用）→ 计划内**每张卡**都记失败；本次新建轮一条产物都没有 → `round_delete` 回滚空轮。
-- **汇总**：状态栏「跑分完成：N 张图片已更新；K 条失败（详情见列表徽章）」+ 模态卡片
-  「跑分汇总 / 本次跑分 N 张，跳过 M 张 / 逐张跳过原因」；**面板不关闭**。
-- **删除条目**：`planDelete`（点名轮名与结果条数、写明磁盘产物不删）→ `confirm` → 有轮则 `round_delete` → `removeImageEntry`。
-- **持久化字段**：新建 `Round`（名、referencePath、candidates 及 encodingParams）、
-  被连带删除的轮；条目队列本身**不持久化**。
-- **守护测试**：`image-queue.test.ts`（指纹/标识/脏判定/四态/换图/失败/反查/计划/文案/轮名/会话态/端到端）、
-  `image-queue-run.test.ts`（批次/按钮文案/零调用/失败降级/回滚/系统错误/计划时指纹）、
-  `image-queue-runtime.test.ts`（零调用、状态栏兜底、忙标志时机、`queueEditorDeps`）、
-  `image-queue-panel.test.ts`（`planDelete` 文案、身份回包、DOM 机制守卫）、
-  `main-image-queue.test.ts`（共用编排、宿主依赖只有一份）。
+  纳产物 / 跑分调用抛错 → 计划内**每张卡**都记失败（下次自动重试）。变体不再建轮，因此没有回滚分支。
+- **删除**：行内 × 删变体只动会话态与列表（`removeImageEntry`），产物文件与评测轮保留；
+  移除某张跑分图时若它是变体产物，顺带 `forgetArtifact` 抹掉那条快照，否则会出现
+  「判定说已跑分且无变更、可它的行已经不在本轮」的永久跳过。
+- **持久化字段**：产物以普通候选行落在当前轮（path / encodingParams / metrics）；
+  变体、参数与快照**不持久化**（决策 0031 的口径未变：重启归零，工作区里的结果不受影响）。
+- **守护测试**：`entries.test.ts`（指纹/标识/脏判定/四态/反查/复制深拷贝/预设参数/按轮会话态/跳过文案）、
+  `run.test.ts`（批次/按钮计数/零调用/失败降级/系统错误/计划时指纹/候选侧增量）、
+  `runtime.test.ts`（零调用、状态栏兜底、忙标志时机、编辑区依赖）、
+  `encoding-logic.test.ts`（卡片增删排序）。
 
-### 1.7 逐图参数编辑（弹窗）
+### 1.7 参数编辑（就地展开 / 「高级选项」弹窗）
 
-- **触发入口**：条目列表行点击；主界面「已选跑分图」中**由条目产出**的胶囊本体点击
-  （`openCandidateEntryEditor`，点击时按会话态重新 `entryForArtifact` 反查）。
-- **前置**：`scoring` / 已有编辑窗 / 非条目产物（人工导入、一站式生成）时**不弹**，
-  后者给状态栏「这张跑分图没有对应的图片条目…」。
-- **结构**：左栏（文件名 + 四态徽章 + 全路径 + 「更换图片」）/ 右栏（编码器卡列表 + 「＋ 添加编码器」），右栏独立滚动。
-- **即时生效**：没有「确定 / 应用」；改动直接落在 `ImageEntry.encoders` 上，关闭弹窗仍保留；
-  只有回面板点「跑分」才写工作区。折叠区按 `entryId × data-adv-region` 回写。
-- **换图**（`planReplaceImage` / `runReplaceImage`）：`round_clear_candidates`（清该轮跑分行，不删磁盘文件）
-  → `replaceImagePath`（清快照/失败、置 `replaced`）→ `refreshIdentity`；**清行失败则不换图**。
-  选回同一路径同样走完整流程（用外部工具原地覆写的唯一自救路径）。
+- **触发入口**：变体行（已生成或待生成）点文件名就地展开；右键「高级选项」复制出的新变体打开弹窗
+  （`openEntryEditorModal`，同一时间只允许一个，按变体 id 去重）。
+- **结构**：头部（变体摘要 + 四态徽章 + 「本轮原图：文件名」）→ 编码器卡列表（＋ 添加编码器）。
+- **即时生效**：没有「确定 / 应用」；改动直接落在会话态 `ImageEntry.encoders` 上，关窗仍保留；
+  提交（`change`）时通知宿主（`store.touch()`），列表摘要与「重跑改过的」计数立刻跟着变；
+  只有点「开始跑分 / 生成并跑分」才写工作区。折叠区按 `entryId × data-adv-region` 回写。
+- **没有「更换图片」**：变体永远编码本轮原图；换原图是**轮级动作**（来源分区），后端会清掉本轮指标，
+  变体判定按原图标识变化自动置脏。
 - **卡操作**：加（优先 JPEG）/删/↑↓/恢复默认；命令行预览默认收起，「复制」走 `util.copyText`。
-- **IPC**：`advanced_image_catalog`（目录）、`image_identities`（换图后标识）、`round_clear_candidates`。
-- **失败反馈**：目录加载失败 → 右栏红字 + 状态栏；换图失败 → 状态栏「更换图片失败：…（旧图片与跑分结果未改动）」。
-- **持久化**：无（全部会话态）；唯一落盘是 `round_clear_candidates`。
-- **守护测试**：`image-entry-editor.test.ts`（换图计划与顺序、失败中止、头部、加卡、折叠回写、
-  两栏结构、即时生效、三路关闭、单窗口、宿主依赖）。
+- **IPC**：`advanced_image_catalog`（目录）、`image_identities`（标识自举）。
+- **失败反馈**：目录加载失败 → 参数区红字 + 状态栏。
+- **持久化**：无（全部会话态）。
+- **守护测试**：`entries.test.ts`（复制深拷贝/预设）、`runtime.test.ts`（编辑区依赖）、
+  `encoding-logic.test.ts`（加卡/排序）。
 
 ### 1.8 产物文件名冲突询问
 
@@ -225,21 +224,23 @@
 - **协议**：后端返回 `{ kind:'conflict', proposedName }` 时**未写入任何文件**；
   前端弹窗 → 「覆盖」带 `conflictDecision:'overwrite'` 重调；「跳过」不再重调（该产物不生成、不进轮）。
 - **四按钮**：覆盖 / 跳过 / 覆盖全部 / 跳过全部；`ConflictSession` 记住批内决定（**批次边界 = 一次跑分**）。
-- **使用点**：一站式（`onConflict: askFileConflict`）、条目队列编码（`imageQueueHostDeps.encode` 的 `conflicts.decide`）、
+- **使用点**：一站式（`onConflict: askFileConflict`）、参数变体编码（`actions.variantRuntimeDeps.encode` 的 `conflicts.decide`）、
   `runQueuePlanOnce` 默认 `askFileConflict`。
 - **文案**：`产物 <名> 已存在于产物目录（Pixel Arena）。要覆盖它，还是跳过这项？`（不含完整路径）。
 - **守护测试**：`conflict.test.ts`（逐个/全部/`peekBatchDecision`）。
 
-### 1.9 重跑改过的（增量）
+### 1.9 开始跑分 / 重跑改过的（增量）
 
-- **触发入口**：工具栏「重跑改过的（N 张）」（`rerunChangedImages`）；N = `planScore(entries, probe).runImageCount`。
-- **前置**：非 `scoring`、非 `queueRerunning`（独立的防重入布尔）。
-- **编排**：`runQueuePlanOnce({ groupId, entries, deps: imageQueueHostDeps(), hooks })`——
-  与面板「跑分 / 重跑」**同一个函数**，因此增量语义只有一份。
-- **反馈**：逐张 `正在跑分 第 i/N 张（文件名）…`；结束 `render()`（按钮计数随之变）；汇总卡片。
-- **0 张**：按钮**可点**，点开只弹提示卡（文案按跳过原因分流：全部 clean ≠ 没有编码器配置）。
-- **守护测试**：`main-image-queue.test.ts`（文案与计划同源、0 张不置灰、点击走共享编排）、
-  `image-queue-run.test.ts`（`rerunChangedButtonLabel`、`nothingToRunNotice`）。
+- **开始跑分**（主按钮，Ctrl+Enter）：`runFullScore`——先补生成脏参数变体（编码 + 子集跑分），
+  再对本轮原有跑分图整轮重算（`round_score_candidates { paths: 原有路径 }`）；每张图只算一次。
+  忙标志统一挂在 `score:<轮>` 上，跑分分区读同一个 id 显示进度。
+- **重跑改过的（N 张）**：`runChangedEntries`——只补生成脏变体 + 只对缺指标 / 上次失败的跑分图跑分；
+  N = 待生成变体数 + 缺指标跑分图数（`rerunChangedButtonLabel(plan, pending)`）。0 张时按钮仍可点，
+  点开只提示「没有需要跑的」。
+- **反馈**：状态栏逐条进度；变体有跳过项时弹「跑分汇总」卡片（本次 N 个变体、跳过 M 个 + 逐个原因）。
+- **前置**：非忙；有原图；变体有脏项时先跑编码器可用性预检（缺哪个当场点名并给设置页 / 发布页入口）。
+- **守护测试**：`run.test.ts`（按钮计数、汇总文案、`candidatesNeedingScore`）、
+  `runtime.test.ts`（零调用、汇总卡片、忙标志时机）、`entries.test.ts`（跳过原因文案）。
 
 ### 1.10 视频高级创建（仅列与本域交界处）
 
@@ -247,7 +248,7 @@
   `advanced_encoder_status { keys }` 预检 → 「创建评测轮」`round_create` + `round_activate`
   → `round_set_note`（配置摘要 + 命令行）→ `dropSession`。
 - 与图片侧的差异（**必须记住**）：视频侧有 **`validateEntry` 前置校验** + **`advanced_encoder_status`
-  可用性预检 + 卡内红标**；图片条目侧两者都**没有**。
+  可用性预检 + 卡内红标**；参数变体侧没有单条校验接口，改由 `actions.encodersReady` 在发起前批量预检。
 - 卡片实现共享：`renderEncoderCard`（`src/encoder-card.ts`，739 行）两处宿主都在用。
 
 ---
@@ -335,12 +336,12 @@ features/encoding/queue/**、ladder-plan.ts                ← 纯逻辑：禁�
 | --- | --- | --- | --- |
 | 外部导入（默认路径） | **5** | 2 | 新建跑分组(1) → 图片跑分组(1) → 选择原图(1) → 添加跑分图(1) → 开始跑分(1) |
 | 一站式 | **4** | 1 | 新建跑分组(1) → 图片跑分组(1) → 选择原图(1) → 一站式跑分(1) |
-| 图片条目队列 | **4** | 1 | 新建评测轮 ⌄(1) → 高级创建…(1) → ＋添加图片(1) → 跑分(1) |
+| 参数变体（右键复制） | **3** | 0 | 右键已跑分的图(1) → 高级选项(1) → 调完参数(1) → 开始跑分(1，可选) |
 
 - 一站式第 4 击会**默认生成 15 份产物 + 15 次跑分**，提交前只能看到「共 15 项」这一个数字。
 - 工具栏一行有 **5 个动作按钮 + 2 个导出 + 原图胶囊**；三个「跑分」入口（开始跑分 / 重跑改过的 /
   一站式跑分）平级排列，只能靠 tooltip、绿色描边、虚线描边区分。
-- 高级创建的「添加图片」藏在**「新建评测轮」下拉**里，但它并不建轮（惰性建轮）——语义错位。
+- 参数变体不再有独立列表与独立轮：右键入口（高级选项）与「＋ 新建参数变体」都在跑分图分区里，未生成的变体就是列表里的一行待生成项。
 
 ### 3.2 噪音文案（逐条可删/可收）
 
@@ -363,7 +364,7 @@ features/encoding/queue/**、ladder-plan.ts                ← 纯逻辑：禁�
   单点模式锁死拉杆、无原图时禁用一键跑分，用户只能猜。
 - 条目四态徽章（未跑分 / 将重跑（参数改了）/ 上次失败）只存在于模态里；主界面能看到的只有
   `重跑改过的（N 张）` 一个数字，看不到「哪些、为什么」。
-- 会话态与工作区不一致时无提示：**重启后**条目队列与快照清空 →「重跑改过的（0 张）」、胶囊点不开参数，
+- 会话态与工作区不一致时无提示：**重启后**参数变体与快照清空 →「重跑改过的」只剩缺指标的图、产物行点不开参数，
   界面没说明这是「本次运行没有配置记录」。
 
 ### 3.4 错误埋得深
@@ -381,7 +382,7 @@ features/encoding/queue/**、ladder-plan.ts                ← 纯逻辑：禁�
 
 ### 3.5 其它结构性问题
 
-- 两条互不相通的来源路径：**工具栏「添加跑分图」**（工作区级候选）vs **「高级创建」条目队列**（会话态条目 + 编码）。
+- 两条来源路径：**「添加跑分图」**（工作区级候选，直接落库）vs **参数变体**（会话态参数，跑分时才编码进同一轮）。
   用户无法判断「我该用哪个」，而两者的持久化语义完全不同（一个写工作区、一个只在内存）。
 - 参数编辑器是整屏模态，关闭后 `render()` 整页重建 → 查看器重挂、BD-rate 重新 IPC（代码注释已承认这是
   「弹窗内不逐次重建」的原因）。
@@ -489,7 +490,7 @@ features/encoding/queue/**、ladder-plan.ts                ← 纯逻辑：禁�
 | 排序、查看器逐模式选图、滚动位置 | `roundId` | 同上 |
 | 质量/单点阶梯缓存 `qualityLadderCache` | `baseline` | 全局（跨轮共享，不要按轮复制） |
 | 原图标识 `identityCache` | `path` | 全局（面板与主界面必须同一份，否则同一个条目两处判定不同） |
-| 图片条目队列 `queues` | `groupId` | 内存；**关闭分组时必须 `dropImageQueue`**，否则泄漏 |
+| 参数变体会话 `queues` | `groupId → roundId` | 内存；**关闭分组时必须 `dropImageQueue`**，否则泄漏 |
 
 切分区/切轮的 `update()` 必须幂等；轮 id 消失时要清理对应的轮级 Map。
 
@@ -512,17 +513,16 @@ features/encoding/queue/**、ladder-plan.ts                ← 纯逻辑：禁�
 
 ### 5.6 会话态 vs 工作区的分裂（必须如实呈现）
 
-条目队列、快照、参数指纹、标识缓存全部只在内存；工作区里的跑分结果却持久化。重启后：
-条目队列为空 →「重跑改过的」显示 0 张、跑分图胶囊反查不到条目（点不开参数），
-但结果表里的指标仍在。**不要**用「假装可编辑」掩盖；按 3.3 明确说明「本次运行没有配置记录」。
-把条目队列持久化是产品决策 + 数据模型变更，**明确不在本重构范围**（`frontend-redesign.md` §1 非目标）。
+参数变体、快照、参数指纹、标识缓存全部只在内存；工作区里的跑分结果却持久化。重启后：
+变体列表为空 → 变体产物退化成普通跑分图行（没有「高级」角标、点不开参数）、「重跑改过的」只剩
+缺指标的图，但结果表里的指标仍在。**不要**用「假装可编辑」掩盖；按 3.3 明确说明「本次运行没有配置记录」。
+把变体持久化是产品决策 + 数据模型变更，**明确不在本重构范围**（`frontend-redesign.md` §1 非目标）。
 
 ### 5.7 换原图/换图会清空既有指标
 
-`round_set_reference` 会清掉该轮候选的指标（体积比按新原图重算）；换图流程要先
-`round_clear_candidates` 再换路径。重写时**不能**为了「减少重渲染」跳过这两条 IPC，
-否则结果表会出现「旧产物指标 vs 新原图」的骗人对比（这是 `image-entry-editor` 的核心不变量，
-`planReplaceImage` 的注释已写明）。
+`round_set_reference` 会清掉该轮候选的指标（体积比按新原图重算）；变体判定按原图标识变化
+（`syncEntryReference` + `replaced`）整体置脏，不会拿旧原图的产物去比新原图。改这条链路时**不能**
+为了「减少重渲染」跳过后端清指标，否则结果表会出现「旧产物指标 vs 新原图」的骗人对比。
 
 ### 5.8 测试迁移（会碎一排）
 
@@ -552,7 +552,7 @@ features/encoding/queue/**、ladder-plan.ts                ← 纯逻辑：禁�
 - 编码参数文本、产物命名、冲突判定、指标计算**全部在后端**；前端只透传与展示。
 - `advanced_encode` 之后必须 `round_add_candidates`（带 `encodingParams`）再
   `round_score_candidates`（带本次产物子集），顺序不能换、不能省。
-- 一站式/高级创建都用 `encodingParams` 数组与 `paths` **一一对应**，长度不一致会被后端按缺省处理。
+- 一站式 / 参数变体都用 `encodingParams` 数组与 `paths` **一一对应**，长度不一致会被后端按缺省处理。
 
 ---
 
@@ -562,18 +562,17 @@ features/encoding/queue/**、ladder-plan.ts                ← 纯逻辑：禁�
 
 ```
 src/features/encoding/
-  index.ts                    注册 5 个分区 + 5 个命令 + onGroupRemoved 清理（幂等，import 即注册）
+  index.ts                    注册 4 个分区 + 5 个命令 + onGroupRemoved 清理（幂等，import 即注册）
   ipc.ts                      本域 IPC 唯一收口（onestop_* / advanced_image_catalog / advanced_encoder_status / advanced_encode / image_identities）
-  actions.ts                  动作层：来源选择、整轮跑分、只跑改过的、一站式生成、队列宿主依赖、编码器预检
+  actions.ts                  动作层：来源选择、整轮跑分、重跑改过的、一站式生成、参数变体动作与宿主依赖、编码器预检
   session.ts                  按轮会话态：阶梯参数 / 逐点排除 / 大小搜索缓存 / 候选就地展开
   sections/common.ts          折叠态持久化（getPref('sections')）、paintBody、拖放注册、防抖
   sections/reference.ts       分区 reference(10)
-  sections/candidates.ts      分区 candidates(20)，含就地参数编辑 + 四态行内状态
+  sections/candidates.ts      分区 candidates(20)，跑分图与参数变体混排 + 就地参数编辑 + 右键「高级选项」
   sections/score.ts           分区 score(30)，主按钮 + 次级动作 + 真实进度 + 失败就地展开
   sections/ladder.ts          分区 ladder(40)，segmented + slider/size + chips + 逐点清单 + progressBar
-  sections/advanced.ts        分区 advanced(50)，条目队列入口与概览
-  overlay/entry-editor.ts     逐图编辑内容视图（候选就地 / 队列模态第 2 步共用）
-  overlay/queue-modal.ts      条目队列模态（两步：列表 → 编辑 → 底部跑分）
+  overlay/entry-editor.ts     参数编辑内容视图（列表就地 / 「高级选项」弹窗共用）
+  overlay/entry-editor-modal.ts 「高级选项」弹窗（复制并调参，单实例）
   overlay/conflict.ts         冲突询问（覆盖 / 跳过 / 全部），关闭 = 跳过
   overlay/notice.ts           提示 / 汇总卡片
   overlay/encoder-issue.ts    编码器未就绪卡片（打开设置 + 复制发布页）
@@ -583,19 +582,18 @@ src/features/encoding/
   logic/ladder.ts             ← src/onestop.ts（去 main 反向依赖：runLadder 注入 encode/addCandidates；新增 groupLadderByFormat / ladderItemKey / pickLadderItems）
   logic/advanced.ts           ← src/advanced.ts（原样）
   logic/conflict.ts           ← src/conflict.ts（只保留 ConflictSession 纯状态机）
-  logic/editor-plan.ts        ← src/image-entry-editor.ts 的纯逻辑段（头部/换图计划/加卡/排序）
-  logic/queue-plan.ts         ← src/image-queue-panel.ts 的 planDelete
+  logic/editor-plan.ts        头部展示数据 + 加卡/排序（换图编排随轮级原图退场）
   logic/*.test.ts             迁来的 6 份纯逻辑测试 + 新增 encoding-logic.test.ts
-src/ui/encoder-card.ts        共享编码器卡（图片条目 + 视频高级创建）；旧 src/encoder-card.ts 未动
+src/ui/encoder-card.ts        共享编码器卡（参数变体 + 视频高级创建）
 src/styles/sources.css        原图 / 跑分图分区
-src/styles/encoding.css       跑分 / 阶梯 / 高级 / 编码器卡 / 队列模态 / 三张卡片
+src/styles/encoding.css       跑分 / 阶梯 / 编码器卡 / 参数变体编辑区 / 三张卡片
 ```
 
 ### 6.2 注册契约（已实现）
 
-- 分区：`reference`(10) / `candidates`(20) / `score`(30) / `ladder`(40) / `advanced`(50)，`kinds: ['image']`；折叠态写 `getPref('sections')[id]`。
-- 命令：`pick-reference-image` / `pick-candidates-image` / `run-score-image`（enabled：有原图 + 有跑分图 + 空闲）/ `rerun-changed-image` / `generate-ladder-image`（enabled：有原图 + 空闲）。
-- 拖放：`reference`（image → 首张设原图、其余加候选）、`candidates`（image → 全部追加）、`advanced`（image → 加条目）；忙时 `disabled: () => isBusy()`。
+- 分区：`reference`(10) / `candidates`(20) / `score`(30) / `ladder`(40)，`kinds: ['image']`；折叠态写 `getPref('sections')[id]`。
+- 命令：`pick-reference-image` / `pick-candidates-image` / `run-score-image`（enabled：有原图 + （有跑分图或变体）+ 空闲）/ `rerun-changed-image`（补生成脏变体 + 只跑缺指标的图）/ `generate-ladder-image`（enabled：有原图 + 空闲）。
+- 拖放：`reference`（image → 首张设原图、其余加候选）、`candidates`（image → 全部追加）；忙时 `disabled: () => isBusy()`。
 
 ### 6.3 待 lead 集成时删除的旧文件（本域不自行删除）
 

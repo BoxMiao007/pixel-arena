@@ -2,7 +2,7 @@
 //
 // 三类状态分开（对齐 core/ui-state.ts 的口径）：
 // - 按评测轮隔离（roundScoped）：阶梯参数、排除的阶梯点、大小搜索缓存、就地展开项；
-// - 全局（模块级 Map）：图片条目队列（logic/entries 的 Map）、原图标识缓存（logic/runtime）；
+// - 全局（模块级 Map）：参数变体会话（logic/entries，按组 → 轮）、原图标识缓存（logic/runtime）；
 // - 不持久化：以上全部重启归零，工作区里的跑分结果不受影响（界面须如实说明）。
 
 import { roundScoped } from '../../core/ui-state';

@@ -1,8 +1,9 @@
 // encoding 域新增纯逻辑的单测（Phase B）：阶梯分组 / 逐点勾选 / 生成编排、
-// 条目删除计划、逐图编辑的换图计划与卡片增删。全部零 DOM、零 IPC。
+// 参数变体编辑区的卡片增删。全部零 DOM、零 IPC。
 //
 // 旧逻辑的守护测试（entries/run/runtime/advanced/conflict/ladder 各自的 test）迁移在
-// 同目录；本文件只钉新增的这几个出口。
+// 同目录；本文件只钉新增的这几个出口。票「变体并入当前轮」后，条目删除计划与换图编排
+// 随会话态模型一并退场，不再有对应出口。
 
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -12,8 +13,7 @@ import {
   runLadder,
   type LadderItem,
 } from './ladder';
-import { planDelete } from './queue-plan';
-import { addEncoderCard, moveCard, planReplaceImage, runReplaceImage } from './editor-plan';
+import { addEncoderCard, moveCard } from './editor-plan';
 import { newImageEntry, type ImageEntry } from './entries';
 import type { ImageSpec } from './advanced';
 
@@ -134,39 +134,11 @@ describe('runLadder：逐项生成 + 失败不回滚 + 冲突协议', () => {
       onProgress: (text) => progress.push(text),
       onConflict: () => Promise.reject(new Error('不该问冲突')),
     });
-    expect(progress).toEqual([
-      '正在生成 JPEG q60',
-      '正在生成 JPEG q75',
-    ]);
+    expect(progress).toEqual(['正在生成 JPEG q60', '正在生成 JPEG q75']);
   });
 });
 
-describe('planDelete：删条目要不要连带删轮', () => {
-  function entry(roundId: string | null): ImageEntry {
-    return { ...newImageEntry('C:/pics/a.png'), roundId };
-  }
-
-  it('有轮且轮还在：点名轮名与结果条数，写明磁盘文件保留', () => {
-    const plan = planDelete(entry('r1'), { name: '评测轮 1', candidateCount: 3 });
-    expect(plan.roundId).toBe('r1');
-    expect(plan.message).toContain('评测轮 1');
-    expect(plan.message).toContain('3 条跑分结果');
-    expect(plan.message).toContain('磁盘上的产物文件保留');
-  });
-
-  it('没有轮：不动工作区，文案说明理由', () => {
-    const plan = planDelete(entry(null), null);
-    expect(plan.roundId).toBeNull();
-    expect(plan.message).toContain('没有对应的评测轮');
-  });
-
-  it('轮已被外部删掉（describeRound 返回 null）：不拿旧 id 去删', () => {
-    const plan = planDelete(entry('gone'), null);
-    expect(plan.roundId).toBeNull();
-  });
-});
-
-describe('逐图编辑的纯逻辑', () => {
+describe('参数变体编辑区的纯逻辑', () => {
   const spec = {
     id: 'jpeg',
     toolKey: 'cjpeg',
@@ -185,36 +157,11 @@ describe('逐图编辑的纯逻辑', () => {
     knownParams: [],
   } as unknown as ImageSpec;
 
-  it('planReplaceImage：先清行再换路径；同一条轮上有结果时点名条数', () => {
-    const entry: ImageEntry = { ...newImageEntry('C:/a.png'), roundId: 'r1' };
-    const plan = planReplaceImage(entry, 'C:/b.png', { name: '轮 1', candidateCount: 2 });
-    expect(plan.steps).toEqual([
-      { kind: 'clear-candidates', roundId: 'r1' },
-      { kind: 'replace-path', path: 'C:/b.png' },
-    ]);
-    expect(plan.message).toContain('2 条跑分结果');
-  });
-
-  it('选回同一路径也走完整流程（原地覆写后的自救路径）', () => {
-    const entry: ImageEntry = { ...newImageEntry('C:/a.png'), roundId: 'r1' };
-    const plan = planReplaceImage(entry, 'C:/a.png', { name: '轮 1', candidateCount: 0 });
-    expect(plan.steps).toEqual([
-      { kind: 'clear-candidates', roundId: 'r1' },
-      { kind: 'replace-path', path: 'C:/a.png' },
-    ]);
-    expect(plan.message).toContain('重新读取');
-  });
-
-  it('runReplaceImage：清行失败即中止，不换路径（不留「新图 + 旧结果」）', async () => {
-    const entry: ImageEntry = { ...newImageEntry('C:/a.png'), roundId: 'r1' };
-    const plan = planReplaceImage(entry, 'C:/b.png', { name: '轮 1', candidateCount: 1 });
-    await expect(
-      runReplaceImage(plan, entry, {
-        clearCandidates: () => Promise.reject(new Error('后端拒绝')),
-        refreshIdentity: () => Promise.resolve(),
-      }),
-    ).rejects.toThrow('后端拒绝');
-    expect(entry.path).toBe('C:/a.png');
+  it('新变体默认一条 JPEG 卡，且不带轮 id（不再建轮）', () => {
+    const entry = newImageEntry('C:/a.png');
+    expect(entry.encoders).toHaveLength(1);
+    expect(entry.encoders[0].encoderId).toBe('jpeg');
+    expect('roundId' in entry).toBe(false);
   });
 
   it('addEncoderCard 优先 JPEG；目录为空时不加卡', () => {

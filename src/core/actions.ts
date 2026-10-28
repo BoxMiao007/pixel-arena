@@ -29,7 +29,7 @@ export const VIDEO_FILTER = {
   extensions: ['mp4', 'mkv', 'webm', 'mov', 'm4v'],
 };
 
-/** 组 / 轮被关闭后通知各功能域清理自己的会话态（如条目队列）。 */
+/** 组 / 轮被关闭后通知各功能域清理自己的会话态（如参数变体）。 */
 type RemovalHook = (groupId: string) => void;
 const groupRemovedHooks: RemovalHook[] = [];
 

@@ -1,9 +1,8 @@
 // 检视器分区「跑分」：两个跑分入口 + 真实进度 + 失败就地展开。
 //
-// 主次关系（收敛前是工具栏上三个平级按钮）：
-// - 「开始跑分」= 唯一主按钮（整轮全量，Ctrl+Enter）；
-// - 「只跑改过的（N 张）」= 次级动作，只跑参数改过 / 换过图 / 上次失败的条目，
-//   0 张时置灰并在 title 里说明原因（不静默，也不假装能跑）；
+// 主次关系：
+// - 「开始跑分」= 唯一主按钮（Ctrl+Enter）：先把脏参数变体生成出来，再整轮重算指标；
+// - 「重跑改过的（N 张）」= 次级动作：只补生成脏变体 + 只跑缺指标的跑分图（增量）；
 // - 缺图时不只靠置灰按钮的悬浮提示：正文直接给「选择原图 / 添加跑分图」下一步
 //   入口（设计契约 §3.3 渐进披露），点了就开对应的文件对话框；
 // - 自动生成跑分在「编码阶梯」分区里，不在这里抢位置。
@@ -14,9 +13,17 @@ import { isBusy } from '../../../core/store';
 import { fileName } from '../../../core/util';
 import { planScore } from '../logic/entries';
 import { busyProgressView } from '../logic/progress';
-import { rerunChangedButtonLabel } from '../logic/run';
+import { candidatesNeedingScore, rerunChangedButtonLabel } from '../logic/run';
 import { queueIdentityProbe } from '../logic/runtime';
-import { busyIdOf, pickCandidates, pickReference, queueEntries, runChangedEntries, runFullScore } from '../actions';
+import {
+  busyIdOf,
+  pickCandidates,
+  pickReference,
+  refreshRoundIdentity,
+  runChangedEntries,
+  runFullScore,
+  variantEntries,
+} from '../actions';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
 import { busyOf, hintWrap, liveRoundOf, mountSection, paintBody } from './common';
 
@@ -28,15 +35,26 @@ export const scoreSection: PanelSection = {
   mount(host: HTMLElement, ctx: ViewCtx): MountedView {
     const { body } = mountSection(host, { id: 'score', title: '跑分' });
 
+    /** 标识自举只做一次：待跑计数依赖判定，标识没读到会把干净变体误计成待跑。 */
+    let identityReady = false;
+    const ensureIdentity = (referencePath: string): void => {
+      if (identityReady || referencePath === '') return;
+      identityReady = true;
+      void refreshRoundIdentity(referencePath).then(() => render());
+    };
+
     const render = (): void => {
       const busy = isBusy();
       // 同轮内加图只走 update()：ctx 是挂载快照，必须重取活数据（见 common.ts），
       // 否则「加原图后按钮仍灰、提示停在『先选择原图』」会复现。
       const round = liveRoundOf(ctx);
+      if (round.referencePath !== null) ensureIdentity(round.referencePath);
       const hasReference = round.referencePath !== null;
       const candidates = round.candidates;
-      const plan = planScore(queueEntries(ctx.group.id), queueIdentityProbe());
-      const rerunCount = plan.runImageCount;
+      const entries = variantEntries(ctx.group.id, round.id);
+      const plan = planScore(entries, queueIdentityProbe());
+      const pending = candidatesNeedingScore(candidates);
+      const rerunCount = plan.runImageCount + pending.length;
       const failed = candidates.filter((candidate) => candidate.error !== null);
       const scoringBusy = busyOf(busyIdOf('score', ctx.round.id));
       const key = [
@@ -44,6 +62,7 @@ export const scoreSection: PanelSection = {
         ctx.round.id,
         hasReference ? 'ref' : 'noref',
         candidates.length,
+        entries.length,
         rerunCount,
         failed.length,
         busy ? 'busy' : 'idle',
@@ -60,21 +79,22 @@ export const scoreSection: PanelSection = {
           else progress.setIndeterminate(view.label);
         }
 
-        const runDisabled = !hasReference || candidates.length === 0 || busy;
+        const hasContent = candidates.length > 0 || plan.runImageCount > 0;
+        const runDisabled = !hasReference || !hasContent || busy;
         const rerunDisabled = rerunCount === 0 || busy;
-        const ready = hasReference && candidates.length > 0;
+        const ready = hasReference && hasContent;
         const runHint = !hasReference
           ? '先选择原图'
-          : candidates.length === 0
-            ? '先添加至少一张跑分图'
+          : !hasContent
+            ? '先添加至少一张跑分图，或新建一个参数变体'
             : busy
               ? '正在跑分，完成后可再次触发'
-              : '整轮全量：逐张计算各跑分图相对原图的指标（Ctrl+Enter）';
+              : '整轮跑分：先补生成待跑的参数变体，再逐张计算指标（Ctrl+Enter）';
         const rerunHint = busy
           ? '正在跑分，完成后可再次触发'
           : rerunCount === 0
-            ? '没有改过的条目：全部都已跑分且无变更（整轮重算请用「开始跑分」）'
-            : '只跑改过的：参数改过 / 换过图 / 上次失败的条目；其余沿用上一轮结果';
+            ? '没有改过的：参数变体与跑分图都已跑分且无变更（整轮重算请用「开始跑分」）'
+            : '只跑改过的：待生成的参数变体 + 缺指标的跑分图；其余沿用已有结果';
 
         const runButton = button({
           label: scoringBusy ? '跑分中…' : '开始跑分',
@@ -84,12 +104,12 @@ export const scoreSection: PanelSection = {
           onClick: () => void runFullScore(ctx),
         });
         const rerunButton = button({
-          label: rerunChangedButtonLabel(plan),
+          label: rerunChangedButtonLabel(plan, pending.length),
           variant: 'secondary',
           size: 'md',
           disabled: rerunDisabled,
           title: rerunHint,
-          onClick: () => void runChangedEntries(ctx.group.id),
+          onClick: () => void runChangedEntries(ctx),
         });
 
         return el(
@@ -99,7 +119,10 @@ export const scoreSection: PanelSection = {
             ? el('div', { class: 'score__lead' }, [
                 el('span', {
                   class: 'score__count',
-                  text: `本轮 ${candidates.length} 张跑分图`,
+                  text:
+                    entries.length === 0
+                      ? `本轮 ${candidates.length} 张跑分图`
+                      : `本轮 ${candidates.length} 张跑分图，${entries.length} 个参数变体`,
                 }),
               ])
             : el(
@@ -117,7 +140,7 @@ export const scoreSection: PanelSection = {
                   disabled: busy,
                   title: !hasReference
                     ? '选一张未压缩的原图作为本轮基准'
-                    : '把用其它工具压好的图加入本轮',
+                    : '把用其它工具压好的图加入本轮；也可以在「跑分图」分区新建参数变体',
                   onClick: () => void (hasReference ? pickCandidates(ctx) : pickReference(ctx)),
                 }),
               ),
@@ -125,9 +148,7 @@ export const scoreSection: PanelSection = {
             runDisabled ? hintWrap(runButton, runHint, true) : runButton,
             rerunDisabled ? hintWrap(rerunButton, rerunHint) : rerunButton,
           ]),
-          scoringBusy
-            ? el('div', { class: 'score__progress' }, progress.node)
-            : null,
+          scoringBusy ? el('div', { class: 'score__progress' }, progress.node) : null,
           failed.length > 0
             ? el(
                 'details',

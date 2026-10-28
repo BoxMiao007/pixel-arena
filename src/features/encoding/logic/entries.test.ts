@@ -1,4 +1,4 @@
-// 图片条目队列与增量跑分判定的单测（票 #76；权威定义见父规格 #74 的「缝 1」）。
+// 参数变体与增量跑分判定的单测（票 #76；票「变体并入当前轮」后改为按轮键控）。
 //
 // 断言口径：只锁「给定输入 → 外部结论」（这条要不要跑、为什么、计划拆成什么样、
 // 文案说什么），不锁私有函数名与内部调用顺序。读盘探针一律用显式假数据注入，
@@ -6,43 +6,45 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  DEFAULT_IMAGE_ENCODER_ID,
-  DEFAULT_JPEG_QUALITY,
   DIRTY_REASON_LABELS,
   IMAGE_ENTRY_STATE_LABELS,
   SKIP_REASON_LABELS,
-  addImagePaths,
   applyRunResults,
-  attachRound,
   badgeText,
+  cardForArtifact,
+  cardSummary,
   clearImageQueues,
-  defaultImageEncoders,
+  cloneCard,
   dropImageQueue,
-  duplicateEntryIds,
   entryFailures,
   entryForArtifact,
+  forgetArtifact,
   identityChanged,
   imageIdentityFrom,
   imageQueueFor,
   isPlanEmpty,
   judgeImageEntry,
   newImageEntry,
+  newVariant,
   paramFingerprint,
   planScore,
   planSummary,
+  presetCardFor,
   probeFromCache,
   removeImageEntry,
   replaceImagePath,
-  roundName,
   skipReasonLine,
   summaryHeadline,
+  syncEntryReference,
+  variantFromCard,
+  variantSummary,
   type EncoderCard,
   type ImageEntry,
   type ImageIdentity,
   type ImageIdentityProbe,
   type ImageIdentityReading,
 } from './entries';
-import type { AdvancedParamRow } from './advanced';
+import type { AdvancedParamRow, ImageSpec } from './advanced';
 
 // ---------- 测试夹具 ----------
 
@@ -82,9 +84,15 @@ function entry(partial: Partial<ImageEntry> = {}): ImageEntry {
     snapshot: null,
     failures: [],
     replaced: false,
-    roundId: null,
     ...partial,
   };
+}
+
+/** 按路径批量入列（会话态里没有「添加」动作了：变体由界面层直接新建并 push）。 */
+function addEntries(session: { entries: ImageEntry[] }, paths: string[]): ImageEntry[] {
+  const added = paths.map((path) => newImageEntry(path));
+  session.entries.push(...added);
+  return added;
 }
 
 const identity: ImageIdentity = { path: '/photos/a.png', sizeBytes: 1024, modifiedMs: 1_000 };
@@ -669,7 +677,7 @@ describe('跑分计划', () => {
     const plan = planScore([entry({ encoders: [] })], probeOf({}));
     expect(isPlanEmpty(plan)).toBe(true);
     expect(plan.skippedImages).toEqual([
-      { imageId: 'img-1', path: '/photos/a.png', encoderCount: 0, reason: { code: 'no-encoders', text: '没有编码器配置' } },
+      { imageId: 'img-1', path: '/photos/a.png', label: '空配置', encoderCount: 0, reason: { code: 'no-encoders', text: '没有编码器配置' } },
     ]);
   });
 
@@ -696,24 +704,23 @@ describe('汇总文案', () => {
     expect(planSummary(plan).headline).toBe('本次跑分 1 张，跳过 1 张');
   });
 
-  it('逐张点名跳过原因（文件名 + 原因）', () => {
+  it('逐个点名跳过原因（变体摘要 + 原因，不再用原图文件名——同轮各变体共用一张原图）', () => {
     const aCard = card({ id: 'a1' });
     const a = entry({
       id: 'a',
-      path: '/photos/landscape.png',
       encoders: [aCard],
       snapshot: {
-        identity: { path: '/photos/landscape.png', sizeBytes: 1024, modifiedMs: 1_000 },
+        identity,
         encoders: [{ cardId: 'a1', fingerprint: paramFingerprint(aCard), artifactPath: '/out/a.jpg' }],
       },
     });
-    const b = entry({ id: 'b', path: '/photos/portrait.png', encoders: [] });
+    const b = entry({ id: 'b', encoders: [] });
     const plan = planScore([a, b], probeOf({}));
     expect(planSummary(plan).skipLines).toEqual([
-      'landscape.png（已跑分且无变更）',
-      'portrait.png（没有编码器配置）',
+      'JPEG q75（已跑分且无变更）',
+      '空配置（没有编码器配置）',
     ]);
-    expect(skipReasonLine(plan.skippedImages[0])).toBe('landscape.png（已跑分且无变更）');
+    expect(skipReasonLine(plan.skippedImages[0])).toBe('JPEG q75（已跑分且无变更）');
     expect(SKIP_REASON_LABELS.clean).toBe('已跑分且无变更');
   });
 
@@ -723,119 +730,162 @@ describe('汇总文案', () => {
   });
 });
 
-// ---------- 轮名 ----------
+// ---------- 变体摘要与预设参数 ----------
 
-describe('轮名', () => {
-  it('「评测轮 N（文件名）」', () => {
-    expect(roundName(3, '/photos/photo.png')).toBe('评测轮 3（photo.png）');
-    expect(roundName(12, String.raw`C:\shots\海边 01.jpg`)).toBe('评测轮 12（海边 01.jpg）');
+describe('变体摘要与预设参数', () => {
+  it('卡片摘要：质量优先 / 无损 / 大小优先', () => {
+    expect(cardSummary(card())).toBe('JPEG q75');
+    expect(cardSummary(card({ encoderId: 'webp', lossless: true }))).toBe('WebP 无损');
+    expect(cardSummary(card({ encoderId: 'avif', mode: 'size', targetBytes: 200 * 1024 }))).toBe(
+      'AVIF 目标 200 KB',
+    );
   });
 
-  it('文件名里的文件系统非法字符替换为下划线', () => {
-    expect(roundName(1, '/photos/a<b>c:d"e|f?g*h.png')).toBe('评测轮 1（a_b_c_d_e_f_g_h.png）');
-    expect(roundName(2, String.raw`C:\x\name\with/slash.png`)).toBe('评测轮 2（slash.png）');
+  it('多卡变体点名条数；空配置有明确的占位文案', () => {
+    const v = entry({ encoders: [card({ id: 'c1' }), card({ id: 'c2', encoderId: 'avif' })] });
+    expect(variantSummary(v)).toBe('JPEG q75 等 2 条');
+    expect(variantSummary(entry({ encoders: [] }))).toBe('空配置');
   });
 
-  it('轮号非法时兜底为 1', () => {
-    expect(roundName(0, '/photos/a.png')).toBe('评测轮 1（a.png）');
-    expect(roundName(Number.NaN, '/photos/a.png')).toBe('评测轮 1（a.png）');
-    expect(roundName(3.7, '/photos/a.png')).toBe('评测轮 3（a.png）');
-  });
-
-  it('控制字符同样替换；文件名清洗后为空时用占位', () => {
-    expect(roundName(1, '/photos/a\tb\nc.png')).toBe('评测轮 1（a_b_c.png）');
-    expect(roundName(1, '/')).toBe('评测轮 1（未命名）');
+  it('预设参数按扩展名取同格式规格的默认值（普通图复制时的起头参数）', () => {
+    const specs: ImageSpec[] = [
+      {
+        id: 'webp',
+        displayName: 'WebP',
+        baseArgs: [],
+        losslessSupported: true,
+        losslessNote: '',
+        losslessArgs: [],
+        qualityFlag: '-q',
+        qualityMin: 0,
+        qualityMax: 100,
+        toolKey: 'cwebp',
+        qualityDefault: 82,
+        qualityStep: 1,
+        inputPng: false,
+        outputExt: 'webp',
+        knownParams: [],
+      },
+    ];
+    const webp = presetCardFor('/photos/work.webp', specs);
+    expect(webp.encoderId).toBe('webp');
+    expect(webp.quality).toBe(82);
+    // 目录里没有该格式（或认不出扩展名）→ 默认 JPEG 预设
+    expect(presetCardFor('/photos/work.avif', specs).encoderId).toBe('jpeg');
+    expect(presetCardFor('/photos/work', specs).encoderId).toBe('jpeg');
+    expect(presetCardFor('/photos/work.png', []).encoderId).toBe('jpeg');
   });
 });
 
-// ---------- 默认配置与重复图片 ----------
+// ---------- 会话态与复制 ----------
 
-describe('条目默认配置与重复图片', () => {
-  it('新条目自带一条 JPEG 有损配置', () => {
-    const target = newImageEntry('/photos/a.png');
-    expect(target.encoders).toHaveLength(1);
-    const [only] = target.encoders;
-    expect(only.encoderId).toBe(DEFAULT_IMAGE_ENCODER_ID);
-    expect(only.encoderId).toBe('jpeg');
-    expect(only.lossless).toBe(false);
-    expect(only.mode).toBe('quality');
-    expect(only.quality).toBe(DEFAULT_JPEG_QUALITY);
-    expect(only.rows).toEqual([]);
-    // 新条目没有任何跑分历史，初始就是未跑分
+describe('参数变体会话态与复制', () => {
+  it('同一轮的变体跨多次取用共享；不同轮 / 不同组互不串扰', () => {
+    const first = imageQueueFor('g1', 'r1');
+    addEntries(first, ['/photos/a.png']);
+    expect(imageQueueFor('g1', 'r1')).toBe(first);
+    expect(imageQueueFor('g1', 'r1').entries).toHaveLength(1);
+    expect(imageQueueFor('g1', 'r2').entries).toHaveLength(0);
+    expect(imageQueueFor('g2', 'r1').entries).toHaveLength(0);
+  });
+
+  it('新变体不带轮 id（取消独立轮次），默认未跑分', () => {
+    const target = newVariant('/photos/a.png');
+    expect(target.snapshot).toBeNull();
+    expect(target.failures).toEqual([]);
+    expect(target.replaced).toBe(false);
     expect(judgeImageEntry(target, probeOf({})).state).toBe('unscored');
   });
 
-  it('defaultImageEncoders 每次给一份全新的卡（互不共享引用）', () => {
-    const a = defaultImageEncoders();
-    const b = defaultImageEncoders();
-    expect(a[0].id).not.toBe(b[0].id);
-    a[0].quality = 10;
-    expect(b[0].quality).toBe(DEFAULT_JPEG_QUALITY);
+  it('cloneCard 是深拷贝：新 id，参数行与候选选项不共享引用', () => {
+    const source = card({ id: 'src', rows: [row({ name: '色度', flag: '-s', value: '4', kind: 'choice', options: ['4', '4:4:4'] })] });
+    const copy = cloneCard(source);
+    expect(copy.id).not.toBe(source.id);
+    expect(copy.rows[0]).not.toBe(source.rows[0]);
+    copy.rows[0].value = '4:4:4';
+    copy.rows[0].options.push('新的');
+    expect(source.rows[0].value).toBe('4');
+    expect(source.rows[0].options).toEqual(['4', '4:4:4']);
   });
 
-  it('同一原图路径可重复添加，并标记出全部重复项（不禁止）', () => {
-    const session = imageQueueFor('g1');
-    addImagePaths(session, ['/photos/a.png', '/photos/b.png', '/photos/a.png']);
-    expect(session.entries).toHaveLength(3);
-    const duplicates = duplicateEntryIds(session.entries);
-    expect([...duplicates]).toEqual([session.entries[0].id, session.entries[2].id]);
-    expect(duplicates.has(session.entries[1].id)).toBe(false);
+  it('variantFromCard：复制体独立，改复制体的参数不会影响原变体', () => {
+    const original = scoredEntry();
+    const copy = variantFromCard('/photos/a.png', original.encoders[0]);
+    expect(copy.snapshot).toBeNull();
+    expect(copy.encoders).toHaveLength(1);
+    expect(copy.encoders[0].id).not.toBe(original.encoders[0].id);
+    expect(paramFingerprint(copy.encoders[0])).toBe(paramFingerprint(original.encoders[0]));
+    copy.encoders[0].quality = 40;
+    expect(original.encoders[0].quality).toBe(75);
   });
 
-  it('不重复时没有任何标记；全部重复时全部标记', () => {
-    const session = imageQueueFor('g2');
-    addImagePaths(session, ['/a.png', '/b.png']);
-    expect(duplicateEntryIds(session.entries).size).toBe(0);
-    addImagePaths(session, ['/a.png']);
-    expect(duplicateEntryIds(session.entries).size).toBe(2);
-  });
-});
+  it('syncEntryReference：路径不同即整体作废（快照/失败清空、置为图片换了）；相同不动', () => {
+    const target = scoredEntry();
+    target.failures = [{ cardId: target.encoders[0].id, reason: '旧失败' }];
+    expect(syncEntryReference([target], '/photos/a.png')).toBe(false);
+    expect(target.snapshot).not.toBeNull();
 
-// ---------- 会话态生命周期 ----------
-
-describe('条目队列会话态', () => {
-  it('同一跑分组的队列跨多次取用共享；不同跑分组互不串扰', () => {
-    const a1 = imageQueueFor('g1');
-    addImagePaths(a1, ['/photos/a.png']);
-    const a2 = imageQueueFor('g1');
-    expect(a2).toBe(a1);
-    expect(a2.entries).toHaveLength(1);
-    expect(imageQueueFor('g2').entries).toHaveLength(0);
+    expect(syncEntryReference([target], '/photos/b.png')).toBe(true);
+    expect(target.path).toBe('/photos/b.png');
+    expect(target.snapshot).toBeNull();
+    expect(target.failures).toEqual([]);
+    expect(target.replaced).toBe(true);
+    const verdict = judgeImageEntry(target, probeOf({}));
+    expect(verdict.state).toBe('stale');
+    expect(verdict.reasons).toContain('image');
   });
 
-  it('新条目的 roundId 为空（没有空轮）；attachRound 记录惰性建出来的轮', () => {
-    const session = imageQueueFor('g1');
-    const [added] = addImagePaths(session, ['/a.png']);
-    expect(added.roundId).toBeNull();
-    attachRound(added, 'round-7');
-    expect(added.roundId).toBe('round-7');
-    // 换图不换轮：轮 id 保留（只清跑分行，轮本身还在）
-    replaceImagePath(added, '/b.png');
-    expect(added.roundId).toBe('round-7');
+  it('forgetArtifact：抹掉被移出本轮的产物记录，变体回到待跑', () => {
+    const target = scoredEntry();
+    expect(judgeImageEntry(target, probeOf({})).state).toBe('scored');
+    expect(forgetArtifact(target, '/out/a.jpg')).toBe(true);
+    expect(target.snapshot).toBeNull();
+    expect(judgeImageEntry(target, probeOf({})).state).toBe('unscored');
+    // 没这条记录时什么也不做
+    expect(forgetArtifact(target, '/out/a.jpg')).toBe(false);
   });
 
-  it('removeImageEntry 按 id 删除并回传被删条目；找不到返回 null', () => {
-    const session = imageQueueFor('g1');
-    const [first, second] = addImagePaths(session, ['/a.png', '/b.png']);
-    const removed = removeImageEntry(session, first.id);
+  it('cardForArtifact：由产物反查产出它的那张卡（右键复制参数的依据）', () => {
+    const first = card({ id: 'c1', quality: 60 });
+    const second = card({ id: 'c2', encoderId: 'avif', quality: 55 });
+    const target = entry({
+      encoders: [first, second],
+      snapshot: {
+        identity,
+        encoders: [
+          { cardId: 'c1', fingerprint: paramFingerprint(first), artifactPath: '/out/a60.jpg' },
+          { cardId: 'c2', fingerprint: paramFingerprint(second), artifactPath: '/out/a55.avif' },
+        ],
+      },
+    });
+    expect(cardForArtifact(target, '/out/a55.avif')?.id).toBe('c2');
+    expect(cardForArtifact(target, '/out/unknown.jpg')).toBeNull();
+    expect(cardForArtifact(entry(), '/out/a.jpg')).toBeNull();
+  });
+
+  it('removeImageEntry 按 id 删除并回传被删变体；找不到返回 null', () => {
+    const session = imageQueueFor('g1', 'r1');
+    const [first, second] = addEntries(session, ['/a.png', '/b.png']);
+    const removed = removeImageEntry(session.entries, first.id);
     expect(removed?.id).toBe(first.id);
     expect(session.entries.map((item) => item.id)).toEqual([second.id]);
-    expect(removeImageEntry(session, '不存在')).toBeNull();
+    expect(removeImageEntry(session.entries, '不存在')).toBeNull();
   });
 
-  it('dropImageQueue 丢弃后回到空队列；clearImageQueues 模拟重启归零', () => {
-    const session = imageQueueFor('g1');
-    addImagePaths(session, ['/a.png']);
+  it('dropImageQueue 丢弃整组（含全部轮）；clearImageQueues 模拟重启归零', () => {
+    addEntries(imageQueueFor('g1', 'r1'), ['/a.png']);
+    addEntries(imageQueueFor('g1', 'r2'), ['/b.png']);
     dropImageQueue('g1');
-    expect(imageQueueFor('g1').entries).toHaveLength(0);
-    addImagePaths(imageQueueFor('g2'), ['/b.png']);
+    expect(imageQueueFor('g1', 'r1').entries).toHaveLength(0);
+    expect(imageQueueFor('g1', 'r2').entries).toHaveLength(0);
+    addEntries(imageQueueFor('g2', 'r1'), ['/b.png']);
     clearImageQueues();
-    expect(imageQueueFor('g2').entries).toHaveLength(0);
+    expect(imageQueueFor('g2', 'r1').entries).toHaveLength(0);
   });
 
-  it('跑分组之间互不影响：一个分组添图不会让另一个分组出现条目', () => {
-    addImagePaths(imageQueueFor('g1'), ['/a.png', '/b.png']);
-    const other = imageQueueFor('g2');
+  it('一个轮添变体不会让同组另一个轮出现变体', () => {
+    addEntries(imageQueueFor('g1', 'r1'), ['/a.png', '/b.png']);
+    const other = imageQueueFor('g1', 'r2');
     expect(other.entries).toEqual([]);
     expect(planScore(other.entries, probeOf({})).runImageCount).toBe(0);
   });
@@ -865,7 +915,7 @@ describe('端到端（纯逻辑）', () => {
     expect(secondPlan.skippedImageCount).toBe(1);
     expect(secondPlan.encoders.map((item) => item.imageId)).toEqual([b.id]);
     expect(secondPlan.skippedImages[0].path).toBe('/photos/a.png');
-    expect(planSummary(secondPlan).skipLines).toEqual(['a.png（已跑分且无变更）']);
+    expect(planSummary(secondPlan).skipLines).toEqual(['JPEG q75（已跑分且无变更）']);
 
     const planned = secondPlan.encoders[0];
     applyRunResults(b, [{ kind: 'success', cardId: planned.encoder.id, artifactPath: '/out/b2.jpg', fingerprint: planned.fingerprint }], okIdentity(b.path));

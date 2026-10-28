@@ -1,4 +1,4 @@
-// encoding 域的注册入口：5 个检视器分区 + 5 个命令 + 分组关闭时的会话态清理。
+// encoding 域的注册入口：4 个检视器分区 + 5 个命令 + 分组关闭时的会话态清理。
 //
 // 外壳只认 shell/registry 的注册表；本域不 import 外壳的界面代码，只调注册函数。
 // 注册幂等：main 显式调用与模块副作用各一次都不会重复挂。
@@ -16,11 +16,11 @@ import {
   pickReference,
   runChangedEntries,
   runFullScore,
+  variantEntries,
   type RoundCtx,
 } from './actions';
 import { dropImageQueue } from './logic/entries';
 import { ladderStateFor } from './session';
-import { advancedSection } from './sections/advanced';
 import { candidatesSection } from './sections/candidates';
 import { ladderSection } from './sections/ladder';
 import { referenceSection } from './sections/reference';
@@ -36,8 +36,13 @@ function hasReference(): boolean {
   return current()?.round.referencePath != null;
 }
 
-function hasCandidates(): boolean {
-  return (current()?.round.candidates.length ?? 0) > 0;
+/** 本轮是否已有内容可跑（跑分图，或至少一个参数变体）。 */
+function hasContent(): boolean {
+  const session = current();
+  if (session === null) return false;
+  return (
+    session.round.candidates.length > 0 || variantEntries(session.group.id, session.round.id).length > 0
+  );
 }
 
 let registered = false;
@@ -51,7 +56,6 @@ export function registerEncoding(): void {
   registerPanelSection(candidatesSection);
   registerPanelSection(scoreSection);
   registerPanelSection(ladderSection);
-  registerPanelSection(advancedSection);
 
   registerCommand({
     id: 'pick-reference-image',
@@ -71,7 +75,7 @@ export function registerEncoding(): void {
 
   registerCommand({
     id: 'run-score-image',
-    enabled: () => !isBusy() && hasReference() && hasCandidates(),
+    enabled: () => !isBusy() && hasReference() && hasContent(),
     run: () => {
       const ctx = current();
       if (ctx) void runFullScore(ctx);
@@ -83,7 +87,7 @@ export function registerEncoding(): void {
     enabled: () => !isBusy(),
     run: () => {
       const ctx = current();
-      if (ctx) void runChangedEntries(ctx.group.id);
+      if (ctx) void runChangedEntries(ctx);
     },
   });
 
@@ -96,7 +100,7 @@ export function registerEncoding(): void {
     },
   });
 
-  // 跑分组关闭：丢弃该组的条目队列（组 id 不复用，留着只会白占内存）
+  // 跑分组关闭：丢弃该组的变体（组 id 不复用，留着只会白占内存）
   onGroupRemoved((groupId) => dropImageQueue(groupId));
 }
 

@@ -67,6 +67,17 @@ export function subscribe(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
+/**
+ * 通知一轮重绘，但不改工作区 / 设置 / 状态栏。
+ *
+ * 给「只活在会话态、不落库」的改动（例如参数变体里改了一个质量值）用：这些改动没有
+ * 对应的 setter，可它们会影响别的分区（跑分分区的「重跑改过的」计数）与结果坞的徽章，
+ * 不通知就会一直显示旧数字。
+ */
+export function touch(): void {
+  notify();
+}
+
 function notify(): void {
   for (const listener of [...listeners]) {
     try {

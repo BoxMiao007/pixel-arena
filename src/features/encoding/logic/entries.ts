@@ -1,11 +1,11 @@
-// 图片条目队列与增量跑分判定的纯逻辑（票 #76；权威定义见父规格 #74 的
-// 「Implementation Decisions → 状态与数据」与「Testing Decisions → 缝 1」）。
+// 参数变体与增量跑分判定的纯逻辑（票 #76；票「变体并入当前轮」后改为按轮键控）。
 //
 // 术语与数据形状：
-// - **图片条目**：一张原图 + 它自己的一整套编码器配置，是列表面板的一行，对应一个评测轮；
-// - **编码器卡片**：条目里的编码器配置，数据形状就是 advanced.ts 的 AdvancedEntry（本模块
+// - **参数变体**：本轮原图 + 它自己的一整套编码器配置，是「跑分图」列表里的一行；
+//   产物入**当前评测轮**，与人工导入 / 一站式生成的跑分图同列表混合展示；
+// - **编码器卡片**：变体里的编码器配置，数据形状就是 advanced.ts 的 AdvancedEntry（本模块
 //   只引用、不改它）；
-// - **跑分快照**：该条目最近一次**成功**跑分时记下的原图标识 + 逐卡参数指纹与产物路径；
+// - **跑分快照**：该变体最近一次**成功**跑分时记下的原图标识 + 逐卡参数指纹与产物路径；
 // - **增量跑分**：只跑脏的编码器卡，未变更的复用上一轮结果。
 //
 // 三条设计约束（也是本模块能进 node 环境单测的原因）：
@@ -14,11 +14,10 @@
 //    文件用 ImageIdentityReading 的失败分支显式表达，判定按「已变更」保守重跑。
 // 2. **失败永远不算已跑分**：快照只接收成功结果；失败单独记在 ImageEntry.failures 里，
 //    所以「失败条目永远保持待跑」由数据结构本身保证，不靠判定时额外判断。
-// 3. **仅会话态**：条目、参数、快照全部活在模块级 Map 里（按跑分组 id 键控），不写
-//    workspace.json，重启归零（父规格「状态与数据」第一条）。
+// 3. **仅会话态**：变体、参数、快照全部活在模块级 Map 里（按组 → 轮两级键控），不写
+//    workspace.json，重启归零（决策 0031：条目 / 参数 / 快照不进工作区格式）。
 
-import { newEntryId, type AdvancedEntry } from './advanced';
-import { fileName } from '../../../core/util';
+import { newEntry, newEntryId, type AdvancedEntry, type ImageSpec } from './advanced';
 
 /** 编码器卡片：直接复用高级创建的条目形状（字段语义见 advanced.ts），不另造一套模型。 */
 export type EncoderCard = AdvancedEntry;
@@ -132,26 +131,27 @@ export interface EntryFailure {
   reason: string;
 }
 
-/** 一个图片条目（列表面板的一行，一个评测轮的配置单元）。 */
+/** 一个参数变体（「跑分图」列表里的一行：一个待生成 / 已生成的图片）。
+ *
+ * 原图不是变体自带的属性：变体永远编码**本轮原图**（路径由 syncEntryReference 与本轮同步），
+ * 所以同一轮的变体天然可横向对比；原图换了，变体的快照整体作废（replaced 置位）。
+ */
 export interface ImageEntry {
-  /** 图片条目 id（会话内唯一）。 */
+  /** 变体 id（会话内唯一）。 */
   id: string;
-  /** 原图路径（同一路径可以重复添加，见 duplicateEntryIds）。 */
+  /** 本轮原图路径（由 syncEntryReference 与工作区保持一致；编码输入与标识口径都用它）。 */
   path: string;
-  /** 该条目的全部编码器卡（顺序参与指纹与产物生成顺序）。 */
+  /** 该变体的全部编码器卡（顺序参与指纹与产物生成顺序）。 */
   encoders: EncoderCard[];
   /** 最近一次成功跑分的快照；null = 从未成功跑分。 */
   snapshot: ScoreSnapshot | null;
   /** 上一次跑分的失败记录（只记当前仍存在的卡片，见 applyRunResults）。 */
   failures: EntryFailure[];
-  /** 显式「更换图片」后置位：旧结果整体作废（即使新文件标识巧合相同），跑分结果写入后清除。 */
+  /** 原图换过（或创建时即声明结果作废）：旧结果整体失效，跑分结果写入后清除。 */
   replaced: boolean;
-  /** 该条目已创建的评测轮 id；null = 还没建（惰性建轮：第一次真正产出产物时才写）。
-   * 删条目时据此连带删轮；换图时据此清跑分行（轮本身保留）。 */
-  roundId: string | null;
 }
 
-/** 一个跑分组的条目队列会话态（仅内存，重启归零）。 */
+/** 一个评测轮的参数变体会话态（仅内存，重启归零）。 */
 export interface ImageQueueSession {
   /** 条目列表（顺序即列表面板顺序）。 */
   entries: ImageEntry[];
@@ -169,26 +169,32 @@ export interface RoundSummary {
 
 // ---------- 会话态（模块级 Map：切标签保留、重启归零，不写 workspace.json） ----------
 
-const queues = new Map<string, ImageQueueSession>();
+/** 组 id → 轮 id → 该轮的变体列表（两级键控：关组时整组一次丢弃）。 */
+const queues = new Map<string, Map<string, ImageQueueSession>>();
 
 let nextImageId = 1;
 
-/** 生成图片条目 id（会话内唯一即可）。 */
+/** 生成变体 id（会话内唯一即可）。 */
 export function newImageEntryId(): string {
   return `img-${nextImageId++}`;
 }
 
-/** 取某个跑分组的条目队列；首次用到时建空队列。 */
-export function imageQueueFor(groupId: string): ImageQueueSession {
-  let session = queues.get(groupId);
+/** 取某个评测轮的参数变体列表；首次用到时建空列表。 */
+export function imageQueueFor(groupId: string, roundId: string): ImageQueueSession {
+  let rounds = queues.get(groupId);
+  if (!rounds) {
+    rounds = new Map<string, ImageQueueSession>();
+    queues.set(groupId, rounds);
+  }
+  let session = rounds.get(roundId);
   if (!session) {
     session = { entries: [] };
-    queues.set(groupId, session);
+    rounds.set(roundId, session);
   }
   return session;
 }
 
-/** 丢弃某个跑分组的条目队列（跑分组被删时调用）。 */
+/** 丢弃某个跑分组的全部变体（跑分组被删时调用；组 id 不复用）。 */
 export function dropImageQueue(groupId: string): void {
   queues.delete(groupId);
 }
@@ -230,7 +236,31 @@ export function defaultImageEncoders(): EncoderCard[] {
   return [defaultJpegCard()];
 }
 
-/** 新建一个图片条目（默认带一条 JPEG 有损配置，无快照、无失败记录）。 */
+/** 图片扩展名 → 编码器 id（认不出按默认 JPEG）。 */
+const EXT_ENCODER: Record<string, string> = {
+  jpg: 'jpeg',
+  jpeg: 'jpeg',
+  webp: 'webp',
+  avif: 'avif',
+  jxl: 'jxl',
+  png: 'png',
+};
+
+/**
+ * 人工导入 / 一站式产出的图对应的「预设参数卡」：右键复制它时的起头参数。
+ *
+ * 这张图的真实参数没有暴露给工具（外部工具压的，encodingParams 只是展示文本），所以按
+ * 同格式规格的默认值取；认不出格式或目录里没有该规格时退回默认 JPEG 卡——宁可给一个
+ * 保守的默认，也不假装知道原图的参数。
+ */
+export function presetCardFor(imagePath: string, specs: readonly ImageSpec[]): EncoderCard {
+  const ext = imagePath.split('.').pop()?.toLowerCase() ?? '';
+  const encoderId = EXT_ENCODER[ext] ?? DEFAULT_IMAGE_ENCODER_ID;
+  const spec = specs.find((item) => item.id === encoderId);
+  return spec ? newEntry('image', spec.id, spec) : defaultJpegCard();
+}
+
+/** 新建一个参数变体（默认带一条 JPEG 有损配置，无快照、无失败记录）。 */
 export function newImageEntry(path: string): ImageEntry {
   return {
     id: newImageEntryId(),
@@ -239,35 +269,79 @@ export function newImageEntry(path: string): ImageEntry {
     snapshot: null,
     failures: [],
     replaced: false,
-    roundId: null,
   };
 }
 
-/** 记录该条目对应的评测轮（惰性建轮：调用方在第一次真正产出产物、轮创建成功后写回）。
- * 轮一旦建好就不再清空（删条目会连轮一起删，不需要在这里回退）。 */
-export function attachRound(entry: ImageEntry, roundId: string): void {
-  entry.roundId = roundId;
+/**
+ * 深拷贝一张编码器卡：新卡片 id，参数行逐条复制（含候选选项）。
+ *
+ * 复制出来的变体必须与原变体完全解耦——共享行对象会让「复制后调参」悄悄改掉原图。
+ */
+export function cloneCard(card: EncoderCard): EncoderCard {
+  return {
+    ...card,
+    id: newEntryId(),
+    rows: card.rows.map((row) => ({ ...row, options: [...row.options] })),
+  };
 }
 
-/** 按路径批量添加图片条目（多选添加一次成批入列；同一路径允许重复添加）。 */
-export function addImagePaths(session: ImageQueueSession, paths: string[]): ImageEntry[] {
-  const added = paths.map((path) => newImageEntry(path));
-  session.entries.push(...added);
-  return added;
+/** 由一张编码器卡派生参数变体（右键「高级选项」的复制落点）。 */
+export function variantFromCard(path: string, card: EncoderCard): ImageEntry {
+  return {
+    id: newImageEntryId(),
+    path,
+    encoders: [cloneCard(card)],
+    snapshot: null,
+    failures: [],
+    replaced: false,
+  };
 }
 
-/** 按条目 id 删除；返回被删条目，找不到返回 null。调用方负责连带删除对应评测轮。 */
-export function removeImageEntry(session: ImageQueueSession, imageId: string): ImageEntry | null {
-  const index = session.entries.findIndex((entry) => entry.id === imageId);
+/** 由一张编码器卡建一个「普通变体」：用预设参数填充，不复制任何已有记录。 */
+export function newVariant(path: string, cards: EncoderCard[] = defaultImageEncoders()): ImageEntry {
+  return {
+    id: newImageEntryId(),
+    path,
+    encoders: cards,
+    snapshot: null,
+    failures: [],
+    replaced: false,
+  };
+}
+
+/** 按变体 id 删除；返回被删变体，找不到返回 null。 */
+export function removeImageEntry(entries: ImageEntry[], imageId: string): ImageEntry | null {
+  const index = entries.findIndex((entry) => entry.id === imageId);
   if (index < 0) return null;
-  return session.entries.splice(index, 1)[0] ?? null;
+  return entries.splice(index, 1)[0] ?? null;
+}
+
+/**
+ * 让变体跟上本轮原图：路径不同即整体作废（快照 / 失败清掉、replaced 置位）。
+ *
+ * 为什么必须整体作废：产物是按旧原图编出来的，留在列表里就是「旧图产物 vs 新原图」
+ * 的骗人对比；同时后端换原图本身也会清掉已有指标。
+ * 返回是否有变体被改写（界面据此重绘）。
+ */
+export function syncEntryReference(
+  entries: readonly ImageEntry[],
+  referencePath: string | null,
+): boolean {
+  if (referencePath === null || referencePath === '') return false;
+  let changed = false;
+  for (const entry of entries) {
+    if (entry.path === referencePath) continue;
+    replaceImagePath(entry, referencePath);
+    changed = true;
+  }
+  return changed;
 }
 
 /**
  * 更换原图：编码器配置与参数原样保留，旧结果整体作废。
  *
  * 为什么连快照一起清、还要多一个 replaced 标记：只靠「原图标识变了」判断换图会漏掉
- * 「换走又换回同一张、标识恰好相同」的情形；换图是**显式按钮**，显式动作必须让旧结果
+ * 「换走又换回同一张、标识恰好相同」的情形；换图是**显式动作**，显式动作必须让旧结果
  * 无条件失效（父规格「已知边界」：指纹只是额外保险）。清掉快照是为了不留下指向旧图的
  * 产物路径；replaced 负责在清掉快照之后仍能报出「图片换了」。失败记录同样作废。
  */
@@ -278,21 +352,55 @@ export function replaceImagePath(entry: ImageEntry, path: string): void {
   entry.replaced = true;
 }
 
-// ---------- 重复图片识别 ----------
-
-/** 找出「同一原图路径出现多次」的条目 id（每个出现都算重复）。
+/**
+ * 从变体快照里抹掉一条产物记录（这张跑分图被用户从本轮移除了）。
  *
- * 只做提示，不禁止：同一张图配两套完全不同的参数是对比场景的正当用法。
- * 路径按调用方给的原文比较（实际都来自系统文件对话框，同一文件的写法一致）。
+ * 不抹掉的话判定仍会说「已跑分且无变更」，而它的产物已经不在本轮——增量跑分会永远跳过
+ * 它，界面上也再没有它的行。抹掉后判定回到「从没跑过」，下次跑分重新生成。
  */
-export function duplicateEntryIds(entries: ImageEntry[]): Set<string> {
-  const counts = new Map<string, number>();
-  for (const entry of entries) counts.set(entry.path, (counts.get(entry.path) ?? 0) + 1);
-  const duplicates = new Set<string>();
-  for (const entry of entries) {
-    if ((counts.get(entry.path) ?? 0) > 1) duplicates.add(entry.id);
-  }
-  return duplicates;
+export function forgetArtifact(entry: ImageEntry, artifactPath: string): boolean {
+  if (entry.snapshot === null) return false;
+  const kept = entry.snapshot.encoders.filter((record) => record.artifactPath !== artifactPath);
+  if (kept.length === entry.snapshot.encoders.length) return false;
+  entry.snapshot = kept.length > 0 ? { identity: entry.snapshot.identity, encoders: kept } : null;
+  return true;
+}
+
+/** 由一张跑分图反查产生它的编码器卡（右键「高级选项」要复制这张卡的参数）。 */
+export function cardForArtifact(entry: ImageEntry, artifactPath: string): EncoderCard | null {
+  const record = entry.snapshot?.encoders.find((item) => item.artifactPath === artifactPath);
+  if (!record) return null;
+  return entry.encoders.find((card) => card.id === record.cardId) ?? null;
+}
+
+// ---------- 展示文案 ----------
+
+/** 编码器 id → 展示名（与编码器目录的 label 同口径；目录没加载时也能出文案）。 */
+const ENCODER_LABELS: Record<string, string> = {
+  jpeg: 'JPEG',
+  webp: 'WebP',
+  avif: 'AVIF',
+  jxl: 'JPEG XL',
+  png: 'PNG',
+};
+
+export function encoderLabel(encoderId: string): string {
+  return ENCODER_LABELS[encoderId] ?? encoderId.toUpperCase();
+}
+
+/** 一张编码器卡的一句话摘要（「JPEG q75」「WebP 无损」「AVIF 目标 200 KB」）。 */
+export function cardSummary(card: EncoderCard): string {
+  const label = encoderLabel(card.encoderId);
+  if (card.lossless) return `${label} 无损`;
+  if (card.mode === 'size') return `${label} 目标 ${Math.max(1, Math.round(card.targetBytes / 1024))} KB`;
+  return `${label} q${card.quality}`;
+}
+
+/** 一个参数变体的一句话摘要（多卡时点名条数，不堆一长串）。 */
+export function variantSummary(entry: ImageEntry): string {
+  if (entry.encoders.length === 0) return '空配置';
+  const first = cardSummary(entry.encoders[0]);
+  return entry.encoders.length === 1 ? first : `${first} 等 ${entry.encoders.length} 条`;
 }
 
 // ---------- 参数指纹 ----------
@@ -530,11 +638,13 @@ export const SKIP_REASON_LABELS: Record<SkipReasonCode, string> = {
   'no-encoders': '没有编码器配置',
 };
 
-/** 计划里被整张跳过的图片条目（含原因）。 */
+/** 计划里被整张跳过的参数变体（含原因）。 */
 export interface SkippedImage {
   imageId: string;
   path: string;
-  /** 该条目下可复用、无需重跑的编码器卡条数。 */
+  /** 变体的一句话摘要（如「JPEG q75」）：同一轮里各变体共用一张原图，跳过原因必须点名变体。 */
+  label: string;
+  /** 该变体下可复用、无需重跑的编码器卡条数。 */
   encoderCount: number;
   reason: { code: SkipReasonCode; text: string };
 }
@@ -583,6 +693,7 @@ export function planScore(entries: ImageEntry[], probe: ImageIdentityProbe): Sco
       skippedImages.push({
         imageId: entry.id,
         path: entry.path,
+        label: variantSummary(entry),
         encoderCount: 0,
         reason: skipReasonOf('no-encoders'),
       });
@@ -593,6 +704,7 @@ export function planScore(entries: ImageEntry[], probe: ImageIdentityProbe): Sco
       skippedImages.push({
         imageId: entry.id,
         path: entry.path,
+        label: variantSummary(entry),
         encoderCount: entry.encoders.length,
         reason: skipReasonOf('clean'),
       });
@@ -634,9 +746,9 @@ export function summaryHeadline(runImageCount: number, skippedImageCount: number
   return `本次跑分 ${runImageCount} 张，跳过 ${skippedImageCount} 张`;
 }
 
-/** 逐张点名的跳过原因行：「风景.png（已跑分且无变更）」。 */
+/** 逐张点名的跳过原因行：「JPEG q75（已跑分且无变更）」。 */
 export function skipReasonLine(skipped: SkippedImage): string {
-  return `${fileName(skipped.path)}（${skipped.reason.text}）`;
+  return `${skipped.label}（${skipped.reason.text}）`;
 }
 
 /** 汇总文案（标题 + 逐张跳过原因）。 */
@@ -651,26 +763,6 @@ export function planSummary(plan: ScorePlan): ScoreSummary {
     headline: summaryHeadline(plan.runImageCount, plan.skippedImageCount),
     skipLines: plan.skippedImages.map(skipReasonLine),
   };
-}
-
-// ---------- 轮名 ----------
-
-/** 文件系统非法字符（Windows 全集；Linux/macOS 上替换了也无害）。 */
-const ILLEGAL_NAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
-
-/** 文件名清洗：非法字符替换为下划线；清洗后为空时用「未命名」占位。 */
-function safeNamePart(raw: string): string {
-  const cleaned = raw.replace(ILLEGAL_NAME_CHARS, '_');
-  return cleaned === '' ? '未命名' : cleaned;
-}
-
-/**
- * 评测轮名：「评测轮 N（文件名）」，文件名里的文件系统非法字符替换为下划线。
- * N 非正整数时按 1 处理（轮号由调用方从工作区取，这里只做兜底）。
- */
-export function roundName(roundNumber: number, sourcePath: string): string {
-  const number = Number.isFinite(roundNumber) ? Math.max(1, Math.trunc(roundNumber)) : 1;
-  return `评测轮 ${number}（${safeNamePart(fileName(sourcePath))}）`;
 }
 
 // ---------- 跑分结果回写 ----------

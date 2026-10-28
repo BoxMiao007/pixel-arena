@@ -1,6 +1,6 @@
 // 编码器卡（共享渲染）：一条编码器配置 = 一张卡。
 //
-// 谁在用：图片条目队列的逐图编辑（features/encoding）、视频高级创建（features/video）。
+// 谁在用：参数变体编辑（features/encoding）、视频高级创建（features/video）。
 // 因此本模块**不持有列表、不依赖面板生命周期**：目录（格式规格 / 推荐参数）由
 // EncoderCardCatalog 传入，增删排序 / 恢复默认 / 复制由 EncoderCardCallbacks 交还宿主。
 //
