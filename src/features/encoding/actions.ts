@@ -162,6 +162,10 @@ export async function removeCandidateAt(ctx: RoundCtx, path: string): Promise<vo
 export async function runFullScore(ctx: RoundCtx): Promise<boolean> {
   const groupId = ctx.group.id;
   const roundId = ctx.round.id;
+  // 分区按钮传进来的 ctx 是挂载快照：先按 id 从 store 重取最新轮，
+  // 否则同轮内刚加的原图/跑分图会被旧快照的校验误拒。
+  const fresh = findRound(getState().workspace, groupId, roundId);
+  if (fresh) ctx.round = fresh;
   const total = ctx.round.candidates.length;
   if (!ctx.round.referencePath) {
     status('先选择原图，再开始跑分', true);
@@ -549,6 +553,9 @@ export async function loadLadder(state: LadderUiState): Promise<void> {
 
 /** 大小优先：对缺结果的勾选格式逐个逼近搜索（每次调用天然形成进度）。 */
 export async function runSizeSearch(ctx: RoundCtx, state: LadderUiState): Promise<void> {
+  // ctx 是挂载快照，入口先重取（分区按钮点击时同轮数据可能已变）
+  const fresh = findRound(getState().workspace, ctx.group.id, ctx.round.id);
+  if (fresh) ctx.round = fresh;
   const referencePath = ctx.round.referencePath;
   if (!referencePath) return;
   const sizeKey = String(state.targetBytes);
@@ -618,6 +625,9 @@ export async function generateLadder(ctx: RoundCtx, state: LadderUiState): Promi
     status(`加载编码器目录失败：${errorText(err)}`, true);
     return;
   }
+  // ctx 是挂载快照，入口先重取（分区按钮点击时同轮数据可能已变）
+  const freshRound = findRound(getState().workspace, ctx.group.id, ctx.round.id);
+  if (freshRound) ctx.round = freshRound;
   const referencePath = ctx.round.referencePath;
   if (!referencePath) {
     status('先选择原图，再让工具自动压一套阶梯', true);

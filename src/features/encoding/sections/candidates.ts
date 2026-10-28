@@ -22,7 +22,7 @@ import {
   removeCandidateAt,
 } from '../actions';
 import { renderEntryEditor, type EntryEditorView } from '../overlay/entry-editor';
-import { dropTarget, mountSection, paintBody } from './common';
+import { dropTarget, liveRoundOf, mountSection, paintBody } from './common';
 
 type StatusKind = 'ok' | 'danger' | 'info' | 'neutral';
 
@@ -82,22 +82,24 @@ export const candidatesSection: PanelSection = {
     const render = (): void => {
       const ui = state();
       const entries = queueEntries(ctx.group.id);
-      const runningPaths = ctx.round.candidates
+      // 同轮内增删跑分图只走 update()：ctx 是挂载快照，必须重取活数据（见 common.ts）
+      const round = liveRoundOf(ctx);
+      const runningPaths = round.candidates
         .filter((candidate) => isPathRunning(candidate.path))
         .map((candidate) => candidate.path)
         .join('|');
       const key = [
         'candidates',
         ctx.round.id,
-        ctx.round.candidates.length,
+        round.candidates.length,
         ui.expanded ?? '',
         ui.version,
         runningPaths,
-        ctx.round.referencePath === null ? 'noref' : 'ref',
+        round.referencePath === null ? 'noref' : 'ref',
       ].join(':');
 
       paintBody(body, key, () => {
-        const candidates = ctx.round.candidates;
+        const candidates = round.candidates;
         if (candidates.length === 0) {
           return el(
             'div',

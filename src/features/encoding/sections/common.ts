@@ -5,9 +5,28 @@
 
 import { getPref, setPref } from '../../../core/ui-state';
 import { getState, type BusyEntry } from '../../../core/store';
+import type { Round } from '../../../core/model';
+import type { ViewCtx } from '../../../shell/registry';
 import { el, paint, type Child } from '../../../ui/dom';
 import { section, type SectionHandle } from '../../../ui/primitives';
 import { registerDropTarget, type DropAccept } from '../../../shell/file-drop';
+
+/**
+ * 分区 update() 时的活数据源：从单一状态源重取该轮最新数据。
+ *
+ * 外壳只在「分组或轮次变化」时重新 mount 分区（见 shell/regions.ts 的挂载键），
+ * 同轮内的增删改只调 update()；而 store 每次都整份替换 workspace，挂载时捕获的
+ * ctx.round 是旧快照。分区渲染必须经这里重取，否则会出现「加了原图界面不动、
+ * 跑分按钮一直灰」的滞后——结果坞（liveRound）、视频域（videoRound）、查看器
+ * （update 内读 store）都是同一口径。轮已被删除时回落到快照：外壳随后会销毁本分区。
+ */
+export function liveRoundOf(ctx: ViewCtx): Round {
+  const round =
+    getState().workspace?.groups
+      .find((group) => group.id === ctx.group.id)
+      ?.rounds.find((item) => item.id === ctx.round.id) ?? null;
+  return round ?? ctx.round;
+}
 
 /** 分区默认展开态（未记录时用）。 */
 export function sectionOpen(id: string, fallback = true): boolean {

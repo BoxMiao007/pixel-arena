@@ -36,7 +36,7 @@ import {
   toggleLadderItem,
   toggleSelectionFormat,
 } from '../session';
-import { busyOf, debounce, mountSection, paintBody } from './common';
+import { busyOf, debounce, liveRoundOf, mountSection, paintBody } from './common';
 
 const UNIT_BYTES = { KB: 1024, MB: 1024 * 1024 } as const;
 
@@ -132,6 +132,8 @@ export const ladderSection: PanelSection = {
 
     const render = (): void => {
       const busy = isBusy();
+      // 同轮内选图只走 update()：ctx 是挂载快照，必须重取活数据（见 common.ts）
+      const round = liveRoundOf(ctx);
       const ladderBusy = busyOf(busyIdOf('ladder', ctx.round.id));
       const key = [
         'ladder',
@@ -152,7 +154,7 @@ export const ladderSection: PanelSection = {
         state.failures.length,
         state.encoderIssue === null ? '' : 'issue',
         busy ? 'busy' : 'idle',
-        ctx.round.referencePath === null ? 'noref' : 'ref',
+        round.referencePath === null ? 'noref' : 'ref',
       ].join(':');
 
       paintBody(body, key, () => {
@@ -314,7 +316,7 @@ export const ladderSection: PanelSection = {
             ? '正在取点…'
             : `将生成 ${planned} 项`;
 
-        const runDisabled = busy || ctx.round.referencePath === null || planned === 0;
+        const runDisabled = busy || round.referencePath === null || planned === 0;
 
         return el(
           'div',
@@ -335,7 +337,7 @@ export const ladderSection: PanelSection = {
               variant: 'primary',
               disabled: runDisabled,
               title:
-                ctx.round.referencePath === null
+                round.referencePath === null
                   ? '先选择原图'
                   : planned === 0
                     ? '先选择至少一个格式或无损组'
@@ -395,7 +397,7 @@ export const ladderSection: PanelSection = {
                 ),
               )
             : null,
-          planned > 0 && ctx.round.referencePath !== null
+          planned > 0 && round.referencePath !== null
             ? el('p', {
                 class: 'ladder__note',
                 text: `${planned} 份产物写进原图旁的 Pixel Arena 文件夹并纳入本轮`,

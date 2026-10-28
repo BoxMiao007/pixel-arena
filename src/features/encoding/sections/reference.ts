@@ -11,7 +11,7 @@ import { fileName, truncateFileName } from '../../../core/util';
 import { isBusy } from '../../../core/store';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
 import { dropOnReference, pickReference } from '../actions';
-import { dropTarget, mountSection, paintBody } from './common';
+import { dropTarget, liveRoundOf, mountSection, paintBody } from './common';
 
 export const referenceSection: PanelSection = {
   id: 'reference',
@@ -29,8 +29,10 @@ export const referenceSection: PanelSection = {
     });
 
     const render = (): void => {
-      const path = ctx.round.referencePath;
-      const size = ctx.round.referenceSize;
+      // 同轮内换图只走 update()：ctx 是挂载快照，必须重取活数据（见 common.ts）
+      const round = liveRoundOf(ctx);
+      const path = round.referencePath;
+      const size = round.referenceSize;
       const formatLabel = path === null ? '' : formatLabelOrEmpty(path);
       paintBody(body, `reference:${path ?? ''}:${size ?? 0}`, () =>
         path === null

@@ -16,7 +16,7 @@ import { rerunChangedButtonLabel } from '../logic/run';
 import { queueIdentityProbe } from '../logic/runtime';
 import { busyIdOf, queueEntries, runChangedEntries, runFullScore } from '../actions';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
-import { busyOf, hintWrap, mountSection, paintBody } from './common';
+import { busyOf, hintWrap, liveRoundOf, mountSection, paintBody } from './common';
 
 export const scoreSection: PanelSection = {
   id: 'score',
@@ -28,8 +28,11 @@ export const scoreSection: PanelSection = {
 
     const render = (): void => {
       const busy = isBusy();
-      const hasReference = ctx.round.referencePath !== null;
-      const candidates = ctx.round.candidates;
+      // 同轮内加图只走 update()：ctx 是挂载快照，必须重取活数据（见 common.ts），
+      // 否则「加原图后按钮仍灰、提示停在『先选择原图』」会复现。
+      const round = liveRoundOf(ctx);
+      const hasReference = round.referencePath !== null;
+      const candidates = round.candidates;
       const plan = planScore(queueEntries(ctx.group.id), queueIdentityProbe());
       const rerunCount = plan.runImageCount;
       const failed = candidates.filter((candidate) => candidate.error !== null);
@@ -37,6 +40,7 @@ export const scoreSection: PanelSection = {
       const key = [
         'score',
         ctx.round.id,
+        hasReference ? 'ref' : 'noref',
         candidates.length,
         rerunCount,
         failed.length,

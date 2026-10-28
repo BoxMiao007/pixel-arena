@@ -227,6 +227,10 @@ registerStageView(view) / registerPanelSection(section) / registerDockTab(tab)
 ```
 
 - 外壳在「分组或轮次变化」时销毁并重新 `mount`；状态变化时只调 `update()`。
+- `ctx` 是 mount 时的快照：store 每次整份替换 workspace，同轮内的增删改不会反映到挂载时
+  捕获的 `ctx.round`。分区 `update()` 读轮数据必须经 store 重取（编码域 `sections/common.ts`
+  的 `liveRoundOf`、结果坞 `liveRound`、视频域 `videoRound` 同一口径）；长动作入口（整轮跑分 /
+  编码阶梯 / 大小搜索）也要先按 id 重取再校验，否则会拿旧快照误拒或误放行。
 - 五个注册表（舞台视图/分区/页签/命令/键位）统一「同 id 覆盖」语义：重复注册不报错也不静默丢弃，后注册者生效（热更新与测试替身都靠这个）。
 - 命令 id 约定（快捷键与外壳按钮按此调用，功能域注册时必须同名）：`pick-reference-image` / `pick-reference-video`、`pick-candidates-image` / `pick-candidates-video`、`run-score-image` / `run-score-video`、`rerun-changed-image`、`generate-ladder-image`、`export-menu`、`open-settings`、`open-help`。
 - 舞台键位用 `registerKeyBinding({ id, keys, kinds?, when?, run })` 注册（外壳统一监听 keydown，输入框/浮层打开时不派发）。
