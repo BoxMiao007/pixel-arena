@@ -1,0 +1,183 @@
+/* 来源域样式：检视器「原图 / 跑分图」两个分区。
+ *
+ * 只引用 tokens 变量（色值、字号、发丝线、间距、圆角），不写字面量；
+ * 行内状态靠徽标颜色表达，不给卡片加左边缘彩条。 */
+
+.source {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.source__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.source__name {
+  font-size: var(--fs-body);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.source__metas {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+/* 元信息之间的极细分隔线（不用中点；0.5px 竖线随文字基线对齐） */
+.source__meta-item + .source__meta-item::before,
+.cand__meta + .cand__meta::before {
+  content: '';
+  display: inline-block;
+  width: var(--hairline);
+  height: 10px;
+  background: var(--line-strong);
+  vertical-align: middle;
+  margin-right: var(--s-1);
+}
+
+.source__meta-item {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.source__spacer {
+  flex: 1 1 auto;
+  min-width: var(--s-1);
+}
+
+.source__count {
+  margin-left: auto;
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 跑分图清单 ---------- */
+
+.cand-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.cand {
+  border: var(--hairline) solid transparent;
+  border-radius: var(--r-sm);
+  min-width: 0;
+}
+
+.cand--open {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+}
+
+.cand__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--r-sm);
+  min-width: 0;
+}
+
+/* 第一行：文件名占满剩余宽度，右侧固定是状态与移除 */
+.cand__line {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.cand__metas {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.cand__row:hover {
+  background: var(--surface-3);
+}
+
+.cand__name {
+  flex: 1 1 auto;
+  font-size: var(--fs-body);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.cand__name--action {
+  border: none;
+  background: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cand__name--action:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.cand__name--action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+.cand__meta {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+
+
+.cand__spacer {
+  flex: 1 1 auto;
+  min-width: var(--s-1);
+}
+
+.cand__editor {
+  border-top: var(--hairline) solid var(--line);
+  padding: var(--s-2);
+}
+
+/* ---------- 紧凑空态行（检视器内的空态：一行说明 + 一个次级动作 + 拖放提示） ----------
+ * 完整引导只在舞台出现（那里要教新用户）；检视器里同样的话不重复第二遍。 */
+
+.enc-empty {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  padding: var(--s-1) 0;
+}
+
+.enc-empty__text {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+.enc-empty__hint {
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
+}

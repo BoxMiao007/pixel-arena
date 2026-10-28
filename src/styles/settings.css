@@ -1,0 +1,325 @@
+/* 设置域样式：右侧抽屉的内部布局。
+ *
+ * 只写本域自己的结构。浮层外壳（.overlay / .modal--right / .modal__head / .modal__footer）
+ * 与表单控件（.field / .input / .select / .switch / .badge / .progress）全部来自
+ * components.css，颜色与尺寸一律引用 tokens.css 的变量。
+ */
+
+/* 铺满 .modal__body：正文区自带 --s-4 内边距，用等量负外边距抵消，导航与内容各自滚动，
+ * 避免出现「外层一条滚动条 + 内层一条滚动条」。padding 用的是同一个令牌，改令牌两边同步。 */
+.settings {
+  display: flex;
+  height: 100%;
+  margin: calc(-1 * var(--s-4));
+}
+
+/* ---- 左侧分区导航 ---- */
+.settings__nav {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  width: 128px;
+  padding: var(--s-2);
+  border-right: var(--hairline) solid var(--line);
+  background: var(--surface-0);
+  overflow-y: auto;
+}
+
+.settings__nav-item {
+  display: block;
+  width: 100%;
+  height: var(--control-h);
+  padding: 0 var(--s-2);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-body);
+  text-align: left;
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.settings__nav-item:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* 当前分区：底色抬升 + 字重变化，不靠颜色单独表意 */
+.settings__nav-item[aria-current='page'] {
+  background: var(--surface-4);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---- 内容区 ---- */
+.settings__main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings__panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-3) var(--s-4) var(--s-5);
+}
+
+.settings__pane {
+  display: block;
+}
+
+.settings__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.settings__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.settings__path-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+.settings__path-row .input {
+  flex: 1 1 96px;
+  width: auto;
+  min-width: 0;
+}
+
+/* 分区内右上角的小动作区（重新检测） */
+.settings__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---- 工具状态行 ---- */
+.settings__tool {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.settings__tool-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.settings__tool-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.settings__tool-version {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 可选的行首名称（toolRow 的 name 选项；默认不传，避免与下方字段标签重复） */
+.settings__tool-name {
+  max-width: 40%;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.settings__tool-spacer {
+  flex: 1;
+}
+
+/* 实际生效路径：等宽单行截断，悬停看全文 */
+.settings__tool-path {
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.settings__tool-path.is-empty {
+  color: var(--text-subtle);
+}
+
+.settings__tool-note {
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+}
+
+/* ---- 编码器列表 ---- */
+.settings__encoders {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+/* 每个编码器一项：发丝线分隔，不画卡片、不加阴影 */
+.settings__encoder {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: var(--hairline) solid var(--line);
+}
+
+/* ---- 应用内下载 ---- */
+.settings__download {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: var(--hairline) solid var(--line);
+}
+
+.settings__notice {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+}
+
+.settings__notice.is-error {
+  color: var(--danger);
+}
+
+/* ---- 只读信息行（最近目录 / 窗口大小） ---- */
+.settings__meta-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: var(--s-3);
+  border-top: var(--hairline) solid var(--line);
+}
+
+.settings__meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.settings__meta-label {
+  flex: none;
+  width: 108px;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.settings__meta-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+
+/* ---- 关于 ---- */
+.settings__about-name {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  font-size: var(--fs-title);
+}
+
+.settings__about-core {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.settings__about-intro {
+  color: var(--text-muted);
+}
+
+.settings__about-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.settings__about-libs-title {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.settings__libs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings__libs-row {
+  display: grid;
+  /* 版本列放得下 vX.Y.Z，许可证列放得下 BSD-3-Clause（12px 等宽约 86px）；
+     两列都 nowrap，宁可省略号也不折行——折行的许可证比截断更难读。 */
+  grid-template-columns: minmax(0, 1fr) 72px 104px;
+  gap: var(--s-2);
+  align-items: baseline;
+  padding: 2px 0;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.settings__libs-version,
+.settings__libs-license {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings__libs-row--head {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings__libs-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings__link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.settings__link:hover {
+  text-decoration: underline;
+}
+
+.settings__loading {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+/* ---- 底部状态条（挂在 .modal__footer 里） ---- */
+.settings__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+}
+
+.settings__save-state {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+}
+
+.settings__save-state.is-error {
+  color: var(--danger);
+}

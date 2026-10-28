@@ -1,0 +1,233 @@
+// 查看器工具栏与模式参数浮条。
+//
+// 工具栏一行：模式分段控制 + 当前对比对象 + 缩放控件 + 像素徽标；
+// 模式专属参数（不透明度/阈值/播放）放在画布右上角的浮动条里，
+// 避免六个模式的分段控制 + 上下文 + 缩放挤爆一行（舞台在 1200px 窗口下约 660px 宽）。
+
+import { el } from '../../ui/dom';
+import { icon } from '../../ui/icons';
+import { iconButton, segmented, sliderField } from '../../ui/primitives';
+import {
+  MODE_META,
+  MODE_ORDER,
+  type CompareUiState,
+  type ViewerMode,
+} from './types';
+import { formatZoomPercent } from './zoom';
+
+export interface ToolbarOptions {
+  mode: ViewerMode;
+  onModeChange: (mode: ViewerMode) => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onZoomFit: () => void;
+  onZoomMenu: (anchor: HTMLElement) => void;
+  /** 点击像素读数：未锁定则锁定，已锁定则复制。 */
+  onProbeToggle: () => void;
+}
+
+export interface ProbeView {
+  text: string;
+  detail: string;
+  locked: boolean;
+}
+
+export interface PropsOptions {
+  mode: ViewerMode;
+  compare: CompareUiState;
+  onOpacityInput: (value: number) => void;
+  onThresholdInput: (value: number) => void;
+  onTogglePlay: () => void;
+}
+
+export interface ToolbarHandle {
+  node: HTMLElement;
+  /** 画布右上角的模式参数浮条（无参数的模式为空节点，CSS 会隐藏）。 */
+  props: HTMLElement;
+  setMode: (mode: ViewerMode) => void;
+  setContext: (text: string) => void;
+  setZoom: (zoom: number, pixel: boolean) => void;
+  setZoomEnabled: (enabled: boolean) => void;
+  /** 像素探针读数；null 表示指针不在图片上（隐藏读数）。 */
+  setProbe: (probe: ProbeView | null) => void;
+  /** 重建参数浮条（模式变化时调用）。 */
+  buildProps: (options: PropsOptions) => void;
+  /** 同步参数值（拖动中不重建 DOM）。 */
+  syncProps: (compare: CompareUiState) => void;
+  destroy: () => void;
+}
+
+function modeItems(): Array<{ id: string; icon: (typeof MODE_META)[ViewerMode]['icon']; label: string; title: string }> {
+  return MODE_ORDER.map((mode, index) => ({
+    id: mode,
+    icon: MODE_META[mode].icon,
+    label: MODE_META[mode].label,
+    title: `${MODE_META[mode].label}（${index + 1}）：${MODE_META[mode].description}`,
+  }));
+}
+
+export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
+  const seg = segmented({
+    items: modeItems(),
+    value: options.mode,
+    ariaLabel: '对比模式',
+    onChange: (id) => options.onModeChange(id as ViewerMode),
+  });
+  seg.node.classList.add('viewer__modes');
+  // 纯图标分段：给每个 radio 一个可访问名（分段原语只有 title，没有 aria-label）。
+  for (const button of seg.node.querySelectorAll<HTMLButtonElement>('.segmented__item')) {
+    const mode = button.dataset.id as ViewerMode | undefined;
+    if (!mode) continue;
+    const index = MODE_ORDER.indexOf(mode);
+    button.setAttribute('aria-label', `${MODE_META[mode].label}（${index + 1}）`);
+  }
+
+  const context = el('span', { class: 'viewer__context truncate', text: '' });
+
+  const zoomOut = iconButton({ icon: 'zoomOut', label: '缩小', size: 'sm', onClick: options.onZoomOut });
+  const zoomValue = el('button', {
+    class: 'viewer__zoom-value numeric',
+    attrs: { type: 'button', 'aria-label': '缩放档位', 'aria-haspopup': 'menu' },
+    text: '100%',
+  });
+  zoomValue.addEventListener('click', () => options.onZoomMenu(zoomValue));
+  const zoomIn = iconButton({ icon: 'zoomIn', label: '放大', size: 'sm', onClick: options.onZoomIn });
+  const fit = iconButton({ icon: 'fit', label: '适应窗口（0）', size: 'sm', onClick: options.onZoomFit });
+
+  const probeText = el('span', { class: 'viewer__probe-text', text: '' });
+  const probe = el(
+    'button',
+    {
+      class: 'viewer__probe',
+      attrs: { type: 'button' },
+      on: { click: () => options.onProbeToggle() },
+    },
+    icon('ruler', 'icon viewer__probe-icon'),
+    probeText,
+  );
+  probe.hidden = true;
+
+  const pixelBadge = el('span', {
+    class: 'badge badge--accent viewer__pixel-badge',
+    text: '像素',
+    title: '缩放已达 100%：按最近邻显示原始像素',
+  });
+  pixelBadge.hidden = true;
+
+  const node = el(
+    'div',
+    { class: 'viewer__toolbar' },
+    seg.node,
+    context,
+    el('span', { class: 'viewer__spacer' }),
+    probe,
+    pixelBadge,
+    el('div', { class: 'viewer__zoom' }, zoomOut, zoomValue, zoomIn, fit),
+  );
+
+  const props = el('div', { class: 'viewer__props', attrs: { 'data-empty': 'true' } });
+  let opacityHandle: { setValue: (value: number) => void; input: HTMLInputElement } | null = null;
+  let thresholdHandle: { setValue: (value: number) => void; input: HTMLInputElement } | null = null;
+  let playButton: HTMLButtonElement | null = null;
+  let propsMode: ViewerMode | null = null;
+
+  const syncPlayLabel = (compare: CompareUiState): void => {
+    if (!playButton) return;
+    playButton.replaceChildren(
+      icon(compare.blinkPlaying ? 'pause' : 'play', 'icon'),
+      el('span', { text: compare.blinkPlaying ? '暂停' : '播放' }),
+    );
+    playButton.setAttribute(
+      'title',
+      compare.blinkPlaying ? '暂停自动交替（500ms）' : '自动交替显示原图与跑分图（500ms）',
+    );
+  };
+
+  return {
+    node,
+    props,
+    setMode: (mode) => {
+      seg.setValue(mode);
+    },
+    setContext: (text) => {
+      context.textContent = text;
+      context.title = text;
+    },
+    setZoom: (zoom, pixel) => {
+      zoomValue.textContent = formatZoomPercent(zoom);
+      zoomValue.classList.toggle('is-pixel', pixel);
+      pixelBadge.hidden = !pixel;
+    },
+    setZoomEnabled: (enabled) => {
+      for (const button of [zoomOut, zoomValue, zoomIn, fit]) {
+        button.disabled = !enabled;
+      }
+      if (!enabled) zoomValue.textContent = '—';
+    },
+    setProbe: (reading) => {
+      probe.hidden = reading === null;
+      if (!reading) return;
+      probeText.textContent = reading.text;
+      probe.classList.toggle('is-locked', reading.locked);
+      probe.title = `${reading.detail}
+${reading.locked ? '已锁定：点击复制读数' : '点击锁定这个像素'}`;
+      probe.setAttribute(
+        'aria-label',
+        reading.locked ? '像素读数（已锁定，点击复制）' : '像素读数（点击锁定）',
+      );
+    },
+    buildProps: (next) => {
+      propsMode = next.mode;
+      opacityHandle = null;
+      thresholdHandle = null;
+      playButton = null;
+      props.replaceChildren();
+      props.dataset.empty = 'true';
+
+      if (next.mode === 'overlay' || next.mode === 'diff') {
+        const isOpacity = next.mode === 'overlay';
+        const handle = sliderField({
+          label: isOpacity ? '不透明度' : '阈值',
+          min: 0,
+          max: 100,
+          step: 1,
+          value: isOpacity ? Math.round(next.compare.opacity * 100) : next.compare.threshold,
+          format: (value) => (isOpacity ? `${Math.round(value)}%` : String(Math.round(value))),
+          onInput: (value) => {
+            if (isOpacity) next.onOpacityInput(value / 100);
+            else next.onThresholdInput(value);
+          },
+        });
+        props.append(handle.node);
+        props.dataset.empty = 'false';
+        if (isOpacity) opacityHandle = handle;
+        else thresholdHandle = handle;
+        return;
+      }
+
+      if (next.mode === 'blink') {
+        playButton = el(
+          'button',
+          {
+            class: 'btn btn--secondary btn--sm viewer__play',
+            attrs: { type: 'button' },
+            on: { click: () => next.onTogglePlay() },
+          },
+          icon('play', 'icon'),
+          el('span', { text: '播放' }),
+        );
+        props.append(playButton);
+        props.dataset.empty = 'false';
+        syncPlayLabel(next.compare);
+      }
+    },
+    syncProps: (compare) => {
+      if (propsMode === 'overlay') opacityHandle?.setValue(Math.round(compare.opacity * 100));
+      if (propsMode === 'diff') thresholdHandle?.setValue(compare.threshold);
+      if (propsMode === 'blink') syncPlayLabel(compare);
+    },
+    destroy: () => {
+      props.replaceChildren();
+    },
+  };
+}

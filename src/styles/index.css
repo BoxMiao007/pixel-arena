@@ -1,0 +1,12 @@
+/* 样式入口：令牌与基础层 -> 外壳 -> 各功能域。
+ * 功能域的 CSS 由各自负责人维护，这里只做汇总，不写具体规则。 */
+@import "./tokens.css";
+@import "./base.css";
+@import "./components.css";
+@import "./shell.css";
+@import "./viewer.css";
+@import "./results.css";
+@import "./encoding.css";
+@import "./sources.css";
+@import "./video.css";
+@import "./settings.css";

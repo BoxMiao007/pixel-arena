@@ -1,0 +1,463 @@
+/* results 域样式：评分表 / BD-rate 页签。
+ *
+ * 约定（docs/refactor/frontend-redesign.md §4）：
+ * - 只用 tokens.css 的变量，不写字面色值；
+ * - 发丝线统一 var(--hairline)，圆角克制（表格本身直角，只有浮层与按钮用 --r-sm）；
+ * - 数字列 tabular-nums；名称列冻结，横向滚动不丢行身份；
+ * - 不给表格加装饰性动效，只保留 hover / focus 的必要反馈。
+ */
+
+/* ---------- 页签骨架 ---------- */
+
+.results-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.results-tab__bar {
+  justify-content: flex-end;
+  padding: var(--s-2) var(--s-3) var(--s-1);
+  flex: none;
+}
+
+.results-tab__table {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 无结果空态：一行说明贴在结果坞上半部，不占满可视区，也不让人以为还要往下滚。 */
+.results-tab__empty {
+  flex: 0 0 auto;
+  padding: var(--s-3);
+}
+
+.results-empty-note {
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+
+.results-tab__status {
+  flex: none;
+  padding: var(--s-1) var(--s-3);
+  border-top: var(--hairline) solid var(--line);
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 表格骨架 ---------- */
+
+.results-table-host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.results-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.results-table {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.results-table__caption,
+.results-table__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.results-table th,
+.results-table td {
+  height: 28px;
+  padding: 0 var(--s-2);
+  border-bottom: var(--hairline) solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.results-table th.is-end,
+.results-table td.is-end {
+  text-align: right;
+}
+
+.results-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background-color: var(--surface-1);
+  border-bottom-color: var(--line-strong);
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+}
+
+.results-table__rank {
+  width: 44px;
+  color: var(--text-subtle);
+  text-align: right;
+  font-size: var(--fs-meta);
+}
+
+/* 名称列冻结：横向滚动时始终看得到这行是谁（行身份比序号优先）。
+ * 只对评分表生效（BD-rate 表不冻结），避免窄坞里把数值列钉住。 */
+.is-frozen-name .results-table thead th:nth-child(2),
+.is-frozen-name .results-table tbody tr[data-row-key] > td:nth-child(2) {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  box-shadow: inset -0.5px 0 var(--line);
+}
+
+.is-frozen-name .results-table thead th:nth-child(2) {
+  z-index: 3;
+}
+
+.results-table tbody td {
+  background-color: var(--surface-1);
+}
+
+.results-table tbody tr:hover td {
+  background-color: var(--surface-2);
+}
+
+.results-table tbody tr.is-selected td {
+  background-color: var(--surface-1);
+  background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
+}
+
+/* 最佳值：底色叠在不透明表面上（冻结列滚动时才不会透出下面的内容）。 */
+.results-table tbody tr td.is-best {
+  background-color: var(--surface-1);
+  background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
+  font-weight: 600;
+}
+
+/* 原图基准行：压一层更深的底，不参与 hover/选中。 */
+.results-table tbody tr.results-table__reference td {
+  background-color: var(--surface-3);
+  background-image: none;
+  font-weight: 600;
+}
+
+.results-table tbody tr[data-activate='1'] {
+  cursor: pointer;
+}
+
+.results-table__empty-row td {
+  height: 64px;
+  color: var(--text-subtle);
+  text-align: center;
+}
+
+/* 大表（>80 行）才启用渲染跳过；常规 13 行保持普通渲染，避免首屏闪白。 */
+.results-table.is-large tbody tr {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 28px;
+}
+
+/* ---------- 表头排序 ---------- */
+
+.results-table__sort {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: 100%;
+  padding: 0 16px 0 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+}
+
+.results-table__sort:hover {
+  color: var(--accent);
+}
+
+.results-table__sort-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.results-table__sort-icon {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  display: inline-flex;
+  transform: translateY(-50%);
+}
+
+.results-table__sort-icon .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.results-table th[aria-sort='ascending'],
+.results-table th[aria-sort='descending'] {
+  color: var(--text);
+}
+
+.results-table th[aria-sort='ascending'] .results-table__sort,
+.results-table th[aria-sort='descending'] .results-table__sort {
+  font-weight: 600;
+}
+
+/* ---------- 名称与状态 ---------- */
+
+.results-table__name {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.results-table__name:hover {
+  color: var(--accent);
+}
+
+.results-table__name .truncate {
+  display: block;
+}
+
+.results-status--fail {
+  color: var(--danger);
+}
+
+.results-status--running {
+  color: var(--info);
+}
+
+.results-status--pending {
+  color: var(--text-muted);
+}
+
+.results-status--done {
+  color: var(--text-subtle);
+}
+
+.results-status--toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.results-status--toggle:hover {
+  text-decoration: underline;
+}
+
+.results-status--toggle .truncate {
+  min-width: 0;
+}
+
+/* ---------- 失败原因展开行 ---------- */
+
+.results-table__detail td,
+.results-table__empty-row td {
+  position: static;
+  background-color: var(--surface-2);
+  box-shadow: none;
+}
+
+.results-table__detail td {
+  padding: var(--s-2) var(--s-3);
+  white-space: normal;
+}
+
+.results-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+}
+
+.results-detail__text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 列显隐浮层 ---------- */
+
+.results-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 184px;
+}
+
+.results-columns__title {
+  margin: 0 0 var(--s-1);
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+}
+
+.results-columns__hint {
+  margin: var(--s-1) 0 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+}
+
+.results-columns__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.results-columns__item:hover,
+.results-columns__item:focus-visible {
+  background-color: var(--surface-3);
+}
+
+.results-columns__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--accent);
+}
+
+.results-columns__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- BD-rate 页签 ---------- */
+
+.bdrate-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: var(--s-2) var(--s-3) var(--s-1);
+  gap: var(--s-1);
+}
+
+.bdrate-tab__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  flex: none;
+}
+
+.bdrate-tab__title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.bdrate-tab__ref {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.bdrate-tab__legend,
+.bdrate-tab__note {
+  flex: none;
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+}
+
+.bdrate-tab__note {
+  color: var(--text-muted);
+}
+
+.bdrate-tab__status-host {
+  flex: none;
+}
+
+.bdrate-tab__table {
+  flex: 1;
+  min-height: 0;
+}
+
+.bdrate-tab__loading {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) 0;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.results-table td.is-negative {
+  color: var(--ok);
+}
+
+/* ---------- 就地错误条（BD-rate 失败等） ---------- */
+
+.results-inline-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  margin: 0 0 var(--s-2);
+  padding: var(--s-1) var(--s-2);
+  border: var(--hairline) solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background-color: var(--danger-soft);
+  font-size: var(--fs-meta);
+}
+
+.results-inline-error__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}

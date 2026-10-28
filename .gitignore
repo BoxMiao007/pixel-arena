@@ -34,3 +34,6 @@ skills-lock.json
 
 # archify 架构图工作目录（candidate.json、交付 HTML 与校验回执均为本地产物）
 /.archify/
+
+# 本地临时产物（截图、日志、实验文件）
+/.tmp/

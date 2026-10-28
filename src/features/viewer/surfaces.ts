@@ -1,0 +1,241 @@
+// 查看器的画布表面：单画布（滑动/叠加/差异/闪烁）、分屏多栏、网格多格。
+//
+// 只负责「结构 + 每栏/每格的选图按钮与占位状态」；画什么、视口多少由 stage 决定。
+// 重绘不走 DOM 重建：结构只在模式变化或栏/格数量变化时重建一次。
+
+import { el } from '../../ui/dom';
+import { icon } from '../../ui/icons';
+import { spinner } from '../../ui/primitives';
+import { GRID_MIN_CELL_PX, GRID_MIN_ROW_PX, SPLIT_MIN_PANE_PX } from './layout';
+
+/** 单栏/单格的占位状态（加载中 / 加载失败 / 显式留空）。 */
+export type PaneStatus =
+  | { kind: 'none' }
+  | { kind: 'loading'; role: string }
+  | { kind: 'error'; role: string; path: string }
+  | { kind: 'empty' };
+
+export interface SurfaceOptions {
+  mode: 'single' | 'split' | 'grid';
+  /** 栏数 / 格子数（single 恒为 1）。 */
+  count: number;
+  /** 网格列数（split/single 忽略）。 */
+  cols?: number;
+  /** 点击某栏/某格的选图按钮。 */
+  onPick: (index: number) => void;
+  /** 某栏/某格获得焦点（胶片条选图落到这里）。 */
+  onFocus: (index: number) => void;
+  /** 错误状态的「重试」「复制路径」。 */
+  onRetry: (index: number, path: string) => void;
+  onCopy: (index: number, path: string) => void;
+}
+
+export interface ViewerSurface {
+  root: HTMLElement;
+  /** 按栏/格顺序的画布（single 只有 1 个）。 */
+  canvases: readonly HTMLCanvasElement[];
+  /** 更新选图按钮文案与空态样式。 */
+  setPicker: (index: number, label: string, empty: boolean) => void;
+  /** 聚焦高亮（分屏/网格）。 */
+  setFocus: (index: number | null) => void;
+  /** 占位状态；同状态重复调用不会重建 DOM。 */
+  setStatus: (index: number, status: PaneStatus) => void;
+  destroy: () => void;
+}
+
+interface PaneParts {
+  wrapper: HTMLElement;
+  canvas: HTMLCanvasElement;
+  picker: HTMLButtonElement | null;
+  statusHost: HTMLElement;
+  pickerEmpty: boolean;
+}
+
+function buildStatusHost(): HTMLElement {
+  return el('div', { class: 'viewer__pane-status', attrs: { hidden: true } });
+}
+
+/** 画布的可访问外壳：可聚焦 + 有名字，键盘方向键（stage 接线）才有落点。 */
+function decorateCanvas(canvas: HTMLCanvasElement, tabbable = true): HTMLCanvasElement {
+  canvas.setAttribute('role', 'img');
+  canvas.tabIndex = tabbable ? 0 : -1;
+  canvas.setAttribute('aria-label', '对比画布');
+  return canvas;
+}
+
+function buildPicker(onClick: () => void): HTMLButtonElement {
+  return el(
+    'button',
+    {
+      class: 'viewer__picker',
+      attrs: { type: 'button' },
+      on: { click: onClick },
+    },
+    el('span', { class: 'viewer__picker-label', text: '' }),
+    icon('chevronDown', 'icon icon--12 viewer__picker-chevron'),
+  ) as HTMLButtonElement;
+}
+
+/** 把占位状态渲染进容器（只在状态 key 变化时重建）。 */
+function renderStatus(
+  host: HTMLElement,
+  status: PaneStatus,
+  handlers: { retry: () => void; copy: () => void },
+): void {
+  host.dataset.kind = status.kind;
+  if (status.kind === 'none') {
+    host.hidden = true;
+    host.replaceChildren();
+    return;
+  }
+  host.hidden = false;
+  if (status.kind === 'loading') {
+    host.replaceChildren(
+      spinner('加载中…'),
+      el('span', { class: 'viewer__pane-status-text', text: `正在加载${status.role}…` }),
+    );
+    return;
+  }
+  if (status.kind === 'empty') {
+    host.replaceChildren(
+      el('span', { class: 'viewer__pane-status-text', text: '（空）' }),
+    );
+    return;
+  }
+  host.replaceChildren(
+    el('span', { class: 'viewer__pane-status-text', text: `${status.role}加载失败` }),
+    el(
+      'span',
+      { class: 'viewer__pane-status-actions' },
+      el(
+        'button',
+        {
+          class: 'viewer__mini-btn',
+          attrs: { type: 'button', title: '重新加载这张图' },
+          on: { click: handlers.retry },
+        },
+        icon('refresh', 'icon icon--12'),
+        el('span', { text: '重试' }),
+      ),
+      el(
+        'button',
+        {
+          class: 'viewer__mini-btn',
+          attrs: { type: 'button', title: '复制完整路径' },
+          on: { click: handlers.copy },
+        },
+        icon('copy', 'icon icon--12'),
+        el('span', { text: '复制路径' }),
+      ),
+    ),
+  );
+}
+
+function statusKey(status: PaneStatus): string {
+  if (status.kind === 'error') return `error|${status.role}|${status.path}`;
+  if (status.kind === 'loading') return `loading|${status.role}`;
+  return status.kind;
+}
+
+/**
+ * 建一组画布表面。返回的 destroy 只解绑本模块自己的监听；
+ * 画布上的滚轮/拖拽解绑由 stage 负责（它在 attachPanZoom 时拿到 detach）。
+ */
+export function mountSurface(options: SurfaceOptions): ViewerSurface {
+  const panes: PaneParts[] = [];
+  const statusKeys: string[] = [];
+  const cleanups: Array<() => void> = [];
+  let root: HTMLElement;
+
+  if (options.mode === 'single') {
+    const canvas = decorateCanvas(el('canvas', { class: 'viewer__canvas' }));
+    const statusHost = buildStatusHost();
+    root = el('div', { class: 'viewer__surface viewer__surface--single' }, canvas, statusHost);
+    panes.push({ wrapper: root, canvas, picker: null, statusHost, pickerEmpty: false });
+  } else if (options.mode === 'split') {
+    root = el('div', { class: 'viewer__split' });
+    root.style.setProperty('--pane-min', `${SPLIT_MIN_PANE_PX}px`);
+    for (let index = 0; index < options.count; index++) {
+      // 只让第一栏进 Tab 序列：全栏共享同一视口，方向键在任一栏都作用于整体。
+      const canvas = decorateCanvas(el('canvas', { class: 'viewer__canvas' }), index === 0);
+      const statusHost = buildStatusHost();
+      const picker = buildPicker(() => options.onPick(index));
+      const wrapper = el(
+        'div',
+        { class: 'viewer__pane', dataset: { index: String(index) } },
+        canvas,
+        picker,
+        statusHost,
+      );
+      const focus = (): void => options.onFocus(index);
+      wrapper.addEventListener('pointerdown', focus);
+      cleanups.push(() => wrapper.removeEventListener('pointerdown', focus));
+      root.appendChild(wrapper);
+      panes.push({ wrapper, canvas, picker, statusHost, pickerEmpty: false });
+    }
+  } else {
+    root = el('div', { class: 'viewer__grid' });
+    root.style.setProperty('--grid-row-min', `${GRID_MIN_ROW_PX}px`);
+    if (options.cols) {
+      // 列有最小宽度：多图时整片网格横向滚动，而不是把每格压成看不清的窄条
+      root.style.setProperty(
+        'grid-template-columns',
+        `repeat(${options.cols}, minmax(${GRID_MIN_CELL_PX}px, 1fr))`,
+      );
+    }
+    for (let index = 0; index < options.count; index++) {
+      const canvas = decorateCanvas(el('canvas', { class: 'viewer__canvas' }), index === 0);
+      const statusHost = buildStatusHost();
+      const picker = buildPicker(() => options.onPick(index));
+      const wrapper = el(
+        'div',
+        { class: 'viewer__pane viewer__cell', dataset: { index: String(index) } },
+        canvas,
+        picker,
+        statusHost,
+      );
+      const focus = (): void => options.onFocus(index);
+      wrapper.addEventListener('pointerdown', focus);
+      cleanups.push(() => wrapper.removeEventListener('pointerdown', focus));
+      root.appendChild(wrapper);
+      panes.push({ wrapper, canvas, picker, statusHost, pickerEmpty: false });
+    }
+  }
+
+  return {
+    root,
+    canvases: panes.map((pane) => pane.canvas),
+    setPicker: (index, label, empty) => {
+      const pane = panes[index];
+      if (!pane?.picker) return;
+      const text = pane.picker.querySelector('.viewer__picker-label');
+      if (text) text.textContent = label;
+      pane.picker.title = empty ? '选择这一格显示的图片' : `换图：${label}`;
+      pane.picker.classList.toggle('is-empty', empty);
+      pane.pickerEmpty = empty;
+    },
+    setFocus: (index) => {
+      panes.forEach((pane, i) => pane.wrapper.classList.toggle('is-focused', i === index));
+    },
+    setStatus: (index, status) => {
+      const pane = panes[index];
+      if (!pane) return;
+      const key = statusKey(status);
+      if (statusKeys[index] === key) return;
+      statusKeys[index] = key;
+      renderStatus(pane.statusHost, status, {
+        retry: () => {
+          if (status.kind === 'error') options.onRetry(index, status.path);
+        },
+        copy: () => {
+          if (status.kind === 'error') options.onCopy(index, status.path);
+        },
+      });
+    },
+    destroy: () => {
+      for (const cleanup of cleanups) cleanup();
+      cleanups.length = 0;
+      for (const pane of panes) pane.wrapper.replaceChildren();
+    },
+  };
+}

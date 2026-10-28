@@ -1,0 +1,719 @@
+/* 对比查看器（viewer 域）：工具栏 / 画布区 / 胶片条 / 模式参数浮条 / 占位覆盖层。
+ *
+ * 只引用 tokens.css 的变量；画布上的半透明遮罩用纯黑/纯白（设计契约允许的例外），
+ * 因为它们要压在任何图片上都保持可读，不能跟随主题。
+ * 类名前缀统一 viewer__；与视频域不共享类名（视频有自己的 video.css）。
+ */
+
+/* 舞台宿主：外壳给的容器占满可用区域即可（查看器自己撑满它） */
+.viewer-host {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* ============ 根：一行工具栏 + 画布 + 胶片条 ============ */
+.viewer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  /* 工具栏按舞台可用宽度收敛（窄舞台先隐藏上下文文字，不换行） */
+  container-type: inline-size;
+}
+
+/* ============ 工具栏 ============ */
+.viewer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: none;
+  height: var(--workbar-h);
+  padding: 0 var(--s-3);
+  border-bottom: var(--hairline) solid var(--line);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+/* 模式条：图标 + 12px 文字（一眼能认出六个模式）；舞台窄于 850px 时退回纯图标 + title */
+.viewer__modes .segmented__label {
+  display: inline;
+  font-size: var(--fs-meta);
+}
+
+.viewer__modes .segmented__item {
+  gap: 5px;
+  padding: 0 8px;
+}
+
+.viewer__context {
+  min-width: 0;
+  max-width: 42%;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.viewer__spacer {
+  flex: 1;
+}
+
+/* 像素探针读数：等宽数字对齐，锁定时用琥珀描边；位置/差值用空白分段（不用中点） */
+.viewer__probe {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  max-width: 300px;
+  height: var(--control-h-sm);
+  padding: 0 var(--s-2);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.viewer__probe:hover {
+  background: var(--surface-3);
+  border-color: var(--line-strong);
+}
+
+.viewer__probe.is-locked {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.viewer__probe-icon {
+  display: none;
+}
+
+.viewer__probe-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.viewer__zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+/* 缩放四个按钮收成安静的图标组，不抢模式条 */
+.viewer__zoom .btn {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0 5px;
+}
+
+.viewer__zoom .btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.viewer__zoom-value {
+  height: var(--control-h-sm);
+  min-width: 54px;
+  padding: 0 var(--s-2);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer__zoom-value:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface-3);
+}
+
+.viewer__zoom-value.is-pixel {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.viewer__pixel-badge {
+  flex: none;
+}
+
+/* 让位顺序（模式条与缩放组永远保留；模式条永远「图标 + 文字」，不退回纯图标）：
+   1. 像素徽标：<940 收起（纯状态提示，最先让位）；
+   2. 探针读数：<1120 只留一个图标按钮（读数在锁定后浮到画布左下角）；
+   3. 上下文文案：<800 收起（探针已是图标仍放不下时才收）；
+   4. 极窄 <620：工具栏换行成两行。 */
+@container (max-width: 940px) {
+  .viewer__pixel-badge {
+    display: none;
+  }
+}
+
+@container (max-width: 1119px) {
+  .viewer__probe {
+    width: var(--control-h-sm);
+    padding: 0;
+    justify-content: center;
+  }
+
+  .viewer__probe-text {
+    display: none;
+  }
+
+  .viewer__probe-icon {
+    display: inline;
+  }
+}
+
+@container (max-width: 800px) {
+  .viewer__context {
+    display: none;
+  }
+}
+
+@container (max-width: 620px) {
+  .viewer__toolbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--workbar-h);
+    padding-block: var(--s-1);
+    row-gap: var(--s-1);
+    overflow: visible;
+  }
+
+  /* 换行时不留弹性空白，两行都从左边排（否则第二行只剩缩放组、看起来像错位） */
+  .viewer__spacer {
+    display: none;
+  }
+}
+
+/* ============ 画布区 ============ */
+.viewer__stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-2);
+  background: var(--surface-0);
+}
+
+.viewer__surface,
+.viewer__split,
+.viewer__grid {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+
+/* 图像判定底：中性灰 + 16px 极弱棋盘格（透明/留白区域可辨，不干扰看图） */
+.viewer__surface,
+.viewer__pane {
+  position: relative;
+  overflow: hidden;
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--r-md);
+  background-color: var(--canvas);
+  background-image: conic-gradient(
+    var(--canvas-checker) 25%,
+    transparent 0 50%,
+    var(--canvas-checker) 0 75%,
+    transparent 0
+  );
+  background-size: 16px 16px;
+}
+
+.viewer__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+  outline: none;
+}
+
+.viewer__canvas.is-panning {
+  cursor: grabbing;
+}
+
+.viewer__canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ---- 分屏：同一张卡片内无缝拼接（栏间只留一条发丝线） ---- */
+.viewer__split {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--r-md);
+}
+
+/* 每栏有最小宽度（JS 写 --pane-min）：6 张跑分图时宁可横向滚动，
+   也不把每栏压成 110px 导致错误态竖排。两栏时仍会 flex 平分铺满。 */
+.viewer__split .viewer__pane {
+  flex: 1 0 var(--pane-min, 240px);
+  min-width: var(--pane-min, 240px);
+  border: none;
+  border-radius: 0;
+}
+
+.viewer__split .viewer__pane + .viewer__pane {
+  border-left: var(--hairline) solid var(--line);
+}
+
+/* ---- 网格：行高有下限，放不下就在网格区内部滚动（不再靠页面级「放大」按钮） ---- */
+.viewer__grid {
+  display: grid;
+  gap: var(--s-1);
+  overflow: auto;
+  overscroll-behavior: contain;
+  align-content: stretch;
+  grid-auto-rows: minmax(var(--grid-row-min, 180px), 1fr);
+}
+
+.viewer__cell {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 聚焦栏/格：胶片条选图落到这里（细内描边，不用粗边框） */
+.viewer__pane.is-focused {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* ---- 每栏/每格的选图按钮 ---- */
+.viewer__picker {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 12px);
+  height: 22px;
+  padding: 0 6px;
+  border: var(--hairline) solid rgba(255, 255, 255, 0.28);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.96);
+  font-size: var(--fs-meta);
+  line-height: 1;
+}
+
+.viewer__picker:hover {
+  background: rgba(0, 0, 0, 0.72);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.viewer__picker.is-empty {
+  border-style: dashed;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.viewer__picker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer__picker-chevron {
+  flex: none;
+  opacity: 0.8;
+}
+
+/* ---- 每栏/每格的加载/失败/空态 ---- */
+.viewer__pane-status {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-1);
+  padding: var(--s-2);
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.96);
+  font-size: var(--fs-meta);
+  text-align: center;
+}
+
+.viewer__pane-status[hidden] {
+  display: none;
+}
+
+.viewer__pane-status-text {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.viewer__pane-status-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s-1);
+}
+
+.viewer__mini-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  padding: 0 6px;
+  border: var(--hairline) solid rgba(255, 255, 255, 0.3);
+  border-radius: var(--r-xs);
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.96);
+  font-size: var(--fs-meta);
+}
+
+.viewer__mini-btn:hover {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* ============ 滑动对比的分割线 ============ */
+.viewer__divider {
+  position: absolute;
+  top: var(--s-2);
+  bottom: var(--s-2);
+  left: calc(var(--s-2) + (100% - var(--s-2) * 2) * var(--divider, 0.5));
+  z-index: 3;
+  width: 16px;
+  transform: translateX(-8px);
+  touch-action: none;
+  cursor: ew-resize;
+}
+
+.viewer__divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.65);
+}
+
+.viewer__divider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.viewer__divider-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(24, 24, 24, 0.95);
+  font-size: var(--fs-body);
+  user-select: none;
+}
+
+/* ============ 角标（原图 / 跑分图 / 闪烁当前面） ============ */
+.viewer__tag {
+  position: absolute;
+  top: 10px;
+  z-index: 2;
+  max-width: 38%;
+  padding: 2px 7px;
+  border-radius: var(--r-xs);
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.96);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.viewer__tag--left {
+  left: 10px;
+}
+
+.viewer__tag--right {
+  right: 10px;
+}
+
+/* ============ 模式参数浮条（画布右上角） ============ */
+.viewer__props {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 4px var(--s-2);
+  border: var(--hairline) solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  pointer-events: auto;
+}
+
+.viewer__props[data-empty='true'] {
+  display: none;
+}
+
+.viewer__props .field--inline {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 132px;
+}
+
+.viewer__props .field__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+.viewer__props .field__label,
+.viewer__props .field__value {
+  font-size: var(--fs-meta);
+}
+
+.viewer__props .slider {
+  width: 100%;
+}
+
+.viewer__props .field__value {
+  min-width: 2.4rem;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 锁定后的读数浮在画布左下角：窄舞台塞不进工具栏时仍能看到像素值 */
+.viewer__probe-hud {
+  position: absolute;
+  left: var(--s-2);
+  bottom: var(--s-2);
+  z-index: 4;
+  display: none;
+  max-width: calc(100% - var(--s-4));
+  height: 24px;
+  padding: 0 var(--s-2);
+  border: var(--hairline) solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@container (max-width: 1119px) {
+  .viewer__probe-hud {
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
+/* ============ 覆盖层：加载 / 错误 / 空态 / 引导 ============ */
+.viewer__overlay {
+  position: absolute;
+  inset: var(--s-2);
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.viewer__overlay > * {
+  pointer-events: auto;
+}
+
+/* 居中的空态/错误卡片：只在这类阻断态给底色，避免压在图上读不清 */
+.viewer__center {
+  max-width: 380px;
+  padding: var(--s-4);
+  border: var(--hairline) solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.viewer__notice,
+.viewer__cta {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  max-width: min(560px, calc(100% - var(--s-4)));
+  padding: 5px var(--s-2);
+  border: var(--hairline) solid var(--line-strong);
+  border-radius: var(--r-md);
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  text-align: center;
+}
+
+.viewer__notice > span,
+.viewer__cta-text {
+  min-width: 0;
+}
+
+.viewer__notice {
+  top: var(--s-2);
+}
+
+.viewer__notice--error {
+  border-color: var(--danger);
+  color: var(--text);
+}
+
+.viewer__notice .icon {
+  color: var(--text-subtle);
+}
+
+.viewer__notice--error .icon {
+  color: var(--danger);
+}
+
+.viewer__cta {
+  bottom: var(--s-2);
+  color: var(--text);
+}
+
+.viewer__cta-text {
+  color: var(--text-muted);
+}
+
+/* ============ 胶片条（图片池） ============ */
+.viewer__film {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s-1);
+  flex: none;
+  height: 56px;
+  padding: 0 var(--s-2);
+  border-top: var(--hairline) solid var(--line);
+  background: var(--surface-1);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.viewer__film-item,
+.viewer__film-add {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  flex: none;
+  width: 86px;
+  padding: 2px;
+  align-self: center;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  text-align: left;
+}
+
+.viewer__film-item:hover:not(:disabled),
+.viewer__film-add:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+
+.viewer__film-item.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.viewer__film-item.is-static {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.viewer__thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 34px;
+  overflow: hidden;
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+}
+
+.viewer__thumb.is-broken::after {
+  content: '!';
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+}
+
+.viewer__thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* 已上屏（当前分屏/网格里正在显示）的图：右上角状态点，不抢选中描边 */
+.viewer__film-item.is-in-use .viewer__thumb::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.viewer__film-name {
+  overflow: hidden;
+  font-size: var(--fs-meta);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer__film-add {
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-style: dashed;
+  border-color: var(--line-strong);
+  color: var(--text-muted);
+}
+
+/* ============ 窄舞台降级（容器查询，按舞台宽度而非窗口宽度） ============ */
+@container (max-width: 520px) {
+  .viewer__props {
+    right: 6px;
+    top: 6px;
+  }
+
+  .viewer__zoom-value {
+    min-width: 46px;
+  }
+}

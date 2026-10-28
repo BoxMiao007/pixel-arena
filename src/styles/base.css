@@ -1,0 +1,186 @@
+/* 基础层：重置、排版基线、焦点、滚动条。
+ *
+ * 桌面应用占满窗口，页面本身不滚动；滚动只发生在结果坞表格、检视器与浮层正文里。
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--surface-0);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-body);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+  user-select: none;
+}
+
+/* 文本选择只在真正需要复制的地方开放（错误详情、路径、指标表） */
+p,
+span,
+td,
+th,
+h1,
+h2,
+h3,
+pre,
+code,
+input,
+textarea,
+.selectable {
+  user-select: text;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+img,
+canvas,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+/* hidden 属性必须压过任何 display 声明（历史 bug：flex 覆盖 UA 的 display:none） */
+[hidden] {
+  display: none !important;
+}
+
+/* ---- 焦点：只在键盘操作时出现，且始终可见 ---- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 鼠标点击不留焦点环（:focus-visible 已覆盖键盘场景） */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+/* ---- 滚动条：细、低对比，不抢画面 ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-4) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-4);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---- 图标 ---- */
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.icon--12 {
+  width: 12px;
+  height: 12px;
+}
+
+.icon--24 {
+  width: 24px;
+  height: 24px;
+}
+
+/* ---- 等宽文本（路径、原始输出） ---- */
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.subtle {
+  color: var(--text-subtle);
+}
+
+.truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 应用根：三栏 + 顶栏，占满视口 */
+#app {
+  height: 100%;
+}
+
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
+  background: var(--surface-0);
+}
