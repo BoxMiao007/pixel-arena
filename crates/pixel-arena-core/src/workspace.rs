@@ -439,6 +439,9 @@ impl Workspace {
     /// 样例锚定），只是把各张的指标计算交给 [`crate::parallel::run_parallel`]
     /// 按 `max_concurrency` 个并发同时执行；写回仍逐行进行，失败照样写行内
     /// error 不让整轮失败。`on_progress` 以 (已完成数, 总数) 回调，供界面显示。
+    ///
+    /// 不传路径过滤，行为与 T24 完全一致（本函数只是把 `None` 转给
+    /// [`Workspace::score_round_candidates_parallel_filtered`]，无其他逻辑）。
     pub fn score_round_candidates_parallel(
         &mut self,
         group_id: &str,
@@ -446,15 +449,55 @@ impl Workspace {
         max_concurrency: usize,
         on_progress: &(dyn Fn(usize, usize) + Sync),
     ) -> Result<(), WorkspaceError> {
+        self.score_round_candidates_parallel_filtered(
+            group_id,
+            round_id,
+            max_concurrency,
+            None,
+            on_progress,
+        )
+    }
+
+    /// [`Workspace::score_round_candidates_parallel`] 的可选路径过滤版（票 #77 / T3）：
+    /// `paths_filter = Some(&[路径])` 时只对**这些**跑分图计算与写回，其余行原样不动
+    /// （指标、error、备注、体积比一个字节都不碰），供换图/增量跑分按子集重算。
+    ///
+    /// 过滤**同时作用于计算任务列表与写回列表**：两者都由同一份过滤后的路径快照驱动，
+    /// 所以不可能出现「算了 A 却写回 B」这种错位。
+    ///
+    /// 过滤项里不在本轮列表中的路径被忽略（并发删行时按「这张不再需要跑」处理，
+    /// 不报错）；`None` 与空过滤之外的既有行为不变。`on_progress` 的总数是**本次
+    /// 实际要跑的张数**（过滤后的条数），不是整轮条数。
+    pub fn score_round_candidates_parallel_filtered(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+        max_concurrency: usize,
+        paths_filter: Option<&[&str]>,
+        on_progress: &(dyn Fn(usize, usize) + Sync),
+    ) -> Result<(), WorkspaceError> {
         self.ensure_group_kind(group_id, GroupKind::Image)?;
-        // 快照原图与全部跑分图路径：计算阶段不持有工作区借用
+        // 快照原图与本次要跑的跑分图路径：计算阶段不持有工作区借用
         let (reference_path, paths) = {
             let round = self.round_mut(group_id, round_id)?;
             let reference = round
                 .reference_path
                 .clone()
                 .ok_or(WorkspaceError::ReferenceNotSet)?;
-            let paths: Vec<String> = round.candidates.iter().map(|c| c.path.clone()).collect();
+            let paths: Vec<String> = match paths_filter {
+                None => round.candidates.iter().map(|c| c.path.clone()).collect(),
+                Some(filter) => {
+                    // 按本轮选入顺序保留子集（行序稳定），不在列表里的过滤项忽略
+                    let wanted: std::collections::HashSet<&str> =
+                        filter.iter().map(|path| path.trim()).collect();
+                    round
+                        .candidates
+                        .iter()
+                        .filter(|c| wanted.contains(c.path.as_str()))
+                        .map(|c| c.path.clone())
+                        .collect()
+                }
+            };
             (reference, paths)
         };
 
@@ -466,10 +509,27 @@ impl Workspace {
             |completed| on_progress(completed, paths.len()),
         );
 
-        // 按选入顺序写回，行级语义与单张版一字不差
+        // 按选入顺序写回（写回列表 = 上面同一份过滤后的 paths），行级语义与单张版一字不差
         for (path, result) in paths.iter().zip(results) {
             self.apply_image_score(group_id, round_id, path, result)?;
         }
+        Ok(())
+    }
+
+    /// 清空某一轮的**全部跑分图行**（票 #77 / T3 换图流程的薄命令）：只摘掉
+    /// `candidates`，原图（`reference_path` / `reference_size`）、轮本身与轮备注
+    /// 全部保留；**不触碰磁盘文件**（产物文件是用户资产，界面操作不删）。
+    ///
+    /// 组或轮不存在时报既有中文错误；错误先于任何内存变更抛出。图片组限定与
+    /// [`Workspace::add_round_candidates`] 同口径（视频组有独立的视频行集合）。
+    pub fn clear_round_candidates(
+        &mut self,
+        group_id: &str,
+        round_id: &str,
+    ) -> Result<(), WorkspaceError> {
+        self.ensure_group_kind(group_id, GroupKind::Image)?;
+        let round = self.round_mut(group_id, round_id)?;
+        round.candidates.clear();
         Ok(())
     }
 
@@ -2135,6 +2195,180 @@ mod tests {
         assert!(vws
             .score_round_candidates_parallel(&vg, &vr, 4, &|_, _| {})
             .is_err());
+    }
+
+    // ---------- T3（票 #77）：整轮并行跑分的可选路径过滤 ----------
+
+    /// 过滤子集跑分的黄金基准对拍（票面最容易改错的地方）：
+    /// 1. 只跑子集时，**未列入**的行指标与 error 逐 bit 不变；
+    /// 2. 列入的行结果与全量跑分完全一致（同为 bit 级比对，指标是单图闭式计算）；
+    /// 3. 不传过滤（None）与既有 `score_round_candidates_parallel` 完全一致。
+    ///
+    /// 为什么未列入的行要写**哨兵值**而不是沿用真实结果：同一张原图重算的结果与
+    /// 第一次完全一样，若实现错误地把未列入的行也写了回不去，比对看不出差别。
+    /// 哨兵是一对「真跑不可能产出」的状态（指标 -1 且同时带 error 文本），
+    /// 任何写回都会把它改掉，因此这条断言能真正钉住「写回只碰子集」。
+    #[test]
+    fn 路径过滤_只跑子集_未列入行逐bit不变且列入行与全量一致() {
+        // 全量基线：整轮跑完，作为「列入行应等于什么」的唯一来源
+        let (mut full_ws, g, r) = workspace_with_golden_candidates();
+        full_ws
+            .score_round_candidates_parallel(&g, &r, 4, &|_, _| {})
+            .unwrap();
+        let full_rows: Vec<(String, Option<BTreeMap<String, MetricValue>>, Option<String>)> = full_ws
+            .groups[0]
+            .rounds[0]
+            .candidates
+            .iter()
+            .map(|c| (c.path.clone(), c.metrics.clone(), c.error.clone()))
+            .collect();
+
+        // 子集：只跑第 2、4 张（过滤列表顺序与轮内顺序相反，验证写回按轮内选入顺序）
+        let subset: Vec<String> = vec![full_rows[3].0.clone(), full_rows[1].0.clone()];
+        let subset_refs: Vec<&str> = subset.iter().map(String::as_str).collect();
+
+        let (mut sub_ws, g, r) = workspace_with_golden_candidates();
+        // 未列入的行：哨兵状态（真跑不会产出「有指标 + 有 error」的组合）
+        let sentinel_metrics = BTreeMap::from([("PSNR".to_string(), MetricValue::Number(-1.0))]);
+        let sentinel_error = "哨兵：未列入的行不应被改写".to_string();
+        for candidate in &mut sub_ws.groups[0].rounds[0].candidates {
+            if subset_refs.contains(&candidate.path.as_str()) {
+                candidate.metrics = None;
+                candidate.error = Some("旧结果已抹掉".to_string());
+            } else {
+                candidate.metrics = Some(sentinel_metrics.clone());
+                candidate.error = Some(sentinel_error.clone());
+            }
+        }
+
+        // 进度回调是 Sync 的 Fn（可被多线程并发调用），收集用原子量
+        let reported_total = std::sync::atomic::AtomicUsize::new(0);
+        sub_ws
+            .score_round_candidates_parallel_filtered(
+                &g,
+                &r,
+                2,
+                Some(&subset_refs),
+                &|_, total| {
+                    reported_total.store(total, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reported_total.load(std::sync::atomic::Ordering::SeqCst),
+            subset.len(),
+            "进度总数应是本次实际要跑的张数（过滤后），不是整轮条数"
+        );
+
+        for (index, row) in sub_ws.groups[0].rounds[0].candidates.iter().enumerate() {
+            if subset_refs.contains(&row.path.as_str()) {
+                assert_eq!(
+                    row.metrics, full_rows[index].1,
+                    "列入的行应与全量跑分完全一致（{}）",
+                    row.path
+                );
+                assert_eq!(
+                    row.error, full_rows[index].2,
+                    "列入的行 error 应与全量一致（{}）",
+                    row.path
+                );
+            } else {
+                // 未列入的行：哨兵原样保留（指标与 error 一个字节都不许被写回碰上）
+                assert_eq!(
+                    row.metrics,
+                    Some(sentinel_metrics.clone()),
+                    "未列入的行指标必须逐 bit 不变（{}）",
+                    row.path
+                );
+                assert_eq!(row.error, Some(sentinel_error.clone()));
+            }
+        }
+    }
+
+    #[test]
+    fn 路径过滤_不传过滤与整轮入口完全一致() {
+        let (mut plain, g, r) = workspace_with_golden_candidates();
+        plain
+            .score_round_candidates_parallel(&g, &r, 4, &|_, _| {})
+            .unwrap();
+        let (mut filtered_none, g2, r2) = workspace_with_golden_candidates();
+        filtered_none
+            .score_round_candidates_parallel_filtered(&g2, &r2, 4, None, &|_, total| {
+                assert_eq!(total, 6, "None 时总数仍是整轮条数");
+            })
+            .unwrap();
+        let plain_rows = &plain.groups[0].rounds[0].candidates;
+        let none_rows = &filtered_none.groups[0].rounds[0].candidates;
+        assert_eq!(plain_rows.len(), none_rows.len());
+        for (left, right) in plain_rows.iter().zip(none_rows.iter()) {
+            assert_eq!(left.path, right.path);
+            assert_eq!(left.metrics, right.metrics, "不传过滤必须与今天一字不差（{}）", left.path);
+            assert_eq!(left.error, right.error);
+        }
+    }
+
+    #[test]
+    fn 路径过滤_过滤项不在本轮时忽略而不报错() {
+        let (mut ws, g, r) = workspace_with_golden_candidates();
+        let existing = ws.groups[0].rounds[0].candidates[0].path.clone();
+        ws.score_round_candidates_parallel_filtered(
+            &g,
+            &r,
+            2,
+            Some(&[existing.as_str(), "/本轮/不存在.png"]),
+            &|_, _| {},
+        )
+        .unwrap();
+        // 只算了存在的那一张，不存在的过滤项被忽略；其余行仍未跑分
+        let candidates = &ws.groups[0].rounds[0].candidates;
+        assert!(candidates[0].metrics.is_some());
+        assert!(candidates[1..].iter().all(|c| c.metrics.is_none()));
+    }
+
+    // ---------- T3（票 #77）：清空某轮跑分图行 ----------
+
+    #[test]
+    fn clear_round_candidates_清空跑分行但保留原图与轮() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        ws.set_round_reference(&g, &r, &data("photo-ref.png")).unwrap();
+        ws.add_round_candidates(&g, &r, &[&data("photo-dis.jpg"), &data("photo-dis.png")])
+            .unwrap();
+        ws.score_round_candidate(&g, &r, &data("photo-dis.jpg")).unwrap();
+        ws.set_round_candidate_note(&g, &r, &data("photo-dis.jpg"), Some("备注")).unwrap();
+
+        ws.clear_round_candidates(&g, &r).unwrap();
+
+        let round = &ws.groups[0].rounds[0];
+        assert!(round.candidates.is_empty(), "清空后 candidates 必须为空");
+        assert_eq!(
+            round.reference_path.as_deref(),
+            Some(data("photo-ref.png").as_str()),
+            "原图必须保留"
+        );
+        assert_eq!(round.reference_size, Some(std::fs::metadata(data("photo-ref.png")).unwrap().len()));
+        // 轮本身仍在本组里（不是删轮）
+        assert_eq!(ws.groups[0].rounds.len(), 1);
+        assert_eq!(ws.groups[0].rounds[0].name, "轮");
+
+        // 幂等：再清一次也不报错
+        ws.clear_round_candidates(&g, &r).unwrap();
+    }
+
+    #[test]
+    fn clear_round_candidates_组或轮不存在时报中文错误() {
+        let mut ws = Workspace::new();
+        let g = ws.create_group("组", GroupKind::Image).unwrap().id.clone();
+        let r = ws.create_round(&g, "轮").unwrap().id.clone();
+        let group_err = ws.clear_round_candidates("不存在的组", &r).unwrap_err();
+        assert!(group_err.to_string().contains("跑分组不存在"), "{group_err}");
+        let round_err = ws.clear_round_candidates(&g, "不存在的轮").unwrap_err();
+        assert!(round_err.to_string().contains("评测轮不存在"), "{round_err}");
+        // 视频组不能走图片清行入口（类型约束与其它图片方法同口径）
+        let vg = ws.create_group("视频组", GroupKind::Video).unwrap().id.clone();
+        let vr = ws.create_round(&vg, "轮").unwrap().id.clone();
+        assert!(ws.clear_round_candidates(&vg, &vr).is_err());
     }
 
     #[test]

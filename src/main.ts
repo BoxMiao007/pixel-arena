@@ -7,6 +7,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { mountViewer } from './viewer';
 import { mountVideoBlock, type VideoCandidate } from './video'; // T14 接线点：视频评测区块
 import { copyText, fileName, truncateFileName } from './util';
+import { openModalCard } from './modal-card';
 import { buildPill, buildPillList } from './pills'; // T18 接线点：已选文件胶囊（T22 复用同一套）
 // T23 接线点：设置中心（面板 UI + 数据形状 + 主题应用）
 import { applyTheme } from './theme';
@@ -20,6 +21,24 @@ import { openSettingsPanel } from './settings-ui';
 // T29-3 接线点：高级创建（多编码器 + 独立参数 + 命令行预览；面板与纯逻辑在
 // src/advanced-ui.ts / src/advanced.ts）
 import { openAdvancedPanel, type AdvancedEncodeOutcome } from './advanced-ui';
+import type { ImageSpec } from './advanced';
+import {
+  openImageQueuePanel,
+  type ImageQueueDeps,
+  type ScoredCandidate,
+} from './image-queue-panel';
+import { dropImageQueue, entryForArtifact, imageQueueFor, planScore, roundName } from './image-queue';
+import { rerunChangedButtonLabel } from './image-queue-run';
+// 票 #82（T10）接线点：图片条目流程的共享运行时（跑分编排 / 标识缓存 / 参数弹窗接线）。
+// 高级创建面板、主界面胶囊的参数弹窗、主界面「重跑改过的」三条入口共用同一份实现。
+import {
+  queueEditorDeps,
+  queueIdentityProbe,
+  refreshQueueIdentities,
+  runQueuePlanOnce,
+  type ImageIdentityDto,
+} from './image-queue-runtime';
+import { openImageEntryEditor } from './image-entry-editor';
 import { askFileConflict } from './conflict';
 // T11/T22 接线点：一站式跑分升级为两种模式（质量优先拉杆 / 大小优先逼近），
 // 编码格式用胶囊多选；取点全部走核心库（onestop_quality_ladder / onestop_size_search），
@@ -133,6 +152,11 @@ function notePickedPath(path: string): void {
 let scoring = false;
 // 本轮正在跑分的跑分图/视频集合（T24 并行：多张同时在算，命中即在行内显示「跑分中…」）
 let scoringPaths: ReadonlySet<string> = new Set();
+// 票 #82：主界面「重跑改过的」正在跑（防重复触发）。真正跑分期间的置灰仍由共享编排的
+// withBusy 维护 scoring——与面板的分工一致，不在两处各管一套忙标志。
+let queueRerunning = false;
+/** 票 #82：主界面胶囊打开的参数弹窗（同一时间只开一个，与面板 editorOpen 同一职责）。 */
+let candidateEditorOpen = false;
 
 /** 结果表排序：null 按选入顺序；dir=1 升序 / -1 降序 */
 type SortState = { key: string; dir: 1 | -1 };
@@ -326,51 +350,27 @@ function renderStatus(): void {
 
 // 状态全文卡片（票 #58）：模态弹层复用设置面板同款遮罩观感；正文可选可滚，
 // 头部一键复制全文；× / 点遮罩 / Esc 三路关闭（Esc 与既有菜单口径一致）。
+// 脚手架走共享实现 src/modal-card.ts（与条目面板的确认 / 提示卡片同一份）。
 function openStatusCard(title: string, isError: boolean): void {
-  const overlay = document.createElement('div');
-  overlay.className = 'settings-overlay';
-  const panel = document.createElement('div');
-  panel.className = 'status-card';
-  const heading = document.createElement('h2');
-  heading.textContent = isError ? '错误详情' : '完整状态内容';
-  const copyBtn = document.createElement('button');
-  copyBtn.type = 'button';
-  copyBtn.className = 'settings-mini-btn';
-  copyBtn.textContent = '复制全部';
-  copyBtn.addEventListener('click', () => {
-    copyText(title, () => {
-      copyBtn.textContent = '已复制';
-      window.setTimeout(() => {
-        copyBtn.textContent = '复制全部';
-      }, 1500);
-    });
+  openModalCard({
+    title: isError ? '错误详情' : '完整状态内容',
+    // 正文塞进 <pre>（CSS user-select:text），可手动选择部分复制
+    lines: [title],
+    headActions: [
+      {
+        label: '复制全部',
+        // 拿到按钮本身就地改文案（复制成功后短暂显示「已复制」）
+        onClick: (button) => {
+          copyText(title, () => {
+            button.textContent = '已复制';
+            window.setTimeout(() => {
+              button.textContent = '复制全部';
+            }, 1500);
+          });
+        },
+      },
+    ],
   });
-  const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'settings-mini-btn';
-  closeBtn.textContent = '×';
-  closeBtn.title = '关闭';
-  const body = document.createElement('pre');
-  body.className = 'status-card-body';
-  body.textContent = title; // user-select:text（CSS），可手动选择部分复制
-  const close = (): void => {
-    overlay.remove();
-    document.removeEventListener('keydown', onKey);
-  };
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') close();
-  };
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close();
-  });
-  document.addEventListener('keydown', onKey);
-  closeBtn.addEventListener('click', close);
-  const head = document.createElement('div');
-  head.className = 'status-card-head';
-  head.append(heading, copyBtn, closeBtn);
-  panel.append(head, body);
-  overlay.append(panel);
-  document.body.append(overlay);
 }
 
 function setStatus(text: string, isError = false, title: string = text): void {
@@ -524,6 +524,72 @@ function removeCandidate(candidatePath: string): void {
 }
 
 /**
+ * 票 #82（T10）：主界面点「已选跑分图」里由图片条目产出的胶囊 → 打开那张图的参数弹窗。
+ *
+ * 为什么在点击时重新解析条目（而不是建胶囊时把条目对象闭包进来）：主界面 render 是
+ * 全量重建，但同一颗胶囊可能跨越多次重建一直挂在界面上，期间条目可能已被面板删掉或
+ * 换过图。每次点击都从会话态重新查，拿到的一定是当前对象；查不到就退回「外部导入」
+ * 的口径，只给一句状态提示、不弹窗。
+ *
+ * 标识探针用 image_identities 的缓存（与面板同一份）：打开前先读新这张图的元数据，
+ * 否则冷缓存会让弹窗头部的徽章保守显示「将重跑（图片换了）」，看着像在骗人。
+ */
+async function openCandidateEntryEditor(groupId: string, candidatePath: string): Promise<void> {
+  if (scoring || candidateEditorOpen) return;
+  const entry = entryForArtifact(imageQueueFor(groupId).entries, candidatePath);
+  if (entry === null) {
+    setStatus('这张跑分图没有对应的图片条目（人工导入或条目已清空），没有可调的编码器参数');
+    return;
+  }
+  candidateEditorOpen = true;
+  try {
+    const host = imageQueueHostDeps();
+    await refreshQueueIdentities(host, [entry.path]);
+    // 直接复用逐图编辑弹窗：改参数 / 加删卡 / 换图 / 恢复默认都落回同一个条目对象。
+    // 弹窗内的改动不逐次重建主界面（每次 render 都会重挂对比查看器、重发 BD-rate IPC），
+    // 关闭时统一 render 刷新——主界面本来就被弹窗整屏遮住。
+    await openImageEntryEditor(groupId, entry, queueEditorDeps(groupId, host, () => undefined));
+  } catch (err) {
+    setStatus(`打开编辑窗口失败：${String(err)}`, true);
+  } finally {
+    candidateEditorOpen = false;
+    // 关闭弹窗后刷新主界面：条目变「将重跑」体现在「重跑改过的（N 张）」按钮上
+    render();
+  }
+}
+
+/**
+ * 票 #82（T10）：主界面「重跑改过的（N 张）」——只跑改过参数 / 换过图的图片条目。
+ *
+ * 走与列表面板**完全相同**的共享编排（src/image-queue-runtime.ts 的 runQueuePlanOnce）：
+ * 惰性建轮、只 encode 计划内的卡、round_score_candidates 只传本次新产物、跑完弹汇总
+ * 卡片。无待跑时零编码零跑分调用，只弹「无需重跑」提示。
+ *
+ * 与「开始跑分」的分工：那个按钮仍是整轮全量重算（一个字节都不改）；这个按钮是增量。
+ * 忙标志沿用全局 scoring（由共享编排的 withBusy 置上），跑完原地 render 刷新结果表。
+ */
+async function rerunChangedImages(groupId: string): Promise<void> {
+  if (scoring || queueRerunning) return;
+  queueRerunning = true;
+  try {
+    await runQueuePlanOnce({
+      groupId,
+      entries: imageQueueFor(groupId).entries,
+      deps: imageQueueHostDeps(),
+      hooks: {
+        onImageStart: ({ path, index, total }) => {
+          setStatus(`正在跑分 第 ${index + 1}/${total} 张（${fileName(path)}）…`);
+        },
+        onImageDone: () => render(),
+      },
+    });
+  } finally {
+    queueRerunning = false;
+    render();
+  }
+}
+
+/**
  * 触发跑分：忙标志置好后交给逐张跑分循环（T06）。
  */
 async function startScoring(): Promise<void> {
@@ -551,31 +617,71 @@ async function startScoring(): Promise<void> {
  * （默认一半逻辑核）同时计算，进度经 Channel 以 N/M 推回状态栏，跑分期间
  * 界面不阻塞。行内「跑分中…」按本轮全部待跑行显示，单张失败照旧行内标「失败」。
  * 忙标志（scoring）由调用方管理：手动「开始跑分」与一站式跑分（runOnestop）共用本函数。
+ *
+ * T3：groupId / roundId 可显式传入（条目列表面板跑的是它自己建的轮，不是当前
+ * 激活轮）；省略时取当前激活轮，既有调用点行为不变。
+ *
+ * T5：`paths` 可选——条目列表面板的增量跑分只传本次新增产物的路径子集，后端只重算
+ * 这些行、未列入行逐 bit 不变。省略时（主界面「开始跑分」、一站式）**不带这个键**，
+ * 后端按「未传 = 整轮全量」处理，行为与今天一字不差。
+ *
+ * 行内状态（scoringPaths）由本函数自己 try/finally 收口清空：面板的增量跑分经
+ * `scoreRound` 复用这里，跑完必须恢复这些行的显示（否则永久停在「跑分中…」）。
  */
-async function scoreAllCandidates(): Promise<void> {
+async function scoreAllCandidates(
+  groupId?: string,
+  roundId?: string,
+  paths?: readonly string[],
+): Promise<void> {
   const session = activeRound();
-  if (!session || !session.round.referencePath) return;
-  if (session.round.candidates.length === 0) return;
+  const targetGroupId = groupId ?? session?.group.id;
+  const targetRoundId = roundId ?? session?.round.id;
+  if (!targetGroupId || !targetRoundId) return;
+  const group = ws?.groups.find((g) => g.id === targetGroupId);
+  const round = group?.rounds.find((r) => r.id === targetRoundId);
+  if (!round || !round.referencePath) return;
+  if (round.candidates.length === 0) return;
 
-  // 本轮待跑清单快照：并行期间行内状态按它显示「跑分中…」
-  scoringPaths = new Set(session.round.candidates.map((c) => c.path));
+  // 本轮待跑清单快照：并行期间行内状态按它显示「跑分中…」。
+  // 增量跑分只把传入的路径子集标成「跑分中」，其余行保持原样。
+  const targetPaths =
+    paths === undefined
+      ? round.candidates.map((c) => c.path)
+      : round.candidates.filter((c) => paths.includes(c.path)).map((c) => c.path);
+  if (targetPaths.length === 0) return;
+  scoringPaths = new Set(targetPaths);
   const total = scoringPaths.size;
 
   const channel = new Channel<{ completed: number; total: number }>();
   channel.onmessage = (progress) => {
     setStatus(`跑分中 ${progress.completed}/${progress.total}`, false);
   };
-  setStatus(`跑分中 0/${total}`, false);
-  render();
 
-  ws = await invoke('round_score_candidates', {
-    groupId: session.group.id,
-    roundId: session.round.id,
+  // 传参口径：无子集时**不带 paths 这个键**——Tauri 对可选参数按缺失走 None，与后端
+  // 「不传 = 整轮全量」的注释、主界面「开始跑分」与一站式入口的调用口径一致；显式传
+  // null 虽然行为等价，却让「既有调用点都不传」这句话对不上实现。
+  const invokeArgs: Record<string, unknown> = {
+    groupId: targetGroupId,
+    roundId: targetRoundId,
     onProgress: channel,
-  });
-  render();
-  markSaved();
-  setStatus(`跑分完成，共 ${total} 张`);
+  };
+  if (paths !== undefined) invokeArgs.paths = [...paths];
+
+  try {
+    setStatus(`跑分中 0/${total}`, false);
+    render();
+
+    ws = await invoke('round_score_candidates', invokeArgs);
+    render();
+    markSaved();
+    setStatus(`跑分完成，共 ${total} 张`);
+  } finally {
+    // 行内「跑分中…」必须收在这里清：条目列表面板（image-queue-panel）经 scoreRound
+    // 复用本函数，它自己没有第二个清空点——不清的话主界面结果表这些行会永久显示
+    // 「跑分中…」，与已经落库的指标并存。清完要 render 让行内状态立刻刷新。
+    scoringPaths = new Set();
+    render();
+  }
 }
 
 // ---------- 一站式跑分（T11 完整编码阶梯，清单实现在 src/onestop.ts） ----------
@@ -1150,6 +1256,9 @@ function renderTabs(): void {
     close.title = '关闭跑分组';
     close.addEventListener('click', (e) => {
       e.stopPropagation();
+      // T3：关掉跑分组时一并丢弃它的条目队列会话态——组都没了，队列留着只会
+      // 白占内存（组 id 不复用，重启归零的同一口径也要求它不该跨组存活）
+      dropImageQueue(group.id);
       void apply(() => invoke('group_close', { id: group.id }));
     });
 
@@ -1272,6 +1381,9 @@ function buildExportButtons(exportable: boolean): HTMLButtonElement[] {
  * 不挂载视频评测区块（视频导入只在视频跑分组出现）。ui = 本评测轮的一站式界面状态（T25）。 */
 function renderImageGroupContent(session: { group: Group; round: Round }, ui: OnestopUiState): void {
   const { round } = session;
+  // 票 #82（T10）：本组的图片条目队列（会话态，主界面只读）。用在这两件事上：
+  // 「重跑改过的（N 张）」的计数（与面板徽章同一判定口径）与胶囊 → 参数弹窗的反查。
+  const queueEntries = imageQueueFor(session.group.id).entries;
   const toolbar = document.createElement('div');
   toolbar.className = 'toolbar';
 
@@ -1317,6 +1429,20 @@ function renderImageGroupContent(session: { group: Group; round: Round }, ui: On
   scoreBtn.disabled = scoring || !round.referencePath || round.candidates.length === 0;
   scoreBtn.addEventListener('click', () => void startScoring());
 
+  // 票 #82（T10）：主界面的增量重跑入口——只跑改过参数 / 换过图的图片条目，与上面
+  // 整轮全量的「开始跑分」并存、各自标注清楚。N 与条目徽章同一判定口径（planScore）。
+  // 0 张时照样可点：点开只弹「无需重跑」提示卡片（票面验收），不靠置灰表达「没得跑」。
+  const rerunBtn = document.createElement('button');
+  rerunBtn.className = 'add-btn rerun-changed-btn';
+  rerunBtn.textContent = scoring
+    ? '重跑中…'
+    : rerunChangedButtonLabel(planScore(queueEntries, queueIdentityProbe()));
+  rerunBtn.title =
+    '只重跑改过参数或换过图的图片条目：已跑分且无变更的跳过并沿用上一轮结果；' +
+    '没有待跑时只弹提示（「开始跑分」是整轮全量重算）';
+  rerunBtn.disabled = scoring;
+  rerunBtn.addEventListener('click', () => void rerunChangedImages(session.group.id));
+
   // T22 接线点：一站式跑分按钮。质量优先可按缓存阶梯给出项数；大小优先的项数要
   // 搜索后才知道（每格式命中点 + 邻近补点），只提示行为不报数。
   // v0.1.5：单点模式项数按单点阶梯缓存计（每格式 1 点 + 无损组）
@@ -1354,22 +1480,39 @@ function renderImageGroupContent(session: { group: Group; round: Round }, ui: On
     referenceSlot,
     addCandidatesBtn,
     scoreBtn,
+    rerunBtn,
     onestopBtn,
     ...buildExportButtons(exportable),
   );
   $content.append(toolbar);
 
   // T18 胶囊：已选跑分图逐颗列出，× 单独移除；移除经 IPC 落库后整页重渲染，
-  // 结果表与对比查看器随之只少这一行（其余文件与跑分结果不受影响）
+  // 结果表与对比查看器随之只少这一行（其余文件与跑分结果不受影响）。
+  //
+  // 票 #82（T10）：由图片条目产出的跑分图，点胶囊**本体** = 打开那条目的参数弹窗
+  //（改完关闭留在会话态，条目立刻变「将重跑」，操作区的「重跑改过的（N 张）」随之 +1）。
+  // × 仍是移除这张跑分图——stopPropagation 由 buildPill 负责，这里不抢。
+  // 人工导入 / 一站式生成的跑分图没有条目可配：不挂 onClick（不给假交互），
+  // 只把原因写进悬浮提示，让「为什么这颗点不开」有答案。
   if (round.candidates.length > 0) {
     $content.append(
       buildPillList(
-        round.candidates.map((c) => ({
-          label: truncateFileName(fileName(c.path)),
-          title: c.path,
-          onRemove: () => removeCandidate(c.path),
-          disabled: scoring,
-        })),
+        round.candidates.map((c) => {
+          const owner = entryForArtifact(queueEntries, c.path);
+          return {
+            label: truncateFileName(fileName(c.path)),
+            title:
+              owner === null
+                ? `${c.path}\n（这张跑分图不是由图片条目产出的：人工导入或条目已随重启清空，没有可调的编码器参数）`
+                : `${c.path}\n点开可调整这张图的编码器参数（改完关闭即留在本次运行里）`,
+            onClick:
+              owner === null
+                ? undefined
+                : () => void openCandidateEntryEditor(session.group.id, c.path),
+            onRemove: () => removeCandidate(c.path),
+            disabled: scoring,
+          };
+        }),
         '已选跑分图：',
         '已选跑分图列表',
       ),
@@ -1774,59 +1917,67 @@ document.addEventListener('keydown', (e) => {
 });
 
 /**
- * T29-3 接线点：高级创建面板（src/advanced-ui.ts）的宿主依赖。编码流程走
- * advanced_encode（参数合并在核心库），产物带 encodingParams 纳入新建的评测轮
- * 后复用整轮跑分循环。会话态在 advanced.ts 按跑分组键控（重启归零，D19）。
+ * 票 #82（T10）：图片条目流程的宿主依赖，收成一份共用实现。
+ *
+ * 三条入口共用它：高级创建面板（openImageQueueCreation）、主界面胶囊的参数弹窗
+ *（openCandidateEntryEditor）、主界面「重跑改过的（N 张）」（rerunChangedImages）。
+ * 各写一份 IPC 接线会让增量语义（惰性建轮 / 只编码计划内的卡 / 子集跑分 / 失败判定）
+ * 在不同入口上漂移——这正是这张票要防的。
+ *
+ * 编码走同一个 advanced_encode（参数合并 / 命名 / 冲突协议都在核心库），产物带
+ * encodingParams 纳入新建的评测轮后跑分。工作区写入全部收在这里，面板只做会话态编排
+ *——关面板不跑分 = 工作区零变更。
  */
-function openAdvancedCreation(): void {
-  const group = activeGroup();
-  if (!group || scoring) return;
-
-  /** 不吞错误的改动流程（面板要在错误行里汇总报错，与 apply 的状态栏口径并存）。 */
-  const mutate = async (action: () => Promise<Workspace>): Promise<void> => {
+function imageQueueHostDeps(): ImageQueueDeps {
+  /** 不吞错误的改动流程（面板的失败要进状态栏，与 apply 的口径并存）。 */
+  const mutate = async (action: () => Promise<Workspace>): Promise<Workspace> => {
     ws = await action();
     render();
     markSaved();
+    return ws;
   };
 
-  void openAdvancedPanel(group.id, {
-    kind: group.kind,
-    pickReference: async () => {
+  return {
+    pickImages: async () => {
       const selected = await open({
-        title: '选择原图（高级创建）',
-        multiple: false,
+        title: '添加图片（可多选）',
+        multiple: true,
         filters: [IMAGE_FILTER],
         defaultPath: defaultOpenPath(),
       });
-      if (typeof selected !== 'string') return null;
-      notePickedPath(selected);
-      return selected;
+      if (selected === null) return [];
+      const paths = Array.isArray(selected) ? selected : [selected];
+      if (paths.length > 0) notePickedPath(paths[0]);
+      return paths;
     },
-    isBusy: () => scoring,
-    initialReference: () => {
-      const round = activeRound()?.round;
-      if (!round) return null;
-      // 图片组预填原图，视频组预填原视频（高级创建面板的命令行预览用）
-      return group.kind === 'video' ? round.videoReferencePath ?? null : round.referencePath ?? null;
-    },
-    setStatus,
-    createRound: async () => {
-      const current = activeGroup();
-      if (!current) throw new Error('跑分组不存在或已被关闭');
-      const beforeIds = new Set(current.rounds.map((r) => r.id));
-      const name = `评测轮 ${current.rounds.length + 1}`;
-      const updated = await invoke<Workspace>('round_create', {
-        groupId: current.id,
-        name,
-      });
-      const createdGroup = updated.groups.find((g) => g.id === current.id);
+    probeIdentities: (paths) => invoke<ImageIdentityDto[]>('image_identities', { paths }),
+    createRound: async (groupId, sourcePath) => {
+      // 用面板传来的组 id（不是 activeGroup：跑分期间用户可能切走了标签页，
+      // 建轮必须落在发起跑分的那一组里）
+      const before = ws?.groups.find((g) => g.id === groupId);
+      if (!before) throw new Error('跑分组不存在或已被关闭');
+      const beforeIds = new Set(before.rounds.map((r) => r.id));
+      // 轮名带图片文件名（文件系统非法字符由 roundName 替换为下划线）；
+      // 轮号 = 现有轮数 + 1（父规格「轮命名」）
+      const name = roundName(before.rounds.length + 1, sourcePath);
+      const updated = await mutate(() =>
+        invoke<Workspace>('round_create', { groupId, name }),
+      );
+      const createdGroup = updated.groups.find((g) => g.id === groupId);
       const newRound = createdGroup?.rounds.find((r) => !beforeIds.has(r.id));
       if (!newRound) throw new Error('无法定位新建的评测轮');
-      await mutate(() => invoke('round_activate', { groupId: current.id, roundId: newRound.id }));
-      return { groupId: current.id, roundId: newRound.id };
+      await mutate(() => invoke('round_activate', { groupId, roundId: newRound.id }));
+      return { groupId, roundId: newRound.id };
     },
-    setReference: (groupId, roundId, path) =>
-      mutate(() => invoke('round_set_reference', { groupId, roundId, path })),
+    setReference: (groupId, roundId, path) => {
+      // 已经是这张原图时跳过 IPC：round_set_reference 会清掉已有跑分行的指标，
+      // 而「同一张图重跑」不需要重设原图（否则旧行会被无谓清成未跑分）
+      const round = ws?.groups.find((g) => g.id === groupId)?.rounds.find((r) => r.id === roundId);
+      if (round?.referencePath === path) return Promise.resolve();
+      return mutate(() =>
+        invoke('round_set_reference', { groupId, roundId, path }),
+      ).then(() => undefined);
+    },
     encode: async (groupId, roundId, referencePath, entry, conflicts) => {
       const invokeEncode = (overwrite: boolean): Promise<AdvancedEncodeOutcome> =>
         invoke<AdvancedEncodeOutcome>('advanced_encode', {
@@ -1866,18 +2017,121 @@ function openAdvancedCreation(): void {
         invoke('round_add_candidates', { groupId, roundId, paths, encodingParams: params }),
       );
     },
-    setNote: async (groupId, roundId, path, note) => {
-      await mutate(() =>
-        invoke('round_set_candidate_note', { groupId, roundId, candidatePath: path, note }),
-      );
+    clearCandidates: async (groupId, roundId) => {
+      await mutate(() => invoke('round_clear_candidates', { groupId, roundId }));
+    },
+    deleteRound: async (groupId, roundId) => {
+      await mutate(() => invoke('round_delete', { groupId, roundId }));
+    },
+    scoreRound: async (groupId, roundId, paths): Promise<ScoredCandidate[]> => {
+      // 复用主界面的整轮跑分入口（同一条 IPC、同一份并发度与进度条）；
+      // T5：paths = 本次新增产物路径，只重算这些行（未列入行逐 bit 不变）。
+      // 跑完从最新工作区读出逐行结果，供面板判定「编码成功但跑分失败」
+      await scoreAllCandidates(groupId, roundId, paths);
+      const group = ws?.groups.find((g) => g.id === groupId);
+      const round = group?.rounds.find((r) => r.id === roundId);
+      return (round?.candidates ?? []).map((c) => ({ path: c.path, error: c.error }));
+    },
+    withBusy: async (task) => {
+      scoring = true;
+      render();
+      try {
+        return await task();
+      } finally {
+        scoring = false;
+        render();
+      }
+    },
+    isBusy: () => scoring,
+    describeRound: (groupId, roundId) => {
+      const group = ws?.groups.find((g) => g.id === groupId);
+      const round = group?.rounds.find((r) => r.id === roundId);
+      return round ? { name: round.name, candidateCount: round.candidates.length } : null;
+    },
+    // T4（票 #78）：逐图编辑弹窗的宿主依赖。编码器目录与旧面板同一个 IPC（不另造
+    // 一份规格表）；更换图片是**单选**系统对话框；清行走 T3 已交付的薄命令。
+    loadImageCatalog: () => invoke<ImageSpec[]>('advanced_image_catalog'),
+    pickReplacementImage: async () => {
+      const selected = await open({
+        title: '更换图片（选一个新文件替换这张原图）',
+        multiple: false,
+        filters: [IMAGE_FILTER],
+        defaultPath: defaultOpenPath(),
+      });
+      if (typeof selected !== 'string') return null;
+      notePickedPath(selected);
+      return selected;
+    },
+    rerender: () => render(),
+    setStatus,
+  };
+}
+
+/**
+ * 「新建评测轮 → 高级创建…」的图片分支（T3 / 票 #77）：打开条目列表面板。
+ * deps 与主界面的胶囊参数弹窗 / 「重跑改过的」共用 imageQueueHostDeps 的那一份。
+ */
+function openImageQueueCreation(group: Group): void {
+  openImageQueuePanel(group.id, imageQueueHostDeps());
+}
+
+/**
+ * 「新建评测轮 → 高级创建…」的入口：按跑分组类型分派，图片与视频各一套界面。
+ *
+ * - 图片组（T3 / 票 #77）：条目列表面板（src/image-queue-panel.ts）＋逐图编辑弹窗
+ *   （src/image-entry-editor.ts）。编码走 advanced_encode（参数合并 / 命名 / 冲突
+ *   协议都在核心库），产物带 encodingParams 纳入惰性创建的评测轮后跑分。
+ * - 视频组（T29-3，T6 起旧面板的视频专用形态）：src/advanced-ui.ts 的
+ *   openAdvancedPanel——本版本只做编码器选择/参数/命令行预览与建轮，确认后把配置
+ *   摘要与命令行写进轮备注。
+ *
+ * T6（票 #80）删掉了旧面板的图片分支：图片组在这条 if 上就返回，`kind: 'video'`
+ * 是字面量（编译期收窄），面板自身另有运行期断言兜底——图片侧不存在第二套入口。
+ */
+function openAdvancedCreation(): void {
+  const group = activeGroup();
+  if (!group || scoring) return;
+  if (group.kind === 'image') {
+    openImageQueueCreation(group);
+    return;
+  }
+
+  /** 不吞错误的改动流程（面板要在错误行里汇总报错，与 apply 的状态栏口径并存）。 */
+  const mutate = async (action: () => Promise<Workspace>): Promise<void> => {
+    ws = await action();
+    render();
+    markSaved();
+  };
+
+  void openAdvancedPanel(group.id, {
+    kind: 'video',
+    isBusy: () => scoring,
+    initialReference: () => {
+      const round = activeRound()?.round;
+      if (!round) return null;
+      // 视频组预填本轮已选原视频（高级创建面板的命令行预览用）
+      return round.videoReferencePath ?? null;
+    },
+    setStatus,
+    createRound: async () => {
+      const current = activeGroup();
+      if (!current) throw new Error('跑分组不存在或已被关闭');
+      const beforeIds = new Set(current.rounds.map((r) => r.id));
+      const name = `评测轮 ${current.rounds.length + 1}`;
+      const updated = await invoke<Workspace>('round_create', {
+        groupId: current.id,
+        name,
+      });
+      const createdGroup = updated.groups.find((g) => g.id === current.id);
+      const newRound = createdGroup?.rounds.find((r) => !beforeIds.has(r.id));
+      if (!newRound) throw new Error('无法定位新建的评测轮');
+      await mutate(() => invoke('round_activate', { groupId: current.id, roundId: newRound.id }));
+      return { groupId: current.id, roundId: newRound.id };
     },
     setRoundNote: async (groupId, roundId, note) => {
       await mutate(() => invoke('round_set_note', { groupId, roundId, note }));
     },
-    scoreRound: () => scoreAllCandidates(),
     rerender: () => render(),
-    // T30：冲突询问弹窗（设置策略为「询问」时被调）
-    askConflict: (fileName) => askFileConflict(fileName),
   });
 }
 

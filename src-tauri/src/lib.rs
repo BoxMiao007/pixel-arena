@@ -621,10 +621,17 @@ fn forward_score_progress(channel: &Channel<ScoreProgress>, completed: usize, to
 /// IPC 命令（T24）：对评测轮的全部跑分图整轮并行跑分（一次 IPC 提交整轮）。
 /// 并发度来自设置（默认一半逻辑核），进度经 Channel 推给前端（N/M）；
 /// 单张失败不报错——中文原因由核心库写进行内，界面标「失败」。
+///
+/// T3（票 #77）：`paths` 可选——传了就只跑这些跑分图（子集重算），不传时与今天
+/// 行为一字不差（整轮全量）。前端在无子集时**省略该键**（Tauri 对可选参数按缺失走
+/// None，等价于不传）：主界面「开始跑分」与一站式入口都不传，只有图片条目列表面板的
+/// 增量跑分传「本次新增产物」子集；CLI 不走这条 IPC，仍整轮全量。过滤同时作用于
+/// 计算与写回，未列入的行一个字节都不碰（核心库单测用黄金基准对拍锚定）。
 #[tauri::command]
 async fn round_score_candidates(
     group_id: String,
     round_id: String,
+    paths: Option<Vec<String>>,
     on_progress: Channel<ScoreProgress>,
     state: State<'_, AppState>,
 ) -> Result<Workspace, String> {
@@ -633,16 +640,105 @@ async fn round_score_candidates(
     let path = state.path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut ws = workspace.lock().expect("工作区锁不应中毒");
-        ws.score_round_candidates_parallel(&group_id, &round_id, max_concurrency, &|completed,
-                                                                                    total| {
-            forward_score_progress(&on_progress, completed, total);
-        })
+        let filter: Option<Vec<&str>> = paths
+            .as_ref()
+            .map(|items| items.iter().map(String::as_str).collect());
+        ws.score_round_candidates_parallel_filtered(
+            &group_id,
+            &round_id,
+            max_concurrency,
+            filter.as_deref(),
+            &|completed, total| {
+                forward_score_progress(&on_progress, completed, total);
+            },
+        )
         .map_err(|err| err.to_string())?;
         ws.save_to_file(&path).map_err(|err| err.to_string())?;
         Ok(ws.clone())
     })
     .await
     .map_err(|err| format!("跑分任务执行失败: {err}"))?
+}
+
+/// 清空某轮跑分图行的实现体（pub 供不经 Tauri 运行时端到端测试，沿
+/// `onestop_catalog_impl` 先例）：只摘掉 candidates，原图与轮本身保留，不碰磁盘文件。
+pub fn round_clear_candidates_impl(
+    workspace: &mut Workspace,
+    group_id: &str,
+    round_id: &str,
+) -> Result<(), WorkspaceError> {
+    workspace.clear_round_candidates(group_id, round_id)
+}
+
+/// IPC 命令（T3 / 票 #77 换图流程）：清空某轮全部跑分图行（原图与轮保留、
+/// 磁盘产物文件不删）。同步命令，只改内存列表并写盘，无耗时计算。
+#[tauri::command]
+fn round_clear_candidates(
+    group_id: String,
+    round_id: String,
+    state: State<AppState>,
+) -> Result<Workspace, String> {
+    mutate(&state, |ws| {
+        round_clear_candidates_impl(ws, &group_id, &round_id)
+    })
+}
+
+/// 原图标识（image_identities 回传的一行）：路径 + 文件大小 + 修改时间（毫秒）。
+/// 读不到文件时大小/修改时间为 None、`error` 给出中文原因——前端据此走
+/// 「读取失败 → 保守判已变更」的既有判定分支，绝不把读不到的图误判成「已跑分」。
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageIdentityDto {
+    pub path: String,
+    pub size_bytes: Option<u64>,
+    pub modified_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// 批量读取图片标识的实现体（pub 供测试；只读 metadata，不读文件内容——大图
+/// 开销与「更换图片是显式按钮」的语义都指向这个口径，见父规格「已知边界」）。
+/// 单个文件读不到只影响该行，不中断整批（面板要的是「所有能读的 + 读不到的原因」）。
+pub fn image_identities_impl(paths: &[String]) -> Vec<ImageIdentityDto> {
+    paths
+        .iter()
+        .map(|path| match std::fs::metadata(path) {
+            Ok(metadata) => {
+                let modified_ms = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|elapsed| elapsed.as_millis() as u64);
+                match modified_ms {
+                    Some(modified_ms) => ImageIdentityDto {
+                        path: path.clone(),
+                        size_bytes: Some(metadata.len()),
+                        modified_ms: Some(modified_ms),
+                        error: None,
+                    },
+                    None => ImageIdentityDto {
+                        path: path.clone(),
+                        size_bytes: None,
+                        modified_ms: None,
+                        error: Some("读取图片信息失败：无法获取文件修改时间".to_string()),
+                    },
+                }
+            }
+            Err(err) => ImageIdentityDto {
+                path: path.clone(),
+                size_bytes: None,
+                modified_ms: None,
+                error: Some(format!("读取图片信息失败：{err}")),
+            },
+        })
+        .collect()
+}
+
+/// IPC 命令（T3 / 票 #77）：批量读图片标识（大小 + 修改时间）供条目列表显示
+/// 四态徽章与脏判定。只读、极薄：前端没有 fs 权限（capabilities 刻意不加），
+/// 这个命令是唯一的元数据出口。同步命令，metadata 读取很快，无耗时计算。
+#[tauri::command]
+fn image_identities(paths: Vec<String>) -> Vec<ImageIdentityDto> {
+    image_identities_impl(&paths)
 }
 
 /// IPC 命令（T18）：从评测轮移除一张跑分图（胶囊上的 × 单独移除）。
@@ -1555,6 +1651,10 @@ pub fn run() {
             round_set_reference,
             round_add_candidates,
             round_remove_candidate,
+            // T3（票 #77）：清空某轮跑分图行（换图流程的薄命令）
+            round_clear_candidates,
+            // T3（票 #77）：批量读图片标识（大小 + 修改时间，只读 metadata）
+            image_identities,
             // US22：大小优先不可达标注持久化
             round_set_candidate_note,
             // T24 整轮并行跑分（并发度来自设置中心）

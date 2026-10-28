@@ -384,6 +384,13 @@ body {
   color: var(--muted);
 }
 
+/* 票 #82：主界面的增量重跑入口。虚线描边表示「只跑改过的那些」——
+   「开始跑分」是 accent 实线（整轮全量）、「一站式跑分」是 green（自动生成 + 跑分），
+   三个跑分入口靠描边与文案一眼分开。 */
+.rerun-changed-btn {
+  border-style: dashed;
+}
+
 /* ---------- 已选文件胶囊（T18；T22 的格式/质量胶囊复用同一套样式） ---------- */
 
 .pill-list {
@@ -1481,16 +1488,6 @@ body {
   width: min(760px, calc(100vw - 2rem));
 }
 
-.adv-reference-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
 .adv-entries {
   display: flex;
   flex-direction: column;
@@ -1508,10 +1505,13 @@ body {
   gap: 0.5rem;
 }
 
+/* 卡头：序号 + 编码器选择 + 恢复默认 + ↑↓×（票 #75 把「恢复默认」收进卡头，
+   窄窗口下允许换行，不挤压编码器选择器） */
 .adv-entry-head {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  flex-wrap: wrap;
 }
 
 .adv-entry-label {
@@ -1522,7 +1522,7 @@ body {
 }
 
 .adv-encoder-select {
-  flex: 1;
+  flex: 1 1 8rem;
   min-width: 0;
   font: inherit;
   font-size: 0.9rem;
@@ -1533,13 +1533,46 @@ body {
   padding: 0.25rem 0.4rem;
 }
 
-/* 快速参数行：无损开关 + 质量滑块 + 目标大小 + 模式二选一 */
-.adv-quick-row {
+/* 卡级「恢复默认」：放在卡头、与排序/删除按钮同组，不抢编码器选择器的宽度 */
+.adv-entry-reset {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* 卡内子区（票 #75）：快速参数与高级参数行两块视觉上分开，各带标题；
+   高级参数子区再加一条分隔线，与快速参数不混成一坨 */
+.adv-quick-zone {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.adv-zone-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+/* 快速参数两列网格：无损 / 质量 / 目标大小 / 快速模式。
+   网格项 min-width:0 让滑杆与说明文字在窄窗口下收缩而不是把卡片撑出横向滚动 */
+.adv-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 0.6rem 0.9rem;
+  gap: 0.5rem 0.9rem;
   font-size: 0.85rem;
+}
+
+.adv-quick-grid > * {
+  min-width: 0;
+}
+
+/* 窄窗口降回单列（两列网格在 420px 以下会互相挤压，允许退化） */
+@media (max-width: 420px) {
+  .adv-quick-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .adv-lossless {
@@ -1550,14 +1583,17 @@ body {
 }
 
 .adv-quality {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.4rem;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .adv-quality-slider {
-  width: 11rem;
+  flex: 1 1 6rem;
+  min-width: 4rem;
+  max-width: 11rem;
   accent-color: var(--green);
   cursor: pointer;
 }
@@ -1567,14 +1603,15 @@ body {
 }
 
 .adv-quality-text {
-  white-space: nowrap;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .adv-size {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .adv-size-input {
@@ -1632,11 +1669,18 @@ body {
   opacity: 0.5;
 }
 
-/* 高级参数折叠栏：默认折叠（无 open 属性即收起）。票 #53：summary 是块级元素
-   整行可点，收窄到文字宽度后行内空白不再触发展开/折叠 */
+/* 高级参数行子区（票 #75）：带标题与上分隔线的独立子区，默认展开（.open 由
+   encoder-card 渲染时置上）。summary 是子区标题，同时也是开合触发区。 */
+.adv-advanced {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
 .adv-advanced summary {
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--muted);
   user-select: none;
   width: fit-content;
@@ -1799,11 +1843,30 @@ body {
   flex: 1;
 }
 
+/* 命令行预览（票 #75）：默认收起，点开才占高度；summary 是折叠标题，
+   展开后命令行与「复制」照旧可用 */
+.adv-preview {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.adv-preview summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  user-select: none;
+  width: fit-content;
+  max-width: 100%;
+}
+
 /* 命令行预览：等宽、可横向滚动、可复制 */
 .adv-preview-row {
   display: flex;
   align-items: flex-start;
   gap: 0.4rem;
+  margin-top: 0.4rem;
 }
 
 .adv-cmd {
@@ -1841,3 +1904,263 @@ body {
   margin: 0.4rem 0 0;
   white-space: normal;
 }
+
+/* ---------- T3（票 #77）：图片条目列表面板 ----------
+   面板本体复用 settings-overlay / settings-panel / settings-actions 的既有观感，
+   本节只补列表面板特有的行、徽章与底部动作区；不新造设计体系。 */
+
+.queue-panel {
+  width: min(720px, calc(100vw - 2rem));
+}
+
+.queue-actions-top {
+  justify-content: flex-start;
+  align-items: center;
+  border-top: none;
+  padding: 0.25rem 0 0.5rem;
+}
+
+/* 添加按钮旁的一句口径说明（新条目自带 JPEG 有损配置，添加完可直接跑） */
+.queue-add-hint {
+  font-size: 0.78rem;
+  min-width: 0;
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.25rem 0 0.5rem;
+  max-height: min(52vh, 30rem);
+  overflow-y: auto;
+}
+
+.queue-empty {
+  margin: 0.5rem 0;
+}
+
+/* 一行 = 文件名（中间截断）+ 徽章（+ 重复提示）+ 删除按钮 */
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  min-width: 0;
+  /* T4：整行可点 = 打开这一条的编辑弹窗（不是选中态） */
+  cursor: pointer;
+}
+
+.queue-row:hover {
+  border-color: var(--border-hover);
+}
+
+.queue-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+}
+
+/* 徽章：四态各自一色（与结果表/状态栏的绿红语义一致；「将重跑」用强调色） */
+.queue-badge {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.queue-badge-unscored {
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.queue-badge-scored {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.queue-badge-stale {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.queue-badge-failed {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+/* 重复图片提示：只提示不禁止（同一张图配两套参数是正当用法） */
+.queue-badge-dup {
+  color: var(--text);
+  border-style: dashed;
+  border-color: var(--border-hover);
+}
+
+.queue-delete {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.queue-delete:hover {
+  background: var(--danger-hover-bg);
+  color: var(--red);
+}
+
+.queue-delete:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.queue-actions {
+  align-items: center;
+}
+
+/* 确认卡片：正文保留换行（<pre> 已由 .status-card-body 提供），底部按钮右对齐 */
+.queue-confirm-card .status-card-body {
+  white-space: pre-wrap;
+}
+
+.status-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+/* ---------- T4（票 #78）：逐图编辑弹窗（左图右参两栏） ----------
+   复用 settings-overlay / settings-panel 观感；本节的唯一职责是把「右栏整体滚动」
+   与「窄窗口单列」这两条布局约束钉死：面板本身 overflow:hidden，高度交给两栏栅格，
+   右栏自己滚动——参数再多也不把窗口撑爆。 */
+
+.queue-editor-panel {
+  width: min(1000px, calc(100vw - 2rem));
+  /* 面板不整体滚动：滚动条只出现在右栏内部（见 .queue-editor-main） */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* 固定高度上限，让内部 min-height:0 的栅格真正能收缩 */
+  max-height: calc(100vh - 4rem);
+}
+
+.queue-editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 1rem;
+}
+
+/* 左栏：图片区（文件名 / 状态 / 更换图片）。窄窗口下与右栏并排退化为上下。 */
+.queue-editor-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding-right: 0.9rem;
+}
+
+.queue-editor-side h3,
+.queue-editor-main-head h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* 头部右侧：状态徽章与关闭按钮同组（标题过长时徽章仍贴着关闭按钮，不挤压它） */
+.queue-editor-head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+.queue-editor-file {
+  margin: 0;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.queue-editor-path {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.queue-editor-side-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.queue-editor-side-hint {
+  margin: 0;
+  font-size: 0.75rem;
+}
+
+/* 右栏：参数区。整体滚动（含卡内的折叠区一起滚），min-height:0 是 flex 子项
+   能收缩出滚动条的前提。 */
+.queue-editor-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.queue-editor-main-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.queue-editor-cards {
+  margin: 0;
+}
+
+/* 窄窗口：左右两栏叠成单列（不重叠、不横向溢出），右栏保持自己的滚动区 */
+@media (max-width: 640px) {
+  .queue-editor-body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .queue-editor-side {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 0.6rem;
+    overflow-y: visible;
+  }
+
+  .queue-editor-main {
+    overflow-y: visible;
+  }
+}
+
