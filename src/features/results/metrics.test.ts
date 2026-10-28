@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  formatBdRate,
-  formatBdRateCell,
   formatMetricFor,
   metricHeaderTitle,
   metricMeta,
@@ -108,19 +106,5 @@ describe('指标格式化', () => {
     expect(metricSortValue(0)).toBe(0);
     expect(metricSortValue(undefined)).toBeNull();
     expect(metricSortValue(null)).toBeNull();
-  });
-});
-
-describe('BD-rate 文本', () => {
-  it('带符号两位小数百分数', () => {
-    expect(formatBdRate(12.3456)).toBe('+12.35%');
-    expect(formatBdRate(-5.6)).toBe('-5.60%');
-    expect(formatBdRate(0)).toBe('+0.00%');
-  });
-
-  it('不可算时为破折号', () => {
-    expect(formatBdRateCell(null)).toBe('—');
-    expect(formatBdRateCell(undefined)).toBe('—');
-    expect(formatBdRateCell(-3.2)).toBe('-3.20%');
   });
 });

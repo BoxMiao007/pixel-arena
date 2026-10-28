@@ -1,7 +1,6 @@
-// 文件路径 → 格式显示名：来源清单、结果表「格式」列、BD-rate 共用同一份映射，
+// 文件路径 → 格式显示名：来源清单与结果表「格式」列共用同一份映射，
 // 避免同一张图在两个视图里显示成两种格式。
 //
-// 口径与核心库 bdrate::format_label 一致（BD-rate 汇总的「格式」列由后端给出）；
 // 扩展名大小写不敏感，不做 MIME 探测——这是纯展示映射。
 
 import { fileName } from './util';
@@ -33,7 +32,7 @@ export function extensionOf(path: string): string {
 
 /**
  * 格式显示名：已知扩展名走固定表；未知扩展名按 ASCII 大写；无扩展名为「未知格式」。
- * 结果表的「格式」列与 BD-rate 页签用这个口径（缺格式时也要有文案）。
+ * 结果表的「格式」列用这个口径（缺格式时也要有文案）。
  */
 export function formatLabelForPath(path: string): string {
   const ext = extensionOf(path);

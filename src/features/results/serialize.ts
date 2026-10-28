@@ -8,8 +8,7 @@ import { formatRatio, formatSize } from '../../core/format';
 import { formatLabelForPath } from '../../core/format-label';
 import type { CandidateImage, CandidateVideo, Group, Round } from '../../core/model';
 import { fileName } from '../../core/util';
-import type { BdrateSummary } from './ipc';
-import { IMAGE_METRIC_ORDER, formatBdRateCell, formatMetricFor, metricMeta } from './metrics';
+import { IMAGE_METRIC_ORDER, formatMetricFor, metricMeta } from './metrics';
 import { rowStatus, rowStatusText } from './status';
 
 const VIDEO_METRIC_ORDER = ['VMAF', 'PSNR', 'SSIM'] as const;
@@ -17,9 +16,6 @@ const VIDEO_METRIC_ORDER = ['VMAF', 'PSNR', 'SSIM'] as const;
 export interface ClipboardInput {
   group: Group;
   round: Round;
-  /** BD-rate 汇总；null 表示这次没算出来（原因见 bdrateError）。 */
-  summary: BdrateSummary | null;
-  bdrateError?: string | null;
   /** 只作展示的生成时间。 */
   generatedAt: string;
 }
@@ -80,7 +76,7 @@ function hasVideoContent(round: Round): boolean {
  * 指标列固定五列，旧轮次缺的留空——与 report.rs 的 IMAGE_METRIC_KEYS 一致。
  */
 export function toClipboardCsv(input: ClipboardInput): string {
-  const { group, round, summary, bdrateError, generatedAt } = input;
+  const { group, round, generatedAt } = input;
   const lines: string[] = [];
   lines.push('# 像素竞技场评测报告');
   lines.push(`# 跑分组：${group.name}`);
@@ -104,27 +100,6 @@ export function toClipboardCsv(input: ClipboardInput): string {
     for (const candidate of round.videoCandidates ?? []) lines.push(videoRow(candidate));
   }
 
-  lines.push('');
-  if (summary) {
-    lines.push(
-      summary.referenceFormat
-        ? `# 【BD-rate 汇总】（参照格式：${summary.referenceFormat}）`
-        : '# 【BD-rate 汇总】（无可用参照格式）',
-    );
-    lines.push('format,bd_rate_percent,point_count,note');
-    for (const entry of summary.entries) {
-      lines.push(
-        [
-          csvField(entry.format),
-          entry.bdRatePercent === null ? '' : entry.bdRatePercent.toFixed(6),
-          String(entry.pointCount),
-          entry.note ? csvField(entry.note) : '',
-        ].join(','),
-      );
-    }
-  } else {
-    lines.push(`# 【BD-rate 汇总】不可用：${bdrateError ?? '尚未计算'}`);
-  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -142,7 +117,7 @@ function mdRow(cells: readonly string[]): string {
  * 备注列与编码参数列沿用结果表的口径（全空不显示）。
  */
 export function toMarkdown(input: ClipboardInput): string {
-  const { group, round, summary, bdrateError, generatedAt } = input;
+  const { group, round, generatedAt } = input;
   const metricKeys = IMAGE_METRIC_ORDER.filter((key) =>
     round.candidates.some((candidate) => candidate.metrics?.[key] !== undefined),
   );
@@ -206,36 +181,6 @@ export function toMarkdown(input: ClipboardInput): string {
         ]),
       );
     });
-  }
-
-  lines.push('');
-  if (summary) {
-    lines.push(
-      summary.referenceFormat
-        ? `#### BD-rate 汇总（参照格式：${summary.referenceFormat}）`
-        : '#### BD-rate 汇总（无可用参照格式）',
-    );
-    lines.push('');
-    if (summary.note) lines.push(`${summary.note}`);
-    lines.push('BD-rate 为负表示同画质下码率更低。');
-    lines.push('');
-    const bdHeader = ['格式', 'BD-rate', '样本点', '说明'];
-    lines.push(mdRow(bdHeader));
-    lines.push(mdRow(bdHeader.map(() => '---')));
-    for (const entry of summary.entries) {
-      lines.push(
-        mdRow([
-          entry.format,
-          formatBdRateCell(entry.bdRatePercent),
-          String(entry.pointCount),
-          entry.note ?? '',
-        ]),
-      );
-    }
-  } else {
-    lines.push(`#### BD-rate 汇总不可用`);
-    lines.push('');
-    lines.push(bdrateError ?? '尚未计算。');
   }
 
   return `${lines.join('\n')}\n`;

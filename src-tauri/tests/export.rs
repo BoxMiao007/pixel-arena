@@ -119,14 +119,14 @@ fn export_csv_and_html_write_files_through_command_layer() {
     assert!(csv.contains("# 【视频跑分结果】"));
     let video_row = csv.lines().find(|l| l.contains("dis-150k.mp4")).unwrap();
     assert_eq!(video_row, format!("{},27050,0.400000,94.870000,38.200000,0.992600,完成", video_path));
-    assert!(csv.contains("# 【BD-rate 汇总】（参照格式：JPEG）"));
+    assert!(!csv.contains("BD-rate"), "BD-rate 已下线（决策 0035），导出不再带这一节");
 
     let html_path = dir.path().join("验收轮.html");
     pixel_arena_lib::export_round_file(&ws, &group, &round, "html", html_path.to_str().unwrap(), "2026-10-05 14:00:00").unwrap();
     let html = std::fs::read_to_string(&html_path).unwrap();
     assert!(html.contains("<!doctype html>"));
     assert!(html.contains("验收轮"));
-    assert!(html.contains("BD-rate 汇总"));
+    assert!(!html.contains("BD-rate"), "BD-rate 已下线（决策 0035）");
     assert!(html.contains("94.87"));
 }
 

@@ -464,8 +464,8 @@ where
     Ok(ws.clone())
 }
 
-/// 按 id 只读定位跑分组与评测轮（onestop_encode / round_bdrate / export_round_file
-/// 三处命令共用）：组与轮分开报错，错误文案统一一版中文。
+/// 按 id 只读定位跑分组与评测轮（onestop_encode / export_round_file 两处命令共用）：
+/// 组与轮分开报错，错误文案统一一版中文。
 fn find_round<'a>(
     ws: &'a Workspace,
     group_id: &str,
@@ -899,7 +899,7 @@ pub struct SizeSearchDto {
     pub hit: SizePointDto,
     /// 不可达标注（核心库 annotation_note 中文单一来源，与 CLI note 列同源）；可达为 null。
     pub note: Option<String>,
-    /// 命中点 + 邻近补点（升序 ≥3 点，US23 保 BD-rate 率失真曲线），每点带实测大小。
+    /// 命中点 + 邻近补点（升序 ≥3 点，US23：多点便于横向比较质量档位），每点带实测大小。
     pub points: Vec<SizePointDto>,
 }
 
@@ -1338,20 +1338,6 @@ fn video_stream_url(path: String, state: State<'_, AppState>) -> Result<String, 
     Ok(state.video_stream.register(std::path::Path::new(&path)))
 }
 
-/// IPC 命令（T13）：计算评测轮的 BD-rate 汇总，供结果区汇总表展示。
-/// 与导出报告（round_export）调用核心库同一函数，保证界面与导出一致。
-/// 纯内存计算（分组、拟合、积分），同步返回即可。
-#[tauri::command]
-fn round_bdrate(
-    group_id: String,
-    round_id: String,
-    state: State<AppState>,
-) -> Result<pixel_arena_core::bdrate::BdrateSummary, String> {
-    let ws = state.workspace.lock().expect("工作区锁不应中毒");
-    let (_, round) = find_round(&ws, &group_id, &round_id)?;
-    Ok(pixel_arena_core::bdrate::summarize_round(round))
-}
-
 /// IPC 命令（T13）：把评测轮结果导出为报告文件。kind = "csv" | "html"；
 /// path 来自前端 tauri-plugin-dialog 的保存对话框；generated_at 由前端生成传入，
 /// 报告里只作展示。文件写入失败（路径不可写等）返回中文错误。
@@ -1369,8 +1355,7 @@ fn round_export(
 }
 
 /// 评测轮报告导出的实现体（T13）：定位组与轮 → 核心库序列化 → 写文件。
-/// 抽成独立函数是为了不经 Tauri 运行时即可端到端测试（tests/export.rs）；
-/// 与 round_bdrate 命令共用核心库同一份数据源，保证导出与界面一致。
+/// 抽成独立函数是为了不经 Tauri 运行时即可端到端测试（tests/export.rs）。
 pub fn export_round_file(
     ws: &Workspace,
     group_id: &str,
@@ -1683,8 +1668,7 @@ pub fn run() {
             // T15 视频逐帧对比（ffprobe 元信息 + 回环流服务）
             video_probe_meta,
             video_stream_url,
-            // T13 BD-rate 汇总与报告导出
-            round_bdrate,
+            // T13 报告导出
             round_export,
         ])
         .build(tauri::generate_context!())

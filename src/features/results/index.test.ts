@@ -16,7 +16,7 @@ describe('results 域注册', () => {
     expect(imageTabs.map((tab) => tab.label)).toEqual(['评分表', '效率对比']);
     expect(imageTabs.map((tab) => tab.order)).toEqual([10, 20]);
 
-    // 效率对比只对图片有意义（BD-rate 的拟合不覆盖视频），视频组不再挂一个永远空的页签。
+    // 效率对比只对图片有意义，视频组不再挂一个永远空的页签。
     expect(dockTabsFor('video').map((tab) => tab.id)).toEqual(['results']);
   });
 

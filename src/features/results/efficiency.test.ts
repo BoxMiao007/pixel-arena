@@ -1,4 +1,4 @@
-// 效率对比逻辑：指标选择、按体积排序、帕累托「划算」判定、支配说明、BD-rate 门槛。
+// 效率对比逻辑：指标选择、按体积排序、帕累托「划算」判定与支配说明。
 //
 // 这些用例锚定的是「少图也有结论」这件事：两张图就能判划算、一张图不硬判，
 // 无损与低更优指标（Butteraugli）不能把方向搞反。
@@ -6,7 +6,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CandidateImage, MetricValue, Round } from '../../core/model';
 import {
-  bdrateEligibility,
   buildEfficiencyTable,
   dominatorText,
   qualityMetricFor,
@@ -187,59 +186,5 @@ describe('buildEfficiencyTable：排序与帕累托', () => {
     expect(view.rows.map((row) => row.path)).toEqual(['/r/a.jpg']);
     expect(view.skipped).toBe(3);
     expect(view.comparable).toBe(false);
-  });
-});
-
-describe('bdrateEligibility', () => {
-  function ladder(format: string, points: number[]): CandidateImage[] {
-    return points.map((psnr, index) =>
-      candidate(`/r/${format}_${index}.${format === 'JPEG' ? 'jpg' : format.toLowerCase()}`, 1000 + index, {
-        PSNR: psnr,
-      }),
-    );
-  }
-
-  it('两个格式各 3 个有损点才开启', () => {
-    const eligibility = bdrateEligibility(
-      round([...ladder('JPEG', [30, 32, 34]), ...ladder('WebP', [31, 33, 35])]),
-    );
-    expect(eligibility.enabled).toBe(true);
-    expect(eligibility.counts).toEqual([
-      { format: 'JPEG', points: 3 },
-      { format: 'WebP', points: 3 },
-    ]);
-    expect(eligibility.maxPoints).toBe(3);
-  });
-
-  it('只有一个格式够点时不开启，并给出本轮最多点数', () => {
-    const eligibility = bdrateEligibility(
-      round([...ladder('JPEG', [30, 32, 34]), ...ladder('WebP', [31, 33])]),
-    );
-    expect(eligibility.enabled).toBe(false);
-    expect(eligibility.maxPoints).toBe(3);
-  });
-
-  it('无损点（PSNR = ∞）不算进拟合', () => {
-    const eligibility = bdrateEligibility(
-      round([
-        ...ladder('JPEG', [30, 32, 34]),
-        ...ladder('WebP', [31, 33, 35]),
-        candidate('/r/a.png', 5000, { PSNR: 'inf' }),
-      ]),
-    );
-    expect(eligibility.enabled).toBe(true);
-    expect(eligibility.counts.find((entry) => entry.format === 'PNG')).toBeUndefined();
-  });
-
-  it('失败与未跑分的图不计点', () => {
-    const eligibility = bdrateEligibility(
-      round([
-        ...ladder('JPEG', [30, 32, 34]),
-        candidate('/r/webp_0.webp', 1000, { PSNR: 31 }, { error: '编码失败' }),
-        candidate('/r/webp_1.webp', 1000, null),
-      ]),
-    );
-    expect(eligibility.enabled).toBe(false);
-    expect(eligibility.maxPoints).toBe(3);
   });
 });

@@ -98,7 +98,7 @@ export interface SizeSearchOutcome {
   hitBytes: number;
   /** 不可达标注（核心库 annotation_note 单一来源）；可达为 null */
   note: string | null;
-  /** 命中点 + 邻近补点（升序 ≥3 点，保 BD-rate），每点带实测大小 */
+  /** 命中点 + 邻近补点（升序 ≥3 点，多点便于比较档位），每点带实测大小 */
   points: SizePoint[];
 }
 

@@ -1,10 +1,10 @@
-// 导出文件名清洗 + 格式显示名。格式映射已上收到 core/format-label.ts（来源清单、
-// 结果表、BD-rate 共用一份口径），测试留在这里是因为它原本就与导出文件名同文件。
+// 导出文件名清洗 + 格式显示名。格式映射已上收到 core/format-label.ts（来源清单与
+// 结果表共用一份口径），测试留在这里是因为它原本就与导出文件名同文件。
 import { describe, expect, it } from 'vitest';
 import { extensionOf, formatLabelForPath } from '../../core/format-label';
 import { exportBaseName, exportFileName, sanitizeFileName } from './filename';
 
-describe('格式显示名（与核心库 bdrate::format_label 同口径）', () => {
+describe('格式显示名（固定映射口径）', () => {
   it('已知扩展名', () => {
     expect(formatLabelForPath('/r/photo.jpg')).toBe('JPEG');
     expect(formatLabelForPath('/r/photo.jpeg')).toBe('JPEG');

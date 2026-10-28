@@ -1,10 +1,7 @@
-// 效率对比页签的纯逻辑：画质指标选择、按体积排序、帕累托「划算」判定、
-// 支配关系说明、以及 BD-rate 何时才有意义的触发条件。
+// 效率对比页签的纯逻辑：画质指标选择、按体积排序、帕累托「划算」判定与支配关系说明。
 //
-// 为什么不用 BD-rate 当主视图：BD-rate 要拟合率失真曲线，每格式至少 3 个质量点，
-// 日常一两张图时只会得到「样本不足」。本模块只用「同体积下画质更高、同画质下体积
-// 更小」这一条支配关系，1 张图也有数据、2 张图起就能给出结论；BD-rate 只在点数
-// 足够时作为补充（见 docs/decisions.md 0034）。
+// 只用「同体积下画质更高、同画质下体积更小」这一条支配关系：1 张图也有数据，
+// 2 张图起就能给出结论，不需要凑一条率失真曲线（BD-rate 已按决策 0035 整体下线）。
 //
 // 全部纯函数，不碰 DOM / IPC，可在 node 里直接单测。
 
@@ -60,15 +57,6 @@ export interface EfficiencyTable {
   frontierCount: number;
   /** 没有参与对比的候选数（未跑分 / 失败 / 缺该指标 / 体积为 0）。 */
   skipped: number;
-}
-
-export interface BdrateEligibility {
-  /** 至少两个格式各有 3 个有损质量点，才值得算 BD-rate。 */
-  enabled: boolean;
-  /** 每个格式的有效有损点数（PSNR 有限），按点数降序。 */
-  counts: { format: string; points: number }[];
-  /** 点数最多的格式有几个点（不足 3 时用于文案）。 */
-  maxPoints: number;
 }
 
 const EPSILON = 1e-9;
@@ -236,27 +224,4 @@ export function dominatorText(row: EfficiencyRow, metric: QualityMetric): string
     parts.push(`${worse} ${dominator.qualityDelta.toFixed(metric.decimals)}${unit}`);
   }
   return `不如 ${dominator.label}：${parts.join('、')}`;
-}
-
-/**
- * BD-rate 的门槛：核心库按扩展名分组拟合，参照与对比格式都要 ≥3 个有损质量点
- * （无损 PSNR = ∞ 进不了拟合）。少于这个数算出来只有「样本不足」，界面不请求。
- */
-export function bdrateEligibility(round: Round): BdrateEligibility {
-  const byFormat = new Map<string, number>();
-  for (const candidate of round.candidates) {
-    if (candidate.error !== null || candidate.metrics === null || candidate.fileSize <= 0) continue;
-    const psnr = candidate.metrics.PSNR;
-    if (typeof psnr !== 'number') continue;
-    const format = formatLabelForPath(candidate.path);
-    byFormat.set(format, (byFormat.get(format) ?? 0) + 1);
-  }
-  const counts = [...byFormat]
-    .map(([format, points]) => ({ format, points }))
-    .sort((a, b) => b.points - a.points || a.format.localeCompare(b.format, 'zh-CN'));
-  return {
-    enabled: counts.filter((entry) => entry.points >= 3).length >= 2,
-    counts,
-    maxPoints: counts[0]?.points ?? 0,
-  };
 }

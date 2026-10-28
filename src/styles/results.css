@@ -125,7 +125,7 @@
 }
 
 /* 名称列冻结：横向滚动时始终看得到这行是谁（行身份比序号优先）。
- * 只对评分表生效（BD-rate 表不冻结），避免窄坞里把数值列钉住。 */
+ * 只对评分表生效（效率对比表不冻结），避免窄坞里把数值列钉住。 */
 .is-frozen-name .results-table thead th:nth-child(2),
 .is-frozen-name .results-table tbody tr[data-row-key] > td:nth-child(2) {
   position: sticky;
@@ -433,76 +433,3 @@
   color: var(--text-subtle);
 }
 
-/* BD-rate 是补充节：点数足够才出现，最多占下半屏，表格自己滚动。 */
-.efficiency-tab__bdrate {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-1);
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 48%;
-  padding-top: var(--s-1);
-  border-top: var(--hairline) solid var(--line);
-}
-
-.efficiency-tab__bdrate-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-2);
-  flex: none;
-}
-
-.efficiency-tab__bdrate-title {
-  margin: 0;
-  color: var(--text);
-  font-size: var(--fs-meta);
-  font-weight: 600;
-}
-
-.efficiency-tab__bdrate-legend {
-  color: var(--text-subtle);
-  font-size: var(--fs-meta);
-}
-
-.efficiency-tab__status {
-  flex: none;
-}
-
-.efficiency-tab__bdrate-table {
-  flex: 1;
-  min-height: 0;
-}
-
-.efficiency-tab__loading {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  padding: var(--s-2) 0;
-  color: var(--text-muted);
-  font-size: var(--fs-meta);
-}
-
-.results-table td.is-negative {
-  color: var(--ok);
-}
-
-/* ---------- 就地错误条（BD-rate 失败等） ---------- */
-
-.results-inline-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s-2);
-  margin: 0 0 var(--s-2);
-  padding: var(--s-1) var(--s-2);
-  border: var(--hairline) solid var(--line-strong);
-  border-radius: var(--r-sm);
-  background-color: var(--danger-soft);
-  font-size: var(--fs-meta);
-}
-
-.results-inline-error__text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text);
-}

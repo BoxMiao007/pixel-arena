@@ -134,7 +134,7 @@ function columnDefs(visible: Set<string>, metricKeys: readonly string[]): Column
     defs.push({
       key: 'format',
       label: '格式',
-      title: '按扩展名判定，与 BD-rate 的格式口径一致',
+      title: '按扩展名判定（已知格式固定显示名）',
       align: 'start',
       width: COLUMN_WIDTHS.format,
       sortable: true,

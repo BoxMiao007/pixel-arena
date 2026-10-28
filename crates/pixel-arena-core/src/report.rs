@@ -1,14 +1,11 @@
 // 评测轮结果的导出序列化（T13）：CSV 与自包含 HTML 报告。
-// 与 GUI 结果区共用同一份数据源（Round + bdrate::summarize_round），
-// 保证「导出内容与界面结果一致」。CSV 口径沿用 T03 的约定：
-// RFC 4180 最小转义、inf/nan 哨兵、定点 6 位小数。
+// 与 GUI 结果区共用同一份数据源（同一个 Round），保证「导出内容与界面结果一致」。
+// CSV 口径沿用 T03 的约定：RFC 4180 最小转义、inf/nan 哨兵、定点 6 位小数。
 //
-// CSV 分三节（节标题为 # 注释行）：图片跑分结果 / 视频跑分结果（无视频时省略）/
-// BD-rate 汇总。指标列固定为图片五指标（psnr/ssim/ms_ssim/butteraugli/ssimulacra2），
+// CSV 分两节（节标题为 # 注释行）：图片跑分结果 / 视频跑分结果（无视频时省略）。
+// 指标列固定为图片五指标（psnr/ssim/ms_ssim/butteraugli/ssimulacra2），
 // 旧轮次只跑过 PSNR/SSIM 时缺的列留空。图片节含编码参数列（一站式写入，外部导入
 // 为空——参数用户自备，工具不知晓）。
-
-use crate::bdrate::summarize_round;
 use crate::workspace::{MetricValue, Round};
 
 /// 图片指标列（固定列名与 T03/T04 的 CSV schema 一致；旧轮次缺的指标留空/显示 —）。
@@ -94,19 +91,10 @@ fn status_text(error: &Option<String>, scored: bool) -> String {
     }
 }
 
-/// 评测轮 BD-rate 口径说明（CSV 与 HTML 报告同一段文案）。
-fn bdrate_legend(reference_format: Option<&str>) -> String {
-    let reference = reference_format.unwrap_or("无可用参照格式");
-    format!(
-        "{reference}；画质轴：PSNR；码率轴为文件字节数（同轮同分辨率下与 bpp 口径等价）。BD-rate 为负表示同画质下码率更低。"
-    )
-}
-
-/// 导出 CSV 文本。分三节：图片跑分结果、视频跑分结果（无视频时省略）、BD-rate 汇总。
+/// 导出 CSV 文本。分两节：图片跑分结果、视频跑分结果（无视频时省略）。
 /// 开头带 UTF-8 BOM（EF BB BF）：Excel 在中文环境把无 BOM 的 UTF-8 按 ANSI 解析会乱码
 /// （票 18），BOM 是 Excel 识别 UTF-8 的依据；LibreOffice 与程序读取均容忍 BOM。
 pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String {
-    let summary = summarize_round(round);
     let mut lines: Vec<String> = Vec::new();
 
     lines.push("# 像素竞技场评测报告".to_string());
@@ -196,27 +184,6 @@ pub fn export_csv(group_name: &str, round: &Round, generated_at: &str) -> String
         }
     }
 
-    lines.push(String::new());
-    match &summary.reference_format {
-        Some(format) => lines.push(format!("# 【BD-rate 汇总】（参照格式：{format}）")),
-        None => lines.push("# 【BD-rate 汇总】（无可用参照格式）".to_string()),
-    }
-    lines.push("format,bd_rate_percent,point_count,note".to_string());
-    for entry in &summary.entries {
-        let bd = entry
-            .bd_rate_percent
-            .map(|v| format!("{v:.6}"))
-            .unwrap_or_default();
-        let note = entry.note.as_deref().map(csv_field).unwrap_or_default();
-        lines.push(format!(
-            "{},{},{},{}",
-            csv_field(&entry.format),
-            bd,
-            entry.point_count,
-            note
-        ));
-    }
-
     // BOM 作为字符串首字符写出即 EF BB BF（票 18：Excel 中文环境直开不乱码）
     let mut csv = String::new();
     csv.push('\u{FEFF}');
@@ -239,7 +206,6 @@ code { font-size: 12px; color: #57606a; word-break: break-all; }
 
 /// 导出自包含 HTML 报告（内联样式、简体中文、不嵌图片正文、附文件路径列）。
 pub fn export_html(group_name: &str, round: &Round, generated_at: &str) -> String {
-    let summary = summarize_round(round);
     let esc = html_escape;
     let mut html = String::new();
 
@@ -357,30 +323,6 @@ pub fn export_html(group_name: &str, round: &Round, generated_at: &str) -> Strin
         }
         html.push_str("</tbody>\n</table>\n");
     }
-
-    // BD-rate 汇总（与 GUI 汇总区同一数据源）
-    html.push_str("<h2>BD-rate 汇总</h2>\n");
-    html.push_str(&format!(
-        "<p class=\"meta\">参照格式：{}</p>\n",
-        esc(&bdrate_legend(summary.reference_format.as_deref()))
-    ));
-    if let Some(note) = &summary.note {
-        html.push_str(&format!("<p class=\"meta\">{}</p>\n", esc(note)));
-    }
-    html.push_str("<table>\n<thead><tr><th>格式</th><th>BD-rate</th><th>样本点</th><th>说明</th></tr></thead>\n<tbody>\n");
-    for entry in &summary.entries {
-        let bd = entry
-            .bd_rate_percent
-            .map(|v| format!("{v:+.2}%"))
-            .unwrap_or_else(|| "—".to_string());
-        let note = entry.note.as_deref().map(esc).unwrap_or_default();
-        html.push_str(&format!(
-            "<tr><td>{}</td><td>{bd}</td><td>{}</td><td>{note}</td></tr>\n",
-            esc(&entry.format),
-            entry.point_count
-        ));
-    }
-    html.push_str("</tbody>\n</table>\n");
 
     html.push_str("<p class=\"meta\">由像素竞技场生成；报告不含图片正文，文件路径见各表路径列。</p>\n");
     html.push_str("</body>\n</html>\n");
@@ -585,31 +527,6 @@ mod tests {
         assert_eq!(row, "/tmp/dis-150k.mp4,27050,0.453083,94.870000,inf,0.992600,完成");
     }
 
-    #[test]
-    fn csv_bdrate_section_reflects_summary() {
-        let mut candidates = Vec::new();
-        for (i, q) in [60u64, 75, 90].iter().enumerate() {
-            candidates.push(image(
-                &format!("/r/a-q{q}.jpg"),
-                1000 + i as u64 * 3000,
-                Some(vec![("PSNR", MetricValue::new(30.0 + i as f64 * 3.0))]),
-            ));
-            candidates.push(image(
-                &format!("/r/b-q{q}.webp"),
-                1100 + i as u64 * 3000,
-                Some(vec![("PSNR", MetricValue::new(30.2 + i as f64 * 3.0))]),
-            ));
-        }
-        let csv = export_csv("组", &round(candidates), "t");
-        assert!(csv.contains("# 【BD-rate 汇总】（参照格式：JPEG）"));
-        assert!(csv.contains("format,bd_rate_percent,point_count,note"));
-        let jpeg = csv.lines().find(|l| l.starts_with("JPEG,")).unwrap();
-        assert_eq!(jpeg, "JPEG,,3,参照格式");
-        let webp = csv.lines().find(|l| l.starts_with("WebP,")).unwrap();
-        let value = webp.split(',').nth(1).unwrap().parse::<f64>().unwrap();
-        assert!(value != 0.0 && value.abs() < 100.0, "WebP BD-rate 应为数值: {webp}");
-    }
-
     // ---------- HTML ----------
 
     #[test]
@@ -671,6 +588,18 @@ mod tests {
     }
 
     #[test]
+    fn export_has_no_bdrate_section() {
+        // 决策 0035：BD-rate 整体下线，导出里不再出现这一节（页面的效率对比负责结论）。
+        let round = round(vec![image(
+            "/r/a.jpg",
+            100,
+            Some(vec![("PSNR", MetricValue::new(30.0))]),
+        )]);
+        assert!(!export_csv("组", &round, "t").contains("BD-rate"));
+        assert!(!export_html("组", &round, "t").contains("BD-rate"));
+    }
+
+    #[test]
     fn html_video_section_only_when_video_exists() {
         let plain = round(vec![]);
         assert!(!export_html("组", &plain, "t").contains("视频跑分结果"));
@@ -678,39 +607,5 @@ mod tests {
         assert!(html.contains("视频跑分结果"));
         assert!(html.contains("94.87"));
         assert!(html.contains("0.9926"));
-    }
-
-    #[test]
-    fn html_bdrate_section_matches_summary() {
-        let mut candidates = Vec::new();
-        for (i, q) in [60u64, 75, 90].iter().enumerate() {
-            candidates.push(image(
-                &format!("/r/a-q{q}.jpg"),
-                1000 + i as u64 * 3000,
-                Some(vec![("PSNR", MetricValue::new(30.0 + i as f64 * 3.0))]),
-            ));
-            candidates.push(image(
-                &format!("/r/b-q{q}.webp"),
-                1100 + i as u64 * 3000,
-                Some(vec![("PSNR", MetricValue::new(30.2 + i as f64 * 3.0))]),
-            ));
-        }
-        candidates.push(image("/r/p.png", 99_999, Some(vec![("PSNR", MetricValue::Inf)])));
-        let round = round(candidates);
-        let html = export_html("组", &round, "t");
-        assert!(html.contains("BD-rate 汇总"));
-        assert!(html.contains("参照格式：JPEG"));
-        assert!(html.contains("画质轴：PSNR"), "口径说明");
-        // BD-rate 带符号百分数（两位小数），与 summarize_round 输出一致
-        let webp_value = summarize_round(&round)
-            .entries
-            .iter()
-            .find(|e| e.format == "WebP")
-            .and_then(|e| e.bd_rate_percent)
-            .expect("WebP 应有 BD-rate");
-        let expected = format!("{webp_value:+.2}%");
-        assert!(html.contains(&expected), "应包含 {expected}");
-        assert!(html.contains("参照格式</td>"), "参照行标注");
-        assert!(html.contains("无损格式，不参与 BD-rate 拟合"));
     }
 }

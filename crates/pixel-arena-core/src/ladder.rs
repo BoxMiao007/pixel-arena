@@ -70,7 +70,7 @@ const BASELINE_OFFSETS: [i16; 5] = [-15, 0, 15, -30, 30];
 /// 质量优先取点：统一基准值 0–100 映射到单个格式的质量参数序列。
 ///
 /// 在基准 ±15 处取点（含基准本身），越界值夹到格式自身范围内；不同点不足 3 个时
-/// 继续取 ±30 直至补足（保证 BD-rate 的率失真曲线有足够样本）。结果升序去重。
+/// 继续取 ±30 直至补足（多个质量档位便于横向比较，US23）。结果升序去重。
 pub fn quality_points(baseline: u8, format: OnestopFormat) -> Result<Vec<u8>, CoreError> {
     if baseline > 100 {
         return Err(CoreError::Encode {
@@ -159,7 +159,7 @@ pub struct SizeSearchResult {
     pub hit: SizePoint,
     /// None = 目标可达；Some = 不可达的回退类型。
     pub unreachable: Option<SizeUnreachable>,
-    /// 命中点及其邻近点（升序 ≥3 点，US23：避免 BD-rate 因单点而「样本不足」），
+    /// 命中点及其邻近点（升序 ≥3 点，US23：多点便于横向比较质量档位），
     /// 每点带探测到的实际大小。
     pub points: Vec<SizePoint>,
 }

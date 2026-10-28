@@ -1,11 +1,11 @@
 # 结果与导出（results）重构规格
 
-本文件是本次重构中「评分结果表 + 效率对比（含 BD-rate 补充节） + 导出 CSV/HTML」这一域的施工依据。上级契约见
+本文件是本次重构中「评分结果表 + 效率对比 + 导出 CSV/HTML」这一域的施工依据。上级契约见
 [docs/refactor/frontend-redesign.md](frontend-redesign.md)：结果坞形态、视觉令牌、组件原语、注册契约与文件归属都以它为准。
 
 **归属**：`src/features/results/**` + `src/styles/results.css`（见上级文档 §7.2）。本域不得修改 `src/core/**`、`src/ui/**`、`src/shell/**` 与其他功能域目录。
 
-**不改的东西**：Rust 端、IPC 命令名/参数/返回结构、导出文件格式（CSV/HTML 的内容由核心库 `report.rs` 生成）、数据模型。核心库 `report.rs` / `bdrate.rs` 的单测与 `src-tauri/tests/export.rs` 必须原样通过。
+**不改的东西**：IPC 命令名/参数/返回结构（`round_export` 等）、导出文件格式（CSV/HTML 的内容由核心库 `report.rs` 生成）、数据模型。核心库 `report.rs` 的单测与 `src-tauri/tests/export.rs` 必须通过。BD-rate 已按决策 0035 整体下线（页签、IPC 与导出节一并删除），本文不再覆盖。
 
 现状代码位置（重构前的唯一真源，实现前先读，重写后删除）：
 
@@ -13,11 +13,10 @@
 | --- | --- |
 | 指标列推导、排序取值、默认方向、结果表构建 | `src/main.ts:1620-1824` |
 | 数值格式化（大小/体积比/指标） | `src/main.ts:1828-1843` |
-| BD-rate 格式化、汇总表、异步填充 | `src/main.ts:1054-1125` |
 | 导出文件名、导出动作、导出按钮 | `src/main.ts:1128-1174`、`src/main.ts:1363-1378` |
-| 结果表与 BD-rate 的挂载点 | `src/main.ts:1549-1560`（图片组）、`src/main.ts:1579-1588`（视频组遗留图片内容） |
+| 结果表的挂载点 | `src/main.ts:1549-1560`（图片组）、`src/main.ts:1579-1588`（视频组遗留图片内容） |
 | 排序状态（按轮保存） | `src/main.ts:161-167`、`src/main.ts:1334-1336` |
-| 结果表/BD-rate 样式 | `src/style.css:582-652`、`src/style.css:1050-1073` |
+| 结果表样式 | `src/style.css:582-652`、`src/style.css:1050-1073` |
 
 已可直接复用的共享件（lead 已落到 `src/core/` 与 `src/ui/`，Phase A 已就位）：
 
@@ -112,14 +111,9 @@
 「体积比」`formatRatio`：`<1` → 一位小数百分数（`13.6%`）；`>=1` → `×1.25`。
 表格整体 `font-variant-numeric: tabular-nums`。
 
-### 1.6 效率对比页签（含 BD-rate 补充节）
+### 1.6 效率对比页签
 
-数据分两路，互不依赖：
-
-- **效率对比主表**：纯前端，只用本轮 candidates 的 `fileSize` 与 `metrics`，不请求 IPC（`features/results/efficiency.ts`）。
-- **BD-rate 补充节**：`invoke('round_bdrate', { groupId, roundId })` → `{ referenceFormat: string | null, note: string | null, entries: { format, bdRatePercent: number | null, pointCount, note }[] }`（serde camelCase）。只有「至少两个格式各有 ≥3 个有限 PSNR 点」时才请求（`bdrateEligibility`），点数不足只展示一句原因，不请求、不出空表（决策 0034）。
-
-#### 主表
+数据只有一个来源：本轮 candidates 的 `fileSize` 与 `metrics`，纯前端计算（`features/results/efficiency.ts`），不请求 IPC。BD-rate 已按决策 0035 整体下线，页签与导出里都不再有率失真汇总。
 
 - 页签 `id = 'efficiency'`、`label = '效率对比'`、`order = 20`、`kinds = ['image']`；容器 `div.efficiency-tab`。
 - 指标按 `IMAGE_METRIC_ORDER` 取第一个有数据的（PSNR 优先，其次 SSIM / MS-SSIM / SSIMULACRA2 / Butteraugli）；`Butteraugli` 等越小越好的指标按方向取反后再比较。没有可比指标时主表隐藏，只给「先跑分」提示。
@@ -129,16 +123,9 @@
 - 未跑分 / 失败 / 缺当前指标的行不参与对比，行数写在提示行。
 - 点行 = 选中该跑分图（`setActiveCandidate`），舞台切图，与评分表一致。
 
-#### BD-rate 补充节
-
-- 标题 `BD-rate（参照格式：{referenceFormat}）`；图例「负值 = 同画质下更省码率」。
-- 表格四列 `格式 | BD-rate | 样本点 | 说明`；`bdRatePercent === null` → `—`，否则带符号两位小数百分数（`+12.34%` / `-5.60%`）；`note === '参照格式'` 的行用加深底色，负值用 `--ok`。
-- 请求按轮 + 数据指纹缓存（`bdrateSignature`：原图 + 每张图的路径 / 字节数 / PSNR），指纹不变不重复请求；失败在节内给「重试」错误条（`.results-inline-error`），不阻塞主表。
-- 参照格式由后端选（有损阶梯顺序 JPEG → WebP → AVIF → JPEG XL，每格式至少 3 个有限 PSNR 点且拟合成功；都不够格时返回 `referenceFormat: null`），前端只展示。
-
 ### 1.7 导出 CSV / HTML 的字段与默认文件名
 
-入口：工具栏两个按钮「导出 CSV」「导出 HTML」（`class="add-btn export-btn"`），`disabled = scoring || !exportable`，`exportable = candidates.length > 0 || videoCandidates.length > 0`。悬浮提示写明 CSV 含视频与 BD-rate 汇总、HTML 是自包含报告。
+入口：工具栏两个按钮「导出 CSV」「导出 HTML」（`class="add-btn export-btn"`），`disabled = scoring || !exportable`，`exportable = candidates.length > 0 || videoCandidates.length > 0`。悬浮提示写明 CSV 含视频节、HTML 是自包含报告。
 
 导出动作 `exportRound(kind)`：
 
@@ -162,10 +149,9 @@ CSV（核心库 `export_csv`）：
 - `# 【图片跑分结果】` + 固定表头 `candidate,encoding_params,candidate_bytes,size_ratio,psnr,ssim,ms_ssim,butteraugli,ssimulacra2,status`，任一跑分图有备注才追加 `,note`；
 - 图片行：完整路径、编码参数（无则空）、字节数、体积比 6 位小数、五指标 6 位小数（缺列留空，`inf`/`nan` 哨兵）、中文状态；
 - 视频节：仅当有原视频或视频跑分图时输出，表头 `candidate,candidate_bytes,size_ratio,vmaf,psnr,ssim,status`；
-- BD-rate 节**总是输出**：`# 【BD-rate 汇总】（参照格式：X）` 或 `（无可用参照格式）`，表头 `format,bd_rate_percent,point_count,note`（6 位小数）；
 - RFC 4180 最小转义（含 `,` `"` 换行 回车时加引号、内部引号翻倍）；字段顺序不受前端排序影响，按**存储顺序**（选入顺序）。
 
-HTML（核心库 `export_html`）：自包含单文件，内联 `REPORT_CSS`，`lang="zh-CN"`，`<title>像素竞技场 · {轮名}</title>`（这是导出文件格式，不是界面文案，重构时不动），含元信息、原图（文件名 + 全路径 `code`）、图片表（名称/路径/大小/体积比/编码参数/五指标/状态[/备注]）、视频表（有条件）、BD-rate 节（参照说明图例 + 四列表）、页脚"报告不含图片正文"。所有文本 HTML 转义。
+HTML（核心库 `export_html`）：自包含单文件，内联 `REPORT_CSS`，`lang="zh-CN"`，`<title>像素竞技场 · {轮名}</title>`（这是导出文件格式，不是界面文案，重构时不动），含元信息、原图（文件名 + 全路径 `code`）、图片表（名称/路径/大小/体积比/编码参数/五指标/状态[/备注]）、视频表（有条件）、页脚"报告不含图片正文"。所有文本 HTML 转义。
 
 ### 1.8 导出与排序的关系（易被误解）
 
@@ -175,7 +161,7 @@ HTML（核心库 `export_html`）：自包含单文件，内联 `REPORT_CSS`，`
 
 - `CandidateImage`：`path`、`fileSize`、`sizeRatio: number | null`、`metrics: Record<string, number | 'inf'> | null`、`encodingParams?: string | null`、`note?: string | null`、`error: string | null`。
 - `Round`：`referencePath: string | null`、`referenceSize: number | null`、`candidates`、`videoReferencePath?`、`videoCandidates?`、`note?`。
-- `round_bdrate` 与 `round_export` 的参数/返回见 §1.6、§1.7；两个命令都要求 `groupId` + `roundId`。
+- `round_export` 的参数/返回见 §1.7；命令要求 `groupId` + `roundId`。
 - `sizeRatio` 只在有原图时非空（后端 `file_size / reference_size`），这是它会在排序时沉底的根因，不是前端 bug。
 
 ### 1.10 冻结清单（改了就破坏兼容，实现时逐条对照）
@@ -186,10 +172,9 @@ HTML（核心库 `export_html`）：自包含单文件，内联 `REPORT_CSS`，`
 4. 备注列只在"任一跑分图有 note"时出现；表格列序中「备注」在最后。
 5. 指标格式化：`inf` → `∞`；缺值 → `—`；数值 = 0 不等于缺值。
 6. 导出文件名 `{原图主干或轮名}.{csv|html}` + 非法字符替换 + 空名回落 `评测轮`。
-7. CSV 的 BOM、`#` 注释头、五指标固定列序与 6 位小数、`inf`/`nan` 哨兵、RFC 4180 转义、视频节条件输出、BD-rate 节总输出。
-8. BD-rate 数值格式 `+12.34%` / `-5.60%`，参照行 `说明` 为 `参照格式`，标题带参照格式。
-9. 导出按存储顺序（选入顺序）序列化，与表格排序无关。
-10. 不新增/修改 IPC 命令与参数；导出文件内容以 Rust 为准。
+7. CSV 的 BOM、`#` 注释头、五指标固定列序与 6 位小数、`inf`/`nan` 哨兵、RFC 4180 转义、视频节条件输出。
+8. 导出按存储顺序（选入顺序）序列化，与表格排序无关。
+9. IPC 命令与参数以 Rust 注册表为准，前端不自拼；BD-rate 的 `round_bdrate` 已按决策 0035 移除。
 
 ---
 
@@ -241,7 +226,7 @@ interface MetricMeta {
 
 1. 最多 12 列（排名/名称/大小/体积比/参数/五指标/状态/备注），坞宽不足时必须横向滚动；**名称列不冻结**，滚到指标列就不知道这一行是谁。编码参数列 `nowrap` 且可能很长（`AVIF q60 4:2:0 …`），进一步把表撑宽。
 2. 指标列序是字典序，最常看的 PSNR 排在第 3 位；列序在"新跑一轮/旧轮次"之间还会变（并集顺序），肌肉记忆失效。
-3. 没有最佳值标记，没有格式列（格式信息其实已由后端在 BD-rate 里按扩展名算过），横向比较只能逐格读数字；十几行时眼动成本极高。
+3. 没有最佳值标记，也没有格式列，横向比较只能逐格读数字；十几行时眼动成本极高。
 4. 「排名」随排序变成"显示序号"，按文件大小升序时第 1 行是最小文件，容易被误读为"画质第一"。
 5. 每行都写「完成」，失败行只有红色文字区分；数值与状态同字重同色阶，噪声大。
 6. 备注列（不可达标注）在最后一列，横向滚到底才看得到，等于半隐藏。
@@ -249,7 +234,7 @@ interface MetricMeta {
 ### 3.2 切换排序
 
 7. 排序入口只是表头里的小按钮 + `title="点击排序（再点反向）"`；箭头是拼进 `textContent` 的字符，列宽会抖，且没有 `aria-sort`，键盘/读屏拿不到"当前按哪列、什么方向"。
-8. 点表头触发**整页 `render()`**：重挂对比查看器、重新 `invoke('round_bdrate')`（BD-rate 又回"计算中…"）、滚动位置靠一次补偿恢复、焦点落回 `body`。为了换个顺序付出的代价过大，视觉上就是闪一下。
+8. 点表头触发**整页 `render()`**：重挂对比查看器、滚动位置靠一次补偿恢复、焦点落回 `body`。为了换个顺序付出的代价过大，视觉上就是闪一下。
 9. 没有"取消排序回到选入顺序"的路径（只有降→升→降的来回）。
 10. 跑分中表头仍可点但**静默无效**，用户会认为排序坏了。
 11. 默认方向不按指标语义（Butteraugli 越差越靠前），且没有任何提示说明"这一列现在是升序还是降序、为什么默认这个方向"。
@@ -262,12 +247,12 @@ interface MetricMeta {
 
 ### 3.4 导出
 
-15. 两个导出按钮在操作区工具栏，离结果表很远；按钮文案只有「导出 CSV」「导出 HTML」，看标题才知道 CSV 里还含视频节与 BD-rate 节。
+15. 两个导出按钮在操作区工具栏，离结果表很远；按钮文案只有「导出 CSV」「导出 HTML」，看标题才知道 CSV 里还含视频节。
 16. 没有"导出中"状态，没有进度；成功后信息只落在顶栏状态条（远处、会被下一次状态覆盖），用户得自己去文件管理器找文件；没有"复制路径"或"打开所在目录"（后端也没有这类 IPC）。
 17. 失败同样只落状态条，且对话框已关闭、路径丢失，不能重试同一个路径。
 18. 没有剪贴板路径：想把结果贴进 issue/文档只能自己排版 Markdown 表格。
 19. 导出顺序与表格排序不一致（§1.8），界面无任何说明。
-20. 按钮的 disabled 只看"本轮有没有跑分内容"，用户无法在导出前确认这次文件里会包含什么（即使 BD-rate 全是 `—`，那一节也会照写出去）。
+20. 按钮的 disabled 只看"本轮有没有跑分内容"，用户无法在导出前确认这次文件里会包含什么。
 
 ---
 
@@ -302,7 +287,7 @@ interface MetricMeta {
 - **【呈现】**工作栏一个「导出」按钮 + 菜单（`Ctrl+E`）：`导出 CSV…` / `导出 HTML…` / `复制为 CSV` / `复制为 Markdown`。菜单项在跑分中或本轮无可导出内容时禁用并给出原因（不是静默无效）。
 - **【逻辑】**导出中按钮进入 `导出中…` 禁用态（防重复触发），完成后 toast + 状态栏双写；失败用 danger toast，文案带下一步（"检查目录是否可写或换一个位置"），并保留上次路径以便重试。
 - **【逻辑】**`复制为 CSV` / `复制为 Markdown` 是**纯前端新增产物**：文件导出仍以 `round_export` 为唯一真源，**不在前端复刻 HTML/CSV 文件生成**。剪贴板 CSV 允许与文件 CSV 不同（无 BOM、无 `#` 注释头，表头与图片行列序对齐）；Markdown 为 GFM 表格 + 轮次元信息。
-- **【逻辑】**效率对比页签的主表是纯前端计算（不调 IPC）；BD-rate 补充节在需要时（≥2 个格式各有 3 个有损点）才 `invoke`，按 `(groupId, roundId)` + 数据指纹缓存；跑分完成或原图变更时指纹变化、自动失效。响应用单调递增的「在途指纹」丢弃过期结果；失败给「重试」按钮，不阻塞主表。
+- **【逻辑】**效率对比页签全部是纯前端计算（不调 IPC），因此没有异步竞态：切换轮次/分组时以 `liveRound(roundId)` 读当前数据，不缓存旧轮结果；行选中态按轮存在 `ui-state`。
 - **【呈现】**导出菜单里用一行 `--fs-meta` 说明"按选入顺序导出，与表格排序无关"（解决 §1.8 的误解，不加 IPC）。
 - **验收**：`Ctrl+E` 可开合菜单且焦点回到触发按钮；复制出的 CSV 能被 Excel 正确分列（逗号分隔，引号规则与文件 CSV 的 RFC 4180 实现相同）；复制出的 Markdown 能直接贴进 GFM 渲染器；导出失败不丢失路径。
 
@@ -310,9 +295,9 @@ interface MetricMeta {
 
 - **【呈现】**名称列 `position: sticky; left: 0`（表头同时冻结），横向滚动时始终可见行身份；`table-layout: fixed` 下用 `max-width` + 中间截断 + `title` 全路径。
 - **【逻辑】**列显隐菜单（表头右键或表格工具条）：可勾选「编码参数」「备注」与各指标列；默认规则沿用现状的"全空不显示"（编码参数全为 `null` 时默认隐藏，备注列仍按"任一行有备注"出现）。显隐状态走 `getPref` / `setPref`，但 **`UiPrefs` 里还没有这一项**（`readonly UiPrefs` 只认已声明的键），需 lead 在 `core/ui-state.ts` 加 `resultsColumns: string[]`；`recordState === false` 时由 `canPersist` 自动不写。
-- **【逻辑】**新增「格式」列：按扩展名映射 `JPEG / WebP / AVIF / JPEG XL / PNG / 其他大写 / 未知格式`，规则与核心库 `bdrate::format_label` 同口径（`jpg|jpeg` → JPEG，空扩展名 → 未知格式）。可作为排序键，供按格式分组浏览。
+- **【逻辑】**新增「格式」列：按扩展名映射 `JPEG / WebP / AVIF / JPEG XL / PNG / 其他大写 / 未知格式`（`jpg|jpeg` → JPEG，空扩展名 → 未知格式）。可作为排序键，供按格式分组浏览。
 - **【逻辑】**当前排序键被隐藏时不允许隐藏该列（菜单项置灰说明"当前按此列排序"），避免"排序依据不可见"。
-- **验收**：横向滚动时名称列与表头对齐无 1px 偏移；隐藏列不丢排序数据；格式映射与核心库 `bdrate::format_label`（导出报告同口径）逐字一致。
+- **验收**：横向滚动时名称列与表头对齐无 1px 偏移；隐藏列不丢排序数据；格式映射与 `core/format-label.ts` 的固定表逐字一致。
 
 ### 4.5 行选中联动查看器（可选，跨域依赖）
 
@@ -338,9 +323,9 @@ interface MetricMeta {
 
 **R2 排序丢焦点。** 现状整页 `render()` 会重建表头按钮，焦点回到 `body`。新实现必须复用表头节点，排序后 `focus({ preventScroll: true })` 兜底；`aria-sort` 写在 `th` 上而不是按钮上。仓库 vitest 是 node 环境（不引 jsdom），所以要把排序比较、最优值、列序抽成纯函数单测，DOM 结构用 `?raw` 源码守卫（沿用 `src/main-scoring.test.ts` 的做法）。
 
-**R3 跑分中局部刷新。** 现状 `scoring` / `scoringPaths` 是 `main.ts` 的模块级全局，每次跑分都会整页重渲染：查看器重挂、`round_bdrate` 重发、表格整表重建。新架构要求 `update()` 增量更新：按 `path` 做行身份，只改变化的单元格文本与 class；行序按当前排序重排。若仍选择"跑分中禁止排序"，必须给按钮 `disabled` + `title` 说明，禁止静默 `return`。
+**R3 跑分中局部刷新。** 现状 `scoring` / `scoringPaths` 是 `main.ts` 的模块级全局，每次跑分都会整页重渲染：查看器重挂、表格整表重建。新架构要求 `update()` 增量更新：按 `path` 做行身份，只改变化的单元格文本与 class；行序按当前排序重排。若仍选择"跑分中禁止排序"，必须给按钮 `disabled` + `title` 说明，禁止静默 `return`。
 
-**R4 补充节异步竞态。** 切换分组/轮次/页签会丢弃容器；现在只有 `box.isConnected && contentRoundId === roundId` 一道弱检查。新实现用「在途指纹」校验（`bdrateSignature`，含原图与每张图的字节数 / PSNR）：响应回来时指纹不匹配就丢弃；切换页签 / 删轮后也要保证不把旧轮结果写进新轮。跑分完成、换原图、增删跑分图都会改变指纹并触发重新计算；失败给「重试」按钮，不阻塞主表。
+**R4 页签不发起 IPC。** 效率对比页签全部是纯前端计算，没有异步请求可竞态；切换分组/轮次/页签时以 `liveRound(roundId)` 读当前数据，删轮后不得把旧轮结果写进新轮。
 
 **R5 导出路径与默认目录。** `defaultPath` 由 `exportDefaultPath(settings.defaultExportDir, fileName)` 用 `/` 拼成（Windows 反斜杠目录会得到 `C:\导出/r.csv`，这是被单测钉住的现状，不要改）；`save` 返回用户最终选择，用户可改目录与文件名。补齐文件名清洗：Windows 保留名（`CON`/`PRN`/`AUX`/`NUL`/`COM1-9`/`LPT1-9`）、结尾点与空格；否则 Windows 上写入会报错，而错误只在状态条一闪而过。用户取消（`null`）必须静默。
 
@@ -352,7 +337,7 @@ interface MetricMeta {
 
 **R9 列宽与数字抖动。** `table-layout: fixed` + 显式列宽能消除换列抖动，但名称列会被硬裁，必须配合中间截断（`core/util.ts` 的 `truncateFileName`）+ `title`，不要用 CSS `ellipsis` 假装（中间截断才能保留扩展名）。
 
-**R10 现有测试会失效。** `src/main-scoring.test.ts` 用 `?raw` 切片钉 `scoreAllCandidates` 的实现；`src/main-image-queue.test.ts` 以 `renderVideoGroupContent(` 到 `buildResultTable(` 的下标切片钉视频组只挂导出与视频区块。重写后 `main.ts` 不再包含结果表函数，第二个切片会直接变红。删除旧函数时必须同步迁移守卫到新文件（建议新增 `features/results/*.test.ts`：`metrics.ts` 的列序/方向/格式化、`sort.ts` 的比较与三态、`export-name.ts` 的文件名清洗、`bdrate.ts` 的格式化与降级文案），否则等于丢掉防回归网。
+**R10 现有测试会失效。** `src/main-scoring.test.ts` 用 `?raw` 切片钉 `scoreAllCandidates` 的实现；`src/main-image-queue.test.ts` 以 `renderVideoGroupContent(` 到 `buildResultTable(` 的下标切片钉视频组只挂导出与视频区块。重写后 `main.ts` 不再包含结果表函数，第二个切片会直接变红。删除旧函数时必须同步迁移守卫到新文件（建议新增 `features/results/*.test.ts`：`metrics.ts` 的列序/方向/格式化、`sort.ts` 的比较与三态、`export-name.ts` 的文件名清洗），否则等于丢掉防回归网。
 
 **R11 视频域并行改动。** 视频表（`src/video.ts`）与本域是两套平行实现，函数名相同（`firstClickDir`/`formatMetric`/`formatSize`）。若 Phase B 要让两个域共用表格骨架，应由 lead 决定放进 `src/ui/` 或允许 video 只 import 本域导出的纯函数；**不做跨域文件修改**。
 
@@ -372,8 +357,8 @@ Phase A 提出的 5 个待确认项，lead 已在 Phase A 末拍板，实现按�
 
 ## 7. 本域验收门
 
-1. `npm run typecheck`、`npm test` 通过；新增纯函数单测覆盖列序/方向/三态/最优值/文件名清洗/BD-rate 文案。
-2. `cargo test --workspace` 保持通过（Rust 一行未改，`report.rs`/`bdrate.rs`/`src-tauri/tests/export.rs` 断言原样绿）。
-3. 手工路径：选原图 + 多格式跑分图 → 排序三次回到选入顺序 → 最佳值高亮正确 → 失败行展开并复制错误 → 切效率对比页签（看划算判定；点数够时下方有 BD-rate）→ 导出 CSV/HTML 到默认导出目录 → 复制 Markdown 贴进编辑器。
+1. `npm run typecheck`、`npm test` 通过；新增纯函数单测覆盖列序/方向/三态/最优值/文件名清洗/效率对比判定。
+2. `cargo test --workspace` 通过（`report.rs` 与 `src-tauri/tests/export.rs` 已按决策 0035 去掉 BD-rate 断言）。
+3. 手工路径：选原图 + 多格式跑分图 → 排序三次回到选入顺序 → 最佳值高亮正确 → 失败行展开并复制错误 → 切效率对比页签（看划算判定）→ 导出 CSV/HTML 到默认导出目录 → 复制 Markdown 贴进编辑器。
 4. 截图：深/浅主题各一张，含窄坞横向滚动（名称列冻结）与失败行展开态。
 5. 不新增 IPC、不改导出文件格式；`Ctrl+E` 可开合导出菜单。

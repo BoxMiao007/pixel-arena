@@ -14,9 +14,8 @@ import { copyText, errorText } from '../../core/util';
 import { openMenu } from '../../ui/overlay';
 import { toast } from '../../ui/toast';
 import { setPanelCollapsed, requestRender, shellState } from '../../shell/controller';
-import { cachedBdrate, rememberBdrate } from './bdrate';
 import { exportFileName } from './filename';
-import { roundBdrate, roundExport } from './ipc';
+import { roundExport } from './ipc';
 import { toClipboardCsv, toMarkdown, type ClipboardInput } from './serialize';
 
 const BUSY_ID = 'export';
@@ -110,22 +109,9 @@ async function copyResults(kind: 'csv' | 'markdown'): Promise<void> {
     return;
   }
 
-  let summary = cachedBdrate(session.round);
-  let bdrateError: string | null = null;
-  if (summary === null) {
-    try {
-      summary = await roundBdrate(session.group.id, session.round.id);
-      rememberBdrate(session.round, summary);
-    } catch (err) {
-      bdrateError = errorText(err);
-    }
-  }
-
   const input: ClipboardInput = {
     group: session.group,
     round: session.round,
-    summary,
-    bdrateError,
     generatedAt: nowText(),
   };
   const text = kind === 'csv' ? toClipboardCsv(input) : toMarkdown(input);
@@ -185,7 +171,7 @@ export function openExportMenu(anchor?: HTMLElement): void {
     setStatus(reason);
     return;
   }
-  // 不切用户当前的页签（可能正看 BD-rate），没有导出按钮时借用页签栏做锚点。
+  // 不切用户当前的页签（可能正看效率对比），没有导出按钮时借用页签栏做锚点。
   const target = anchor ?? resolveAnchor();
   if (!target) {
     setStatus('结果坞还没有打开，先打开一条评测轮');

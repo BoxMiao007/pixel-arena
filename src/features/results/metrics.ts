@@ -1,4 +1,4 @@
-// 指标语义与格式化：结果表表头、排序方向、单元格小数位、BD-rate 文本都从这里取。
+// 指标语义与格式化：结果表表头、排序方向、单元格小数位都从这里取。
 //
 // 指标键是核心库落库的存储键（workspace.json 里就叫 PSNR / MS-SSIM / …），
 // 本模块只负责「怎么展示、往哪个方向排」，不改键名、不改后端契约。
@@ -124,14 +124,4 @@ export function metricHeaderTitle(meta: MetricMeta): string {
 /** 首次点击该列的排序方向：越小越好的指标先升序。 */
 export function metricPreferredDir(meta: MetricMeta): 1 | -1 {
   return meta.better === 'lower' ? 1 : -1;
-}
-
-/** BD-rate 数值：带符号两位小数百分数（与导出报告同格式）。 */
-export function formatBdRate(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
-}
-
-/** BD-rate 单元格：不可算时破折号。 */
-export function formatBdRateCell(value: number | null | undefined): string {
-  return value === null || value === undefined ? '—' : formatBdRate(value);
 }

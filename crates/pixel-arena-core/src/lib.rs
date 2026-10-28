@@ -13,7 +13,6 @@ pub use video::{score_videos, VideoError, VideoMetrics};
 /// 高级创建（T29-3）：自定义参数的合并/冲突判定/命令行拼装与编码执行，以及视频
 /// 编码器静态映射规格（决策 D10–D14）。
 pub mod advanced;
-pub mod bdrate;
 pub mod decode;
 pub mod encode;
 /// 编码阶梯取点（T21）：质量优先/大小优先两套取点逻辑的唯一实现，GUI 与 CLI 共用。
