@@ -537,21 +537,25 @@ describe('三路关闭（× / 点遮罩 / Esc）与监听清理', () => {
 describe('列表行点击打开编辑弹窗（不是选中态）', () => {
   it('行有点击入口，删除按钮阻止冒泡（点 × 不顺手打开编辑窗）', () => {
     expect(flatPanel).toContain("row.addEventListener('click',()=>openEditor(entry))");
-    expect(flatPanel).toContain('openImageEntryEditor(groupId,entry,{');
+    // 票 #82：弹窗依赖收进共享运行时（主界面点胶囊用的是同一份接线）
+    expect(flatPanel).toContain(
+      'openImageEntryEditor(groupId,entry,queueEditorDeps(groupId,deps,()=>renderList()))',
+    );
     expect(flatPanel).toContain("del.addEventListener('click',(e)=>{e.stopPropagation()");
   });
 
   it('同一次运行只开一个编辑弹窗，关闭后列表原地同步', () => {
     expect(flatPanel).toContain('leteditorOpen=false');
     expect(flatPanel).toContain('if(editorOpen||running||deps.isBusy())return');
-    expect(flatPanel).toContain('onChanged:()=>renderList()');
+    expect(flatPanel).toContain('queueEditorDeps(groupId,deps,()=>renderList())');
   });
 });
 
 describe('主界面宿主依赖（main.ts）', () => {
   it('更换图片用单选系统对话框、图片编码器目录走 advanced_image_catalog', () => {
-    const start = flatMain.indexOf('functionopenImageQueueCreation(');
-    const end = flatMain.indexOf('functionopenAdvancedCreation(', start);
+    const start = flatMain.indexOf('functionimageQueueHostDeps(');
+    expect(start, '宿主依赖应收成一份 imageQueueHostDeps').toBeGreaterThanOrEqual(0);
+    const end = flatMain.indexOf('functionopenImageQueueCreation(', start);
     const body = flatMain.slice(start, end);
     expect(body).toContain('pickReplacementImage:');
     expect(body, '更换图片是单选').toContain('multiple:false');

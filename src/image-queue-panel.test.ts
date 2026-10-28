@@ -20,8 +20,10 @@ import {
   type EncoderRunOutcome,
 } from './image-queue';
 import { mergeScoreFailures, MISSING_SCORE_ROW_REASON } from './image-queue-run';
-import { identityReadingsOf, planDelete } from './image-queue-panel';
+import { identityReadingsOf } from './image-queue-runtime';
+import { planDelete } from './image-queue-panel';
 import panelSource from './image-queue-panel.ts?raw';
+import runtimeSource from './image-queue-runtime.ts?raw';
 import runSource from './image-queue-run.ts?raw';
 import queueSource from './image-queue.ts?raw';
 import mainSource from './main.ts?raw';
@@ -145,6 +147,7 @@ describe('会话态按跑分组键控（面板读写的就是 T2 的队列）', 
 // ---------- DOM 机制守卫（?raw 源码文本 + 压平空白，仓库约定不引 jsdom） ----------
 
 const flat = panelSource.replace(/\s+/g, '');
+const flatRuntime = runtimeSource.replace(/\s+/g, '');
 const rawSource = panelSource;
 const flatCss = css.replace(/\s+/g, '');
 const flatQueue = queueSource.replace(/\s+/g, '');
@@ -232,12 +235,12 @@ describe('面板的三种卡片都走共享模态实现（modal-card）', () => 
 });
 
 describe('提示 / 汇总卡片（showQueueNotice）走共享模态实现', () => {
-  it('queue-notice-card + 正文按行交给共享实现', () => {
-    const start = flat.indexOf('exportfunctionshowQueueNotice(');
+  it('queue-notice-card + 正文按行交给共享实现（票 #82 起住在共享运行时）', () => {
+    const start = flatRuntime.indexOf('exportfunctionshowQueueNotice(');
     expect(start, '应有 showQueueNotice 实现').toBeGreaterThanOrEqual(0);
-    const end = flat.indexOf('exportfunctionopenImageQueuePanel', start);
+    const end = flatRuntime.indexOf('exportfunctionbuildQueueRunExecutor(', start);
     expect(end).toBeGreaterThan(start);
-    const body = flat.slice(start, end);
+    const body = flatRuntime.slice(start, end);
     expect(body).toContain('openModalCard({');
     expect(body, '外观类名不变').toContain("cardClassName:'queue-notice-card'");
     expect(body, '正文按行交给共享实现').toContain('lines,');
@@ -245,11 +248,14 @@ describe('提示 / 汇总卡片（showQueueNotice）走共享模态实现', () =
     expect(body, '不得再手写遮罩').not.toContain("overlay.className='settings-overlay'");
   });
 
-  it('共享实现在 main.ts 的状态全文卡片与面板两张卡片之间只有一份', () => {
-    // 面板与主界面都从 modal-card 导入，不再各自拼脚手架
+  it('共享实现在 main.ts 的状态全文卡片、面板的删除确认与跑分汇总之间只有一份脚手架', () => {
+    // 面板、共享运行时与主界面都从 modal-card 导入，不再各自拼脚手架
     expect(flat).toContain("from'./modal-card'");
+    expect(flatRuntime).toContain("from'./modal-card'");
     expect(flatMain).toContain("from'./modal-card'");
-    expect(flat.split('openModalCard({').length - 1, '面板两处调用').toBe(2);
+    // 面板只剩删除确认一处，汇总 / 提示卡片搬进共享运行时 → 共两处 openModalCard 调用
+    expect(flat.split('openModalCard({').length - 1, '面板的删除确认').toBe(1);
+    expect(flatRuntime.split('openModalCard({').length - 1, '共享运行时的提示 / 汇总卡片').toBe(1);
   });
 });
 
@@ -299,24 +305,31 @@ describe('增量跑分接线（T5：按钮待跑数量 / 只跑计划内 / 无�
     expect(flat).toContain('editorOpen=false;renderList();})');
   });
 
-  it('跑分流程走 runScorePlan（只跑计划内的编码器卡），计划为空只弹提示卡片', () => {
+  it('跑分流程交给共享编排（与主界面「重跑改过的」同一份），面板不再自写一套', () => {
     const start = flat.indexOf('construnScoring=');
     expect(start, '应有跑分动作').toBeGreaterThanOrEqual(0);
     const end = flat.indexOf("scoreBtn.addEventListener('click'", start);
     const body = flat.slice(start, end);
-    expect(body, '跑分交给增量编排层').toContain(
-      'runScorePlan(session.entries,probe,buildExecutor()',
-    );
-    expect(body, '无待跑时只弹提示卡片').toContain(
-      'showQueueNotice(notice.lines,{title:notice.title})',
-    );
+    expect(body, '跑分交给共享编排层').toContain('awaitrunQueuePlanOnce({');
+    expect(body, '传当前组的条目队列').toContain('groupId,entries:session.entries,deps,');
+    // 票 #82：编排只有一份（src/image-queue-runtime.ts）——面板里不得再出现执行器或
+    // 第二份「算计划 → 跑 → 弹卡片」的顺序
+    expect(body).not.toContain('runScorePlan(');
+    expect(body).not.toContain('buildExecutor');
+    expect(body).not.toContain('planQueueRun');
+  });
+
+  it('无待跑提示与汇总卡片由共享编排弹出（单一实现，面板不再复述文案）', () => {
+    const start = flatRuntime.indexOf('exportasyncfunctionrunQueuePlanOnce(');
+    expect(start, '共享编排应有跑一次计划的实现').toBeGreaterThanOrEqual(0);
+    const end = flatRuntime.indexOf('exportfunctionqueueEditorDeps(', start);
+    const body = flatRuntime.slice(start, end);
     // 空计划的原因要分流：没有编码器配置 ≠ 已跑分且无变更（票面文案只属于后者）
     expect(body, '提示内容按 skippedImages 的原因分流').toContain(
       'constnotice=nothingToRunNotice(report.plan)',
     );
-    expect(body, '有待跑时弹汇总卡片').toContain('showQueueNotice(summaryLines(report.plan),{title:');
-    // 面板不得自行按全量重建任务清单：计划与跳过全部来自 planScore/runScorePlan
-    expect(body).not.toContain('planQueueRun');
+    expect(body, '无待跑时只弹提示卡片').toContain('showNotice(notice.lines,{title:notice.title})');
+    expect(body, '有待跑时弹汇总卡片').toContain('showNotice(summaryLines(report.plan),{title:');
   });
 
   it('无待跑提示文案是单一来源，且编排层在计划为空时不碰执行器', () => {
@@ -342,20 +355,20 @@ describe('增量跑分接线（T5：按钮待跑数量 / 只跑计划内 / 无�
   });
 
   it('执行器先只读确认轮还在工作区（轮被主界面删掉时编排层丢弃失效 id 重建）', () => {
-    const start = flat.indexOf('constbuildExecutor=');
-    expect(start).toBeGreaterThanOrEqual(0);
-    const end = flat.indexOf('construnScoring=', start);
-    const body = flat.slice(start, end);
+    const start = flatRuntime.indexOf('exportfunctionbuildQueueRunExecutor(');
+    expect(start, '执行器应住在共享运行时').toBeGreaterThanOrEqual(0);
+    const end = flatRuntime.indexOf('exportasyncfunctionrunQueuePlanOnce(', start);
+    const body = flatRuntime.slice(start, end);
     expect(body, 'describeRound 是执行器契约的一部分').toContain(
       'describeRound:(_entry,roundId)=>deps.describeRound(groupId,roundId)',
     );
   });
 
   it('执行器把本次新增产物路径传给 scoreRound（子集跑分，不重跑整轮）', () => {
-    const start = flat.indexOf('constbuildExecutor=');
+    const start = flatRuntime.indexOf('exportfunctionbuildQueueRunExecutor(');
     expect(start).toBeGreaterThanOrEqual(0);
-    const end = flat.indexOf('construnScoring=', start);
-    const body = flat.slice(start, end);
+    const end = flatRuntime.indexOf('exportasyncfunctionrunQueuePlanOnce(', start);
+    const body = flatRuntime.slice(start, end);
     expect(body, '只传本次产物路径').toContain(
       'scoreCandidates:(_entry,roundId,paths)=>deps.scoreRound(groupId,roundId,[...paths])',
     );
@@ -398,12 +411,15 @@ describe('主界面分派（票面：图片组第一次进的就是新界面）'
   });
 
   it('deps 实现齐全：多选对话框、标识读取、惰性建轮用 roundName、跑分复用主界面入口', () => {
-    const start = flatMain.indexOf('functionopenImageQueueCreation(');
-    expect(start).toBeGreaterThanOrEqual(0);
-    const end = flatMain.indexOf('functionopenAdvancedCreation(', start);
+    // 票 #82 起 deps 收进 imageQueueHostDeps（面板 / 胶囊参数弹窗 / 重跑按钮共用一份）
+    const start = flatMain.indexOf('functionimageQueueHostDeps(');
+    expect(start, '宿主依赖应收成一份').toBeGreaterThanOrEqual(0);
+    const end = flatMain.indexOf('functionopenImageQueueCreation(', start);
     const body = flatMain.slice(start, end);
     expect(body, '多选系统对话框').toContain('multiple:true');
-    expect(body, '标识读取走 image_identities').toContain("invoke('image_identities',{paths})");
+    expect(body, '标识读取走 image_identities').toContain(
+      "invoke<ImageIdentityDto[]>('image_identities',{paths})",
+    );
     expect(body, '轮名带文件名').toContain('roundName(before.rounds.length+1,sourcePath)');
     expect(body, '跑分复用主界面整轮入口（只传本次产物路径子集）').toContain(
       'awaitscoreAllCandidates(groupId,roundId,paths)',

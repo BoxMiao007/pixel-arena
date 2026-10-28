@@ -29,6 +29,7 @@ import {
   NOTHING_TO_RUN_MESSAGE,
   nothingToRunNotice,
   planRunBatches,
+  rerunChangedButtonLabel,
   runScorePlan,
   scoreButtonLabel,
   summaryLines,
@@ -245,6 +246,43 @@ describe('scoreButtonLabel：跑分 / 重跑与待跑张数', () => {
     const plan = planScore(entries, probe);
     expect(plan.runImageCount).toBe(1);
     expect(scoreButtonLabel(plan, entries)).toBe('重跑（1 张）');
+  });
+});
+
+// ---------- 主界面「重跑改过的（N 张）」按钮文案（票 #82） ----------
+
+describe('rerunChangedButtonLabel：主界面增量重跑按钮的计数', () => {
+  it('N 与计划同源：只数当前组里改过 / 换过图 / 上次失败的张数', () => {
+    const changed = scoredEntry({ id: 'img-a', path: '/photos/a.png' });
+    changed.encoders[0].quality = 55;
+    const untouched = scoredEntry({ id: 'img-b', path: '/photos/b.png' });
+    const entries = [changed, untouched];
+
+    const plan = planScore(entries, probe);
+    expect(plan.runImageCount).toBe(1);
+    expect(rerunChangedButtonLabel(plan)).toBe('重跑改过的（1 张）');
+  });
+
+  it('多张待跑按张数计数（一张图两条卡仍算 1 张）', () => {
+    const one = newImageEntry('/photos/a.png');
+    one.encoders.push(card({ id: 'card-2', encoderId: 'webp' }));
+    const two = newImageEntry('/photos/b.png');
+    const entries = [one, two];
+
+    const plan = planScore(entries, probe);
+    expect(plan.runEncoderCount).toBe(3);
+    expect(rerunChangedButtonLabel(plan)).toBe('重跑改过的（2 张）');
+  });
+
+  it('无待跑时显示「重跑改过的（0 张）」——按钮仍可点（点开的提示由编排层给）', () => {
+    const entries = [scoredEntry()];
+    const plan = planScore(entries, probe);
+    expect(plan.runImageCount).toBe(0);
+    expect(rerunChangedButtonLabel(plan)).toBe('重跑改过的（0 张）');
+  });
+
+  it('没有条目时也显示 0 张（不出现空字符串或 undefined）', () => {
+    expect(rerunChangedButtonLabel(planScore([], probe))).toBe('重跑改过的（0 张）');
   });
 });
 

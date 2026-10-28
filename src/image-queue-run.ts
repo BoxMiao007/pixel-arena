@@ -143,6 +143,18 @@ export function scoreButtonLabel(plan: ScorePlan, entries: readonly ImageEntry[]
   return `${rerun ? '重跑' : '跑分'}（${plan.runImageCount} 张）`;
 }
 
+/**
+ * 主界面「重跑改过的（N 张）」按钮文案（票 #82），N 与计划同源（plan.runImageCount）。
+ *
+ * 与面板的 scoreButtonLabel 分开：那个按钮是「跑分 / 重跑」二选一的主动作，会随
+ * 「这次是不是重跑」改词；主界面这个按钮的职责固定为**只重跑脏条目**（整轮全量留给
+ * 旁边的「开始跑分」），所以文案恒定、只报张数。0 张时照样显示「（0 张）」——
+ * 按钮可点，点开只弹「无需重跑」提示（票面验收），不靠置灰表达「没得跑」。
+ */
+export function rerunChangedButtonLabel(plan: ScorePlan): string {
+  return `重跑改过的（${plan.runImageCount} 张）`;
+}
+
 /** 汇总卡片正文行：标题（本次跑分 N 张，跳过 M 张）+ 逐张跳过原因。 */
 export function summaryLines(plan: ScorePlan): string[] {
   const summary = planSummary(plan);

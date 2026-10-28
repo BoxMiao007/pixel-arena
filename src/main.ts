@@ -22,8 +22,23 @@ import { openSettingsPanel } from './settings-ui';
 // src/advanced-ui.ts / src/advanced.ts）
 import { openAdvancedPanel, type AdvancedEncodeOutcome } from './advanced-ui';
 import type { ImageSpec } from './advanced';
-import { openImageQueuePanel, type ScoredCandidate } from './image-queue-panel';
-import { dropImageQueue, roundName } from './image-queue';
+import {
+  openImageQueuePanel,
+  type ImageQueueDeps,
+  type ScoredCandidate,
+} from './image-queue-panel';
+import { dropImageQueue, entryForArtifact, imageQueueFor, planScore, roundName } from './image-queue';
+import { rerunChangedButtonLabel } from './image-queue-run';
+// 票 #82（T10）接线点：图片条目流程的共享运行时（跑分编排 / 标识缓存 / 参数弹窗接线）。
+// 高级创建面板、主界面胶囊的参数弹窗、主界面「重跑改过的」三条入口共用同一份实现。
+import {
+  queueEditorDeps,
+  queueIdentityProbe,
+  refreshQueueIdentities,
+  runQueuePlanOnce,
+  type ImageIdentityDto,
+} from './image-queue-runtime';
+import { openImageEntryEditor } from './image-entry-editor';
 import { askFileConflict } from './conflict';
 // T11/T22 接线点：一站式跑分升级为两种模式（质量优先拉杆 / 大小优先逼近），
 // 编码格式用胶囊多选；取点全部走核心库（onestop_quality_ladder / onestop_size_search），
@@ -137,6 +152,11 @@ function notePickedPath(path: string): void {
 let scoring = false;
 // 本轮正在跑分的跑分图/视频集合（T24 并行：多张同时在算，命中即在行内显示「跑分中…」）
 let scoringPaths: ReadonlySet<string> = new Set();
+// 票 #82：主界面「重跑改过的」正在跑（防重复触发）。真正跑分期间的置灰仍由共享编排的
+// withBusy 维护 scoring——与面板的分工一致，不在两处各管一套忙标志。
+let queueRerunning = false;
+/** 票 #82：主界面胶囊打开的参数弹窗（同一时间只开一个，与面板 editorOpen 同一职责）。 */
+let candidateEditorOpen = false;
 
 /** 结果表排序：null 按选入顺序；dir=1 升序 / -1 降序 */
 type SortState = { key: string; dir: 1 | -1 };
@@ -501,6 +521,72 @@ function removeCandidate(candidatePath: string): void {
       candidatePath,
     }),
   );
+}
+
+/**
+ * 票 #82（T10）：主界面点「已选跑分图」里由图片条目产出的胶囊 → 打开那张图的参数弹窗。
+ *
+ * 为什么在点击时重新解析条目（而不是建胶囊时把条目对象闭包进来）：主界面 render 是
+ * 全量重建，但同一颗胶囊可能跨越多次重建一直挂在界面上，期间条目可能已被面板删掉或
+ * 换过图。每次点击都从会话态重新查，拿到的一定是当前对象；查不到就退回「外部导入」
+ * 的口径，只给一句状态提示、不弹窗。
+ *
+ * 标识探针用 image_identities 的缓存（与面板同一份）：打开前先读新这张图的元数据，
+ * 否则冷缓存会让弹窗头部的徽章保守显示「将重跑（图片换了）」，看着像在骗人。
+ */
+async function openCandidateEntryEditor(groupId: string, candidatePath: string): Promise<void> {
+  if (scoring || candidateEditorOpen) return;
+  const entry = entryForArtifact(imageQueueFor(groupId).entries, candidatePath);
+  if (entry === null) {
+    setStatus('这张跑分图没有对应的图片条目（人工导入或条目已清空），没有可调的编码器参数');
+    return;
+  }
+  candidateEditorOpen = true;
+  try {
+    const host = imageQueueHostDeps();
+    await refreshQueueIdentities(host, [entry.path]);
+    // 直接复用逐图编辑弹窗：改参数 / 加删卡 / 换图 / 恢复默认都落回同一个条目对象。
+    // 弹窗内的改动不逐次重建主界面（每次 render 都会重挂对比查看器、重发 BD-rate IPC），
+    // 关闭时统一 render 刷新——主界面本来就被弹窗整屏遮住。
+    await openImageEntryEditor(groupId, entry, queueEditorDeps(groupId, host, () => undefined));
+  } catch (err) {
+    setStatus(`打开编辑窗口失败：${String(err)}`, true);
+  } finally {
+    candidateEditorOpen = false;
+    // 关闭弹窗后刷新主界面：条目变「将重跑」体现在「重跑改过的（N 张）」按钮上
+    render();
+  }
+}
+
+/**
+ * 票 #82（T10）：主界面「重跑改过的（N 张）」——只跑改过参数 / 换过图的图片条目。
+ *
+ * 走与列表面板**完全相同**的共享编排（src/image-queue-runtime.ts 的 runQueuePlanOnce）：
+ * 惰性建轮、只 encode 计划内的卡、round_score_candidates 只传本次新产物、跑完弹汇总
+ * 卡片。无待跑时零编码零跑分调用，只弹「无需重跑」提示。
+ *
+ * 与「开始跑分」的分工：那个按钮仍是整轮全量重算（一个字节都不改）；这个按钮是增量。
+ * 忙标志沿用全局 scoring（由共享编排的 withBusy 置上），跑完原地 render 刷新结果表。
+ */
+async function rerunChangedImages(groupId: string): Promise<void> {
+  if (scoring || queueRerunning) return;
+  queueRerunning = true;
+  try {
+    await runQueuePlanOnce({
+      groupId,
+      entries: imageQueueFor(groupId).entries,
+      deps: imageQueueHostDeps(),
+      hooks: {
+        onImageStart: ({ path, index, total }) => {
+          setStatus(`正在跑分 第 ${index + 1}/${total} 张（${fileName(path)}）…`);
+        },
+        onImageDone: () => render(),
+      },
+    });
+  } finally {
+    queueRerunning = false;
+    render();
+  }
 }
 
 /**
@@ -1295,6 +1381,9 @@ function buildExportButtons(exportable: boolean): HTMLButtonElement[] {
  * 不挂载视频评测区块（视频导入只在视频跑分组出现）。ui = 本评测轮的一站式界面状态（T25）。 */
 function renderImageGroupContent(session: { group: Group; round: Round }, ui: OnestopUiState): void {
   const { round } = session;
+  // 票 #82（T10）：本组的图片条目队列（会话态，主界面只读）。用在这两件事上：
+  // 「重跑改过的（N 张）」的计数（与面板徽章同一判定口径）与胶囊 → 参数弹窗的反查。
+  const queueEntries = imageQueueFor(session.group.id).entries;
   const toolbar = document.createElement('div');
   toolbar.className = 'toolbar';
 
@@ -1340,6 +1429,20 @@ function renderImageGroupContent(session: { group: Group; round: Round }, ui: On
   scoreBtn.disabled = scoring || !round.referencePath || round.candidates.length === 0;
   scoreBtn.addEventListener('click', () => void startScoring());
 
+  // 票 #82（T10）：主界面的增量重跑入口——只跑改过参数 / 换过图的图片条目，与上面
+  // 整轮全量的「开始跑分」并存、各自标注清楚。N 与条目徽章同一判定口径（planScore）。
+  // 0 张时照样可点：点开只弹「无需重跑」提示卡片（票面验收），不靠置灰表达「没得跑」。
+  const rerunBtn = document.createElement('button');
+  rerunBtn.className = 'add-btn rerun-changed-btn';
+  rerunBtn.textContent = scoring
+    ? '重跑中…'
+    : rerunChangedButtonLabel(planScore(queueEntries, queueIdentityProbe()));
+  rerunBtn.title =
+    '只重跑改过参数或换过图的图片条目：已跑分且无变更的跳过并沿用上一轮结果；' +
+    '没有待跑时只弹提示（「开始跑分」是整轮全量重算）';
+  rerunBtn.disabled = scoring;
+  rerunBtn.addEventListener('click', () => void rerunChangedImages(session.group.id));
+
   // T22 接线点：一站式跑分按钮。质量优先可按缓存阶梯给出项数；大小优先的项数要
   // 搜索后才知道（每格式命中点 + 邻近补点），只提示行为不报数。
   // v0.1.5：单点模式项数按单点阶梯缓存计（每格式 1 点 + 无损组）
@@ -1377,22 +1480,39 @@ function renderImageGroupContent(session: { group: Group; round: Round }, ui: On
     referenceSlot,
     addCandidatesBtn,
     scoreBtn,
+    rerunBtn,
     onestopBtn,
     ...buildExportButtons(exportable),
   );
   $content.append(toolbar);
 
   // T18 胶囊：已选跑分图逐颗列出，× 单独移除；移除经 IPC 落库后整页重渲染，
-  // 结果表与对比查看器随之只少这一行（其余文件与跑分结果不受影响）
+  // 结果表与对比查看器随之只少这一行（其余文件与跑分结果不受影响）。
+  //
+  // 票 #82（T10）：由图片条目产出的跑分图，点胶囊**本体** = 打开那条目的参数弹窗
+  //（改完关闭留在会话态，条目立刻变「将重跑」，操作区的「重跑改过的（N 张）」随之 +1）。
+  // × 仍是移除这张跑分图——stopPropagation 由 buildPill 负责，这里不抢。
+  // 人工导入 / 一站式生成的跑分图没有条目可配：不挂 onClick（不给假交互），
+  // 只把原因写进悬浮提示，让「为什么这颗点不开」有答案。
   if (round.candidates.length > 0) {
     $content.append(
       buildPillList(
-        round.candidates.map((c) => ({
-          label: truncateFileName(fileName(c.path)),
-          title: c.path,
-          onRemove: () => removeCandidate(c.path),
-          disabled: scoring,
-        })),
+        round.candidates.map((c) => {
+          const owner = entryForArtifact(queueEntries, c.path);
+          return {
+            label: truncateFileName(fileName(c.path)),
+            title:
+              owner === null
+                ? `${c.path}\n（这张跑分图不是由图片条目产出的：人工导入或条目已随重启清空，没有可调的编码器参数）`
+                : `${c.path}\n点开可调整这张图的编码器参数（改完关闭即留在本次运行里）`,
+            onClick:
+              owner === null
+                ? undefined
+                : () => void openCandidateEntryEditor(session.group.id, c.path),
+            onRemove: () => removeCandidate(c.path),
+            disabled: scoring,
+          };
+        }),
         '已选跑分图：',
         '已选跑分图列表',
       ),
@@ -1797,13 +1917,18 @@ document.addEventListener('keydown', (e) => {
 });
 
 /**
- * T3（票 #77）：图片组「高级创建」的宿主依赖（面板在 src/image-queue-panel.ts）。
+ * 票 #82（T10）：图片条目流程的宿主依赖，收成一份共用实现。
  *
- * 与旧面板的差别只在界面形态：编码走同一个 advanced_encode（参数合并 / 命名 /
- * 冲突协议都在核心库），产物带 encodingParams 纳入新建的评测轮后跑分。工作区写入
- * 全部收在这里，面板只做会话态编排——关面板不跑分 = 工作区零变更。
+ * 三条入口共用它：高级创建面板（openImageQueueCreation）、主界面胶囊的参数弹窗
+ *（openCandidateEntryEditor）、主界面「重跑改过的（N 张）」（rerunChangedImages）。
+ * 各写一份 IPC 接线会让增量语义（惰性建轮 / 只编码计划内的卡 / 子集跑分 / 失败判定）
+ * 在不同入口上漂移——这正是这张票要防的。
+ *
+ * 编码走同一个 advanced_encode（参数合并 / 命名 / 冲突协议都在核心库），产物带
+ * encodingParams 纳入新建的评测轮后跑分。工作区写入全部收在这里，面板只做会话态编排
+ *——关面板不跑分 = 工作区零变更。
  */
-function openImageQueueCreation(group: Group): void {
+function imageQueueHostDeps(): ImageQueueDeps {
   /** 不吞错误的改动流程（面板的失败要进状态栏，与 apply 的口径并存）。 */
   const mutate = async (action: () => Promise<Workspace>): Promise<Workspace> => {
     ws = await action();
@@ -1812,7 +1937,7 @@ function openImageQueueCreation(group: Group): void {
     return ws;
   };
 
-  openImageQueuePanel(group.id, {
+  return {
     pickImages: async () => {
       const selected = await open({
         title: '添加图片（可多选）',
@@ -1825,7 +1950,7 @@ function openImageQueueCreation(group: Group): void {
       if (paths.length > 0) notePickedPath(paths[0]);
       return paths;
     },
-    probeIdentities: (paths) => invoke('image_identities', { paths }),
+    probeIdentities: (paths) => invoke<ImageIdentityDto[]>('image_identities', { paths }),
     createRound: async (groupId, sourcePath) => {
       // 用面板传来的组 id（不是 activeGroup：跑分期间用户可能切走了标签页，
       // 建轮必须落在发起跑分的那一组里）
@@ -1939,7 +2064,15 @@ function openImageQueueCreation(group: Group): void {
     },
     rerender: () => render(),
     setStatus,
-  });
+  };
+}
+
+/**
+ * 「新建评测轮 → 高级创建…」的图片分支（T3 / 票 #77）：打开条目列表面板。
+ * deps 与主界面的胶囊参数弹窗 / 「重跑改过的」共用 imageQueueHostDeps 的那一份。
+ */
+function openImageQueueCreation(group: Group): void {
+  openImageQueuePanel(group.id, imageQueueHostDeps());
 }
 
 /**
