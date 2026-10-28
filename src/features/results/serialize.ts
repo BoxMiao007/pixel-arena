@@ -5,9 +5,9 @@
 // 这里不调 IPC、不碰 DOM，纯函数可单测。
 
 import { formatRatio, formatSize } from '../../core/format';
+import { formatLabelForPath } from '../../core/format-label';
 import type { CandidateImage, CandidateVideo, Group, Round } from '../../core/model';
 import { fileName } from '../../core/util';
-import { formatLabelForPath } from './format-label';
 import type { BdrateSummary } from './ipc';
 import { IMAGE_METRIC_ORDER, formatBdRateCell, formatMetricFor, metricMeta } from './metrics';
 import { rowStatus, rowStatusText } from './status';

@@ -2,7 +2,7 @@
 //
 // 轮次 chip 单击切换、双击就地改名、右键菜单（重命名 / 删除，删除有内容时会确认）。
 
-import { getState, isBusy } from '../core/store';
+import { getState, isBusy, setStatus } from '../core/store';
 import {
   activateRound,
   createRound,
@@ -38,6 +38,10 @@ function roundsSignature(group: Group): string {
 }
 
 function beginRename(item: HTMLElement, group: Group, round: Round): void {
+  if (isBusy()) {
+    setStatus('有任务正在进行，结束再改名');
+    return;
+  }
   if (item.querySelector('.round-chip__rename')) return;
   const nameNode = item.querySelector<HTMLElement>('.round-chip__name');
   if (!nameNode) return;
@@ -81,12 +85,18 @@ function roundMenu(anchor: HTMLElement, group: Group, round: Round): void {
     [
       {
         label: '重命名',
+        disabled: isBusy(),
         onSelect: () => {
           const item = anchor.closest<HTMLElement>('.round-chip');
           if (item) beginRename(item, group, round);
         },
       },
-      { label: '删除评测轮', danger: true, onSelect: () => void deleteRound(group, round) },
+      {
+        label: '删除评测轮',
+        danger: true,
+        disabled: isBusy(),
+        onSelect: () => void deleteRound(group, round),
+      },
     ],
     { label: `${round.name} 的操作` },
   );

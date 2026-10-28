@@ -3,7 +3,7 @@
 // 只有分组集合、当前激活项、正在编辑的 id 变化时才重建列表；状态栏文案等高频变化
 // 不会冲掉正在输入的重命名框。
 
-import { getState } from '../core/store';
+import { getState, isBusy, setStatus } from '../core/store';
 import { activateGroup, closeGroup, createGroup, renameGroup } from '../core/actions';
 import type { Group } from '../core/model';
 import { el } from '../ui/dom';
@@ -20,6 +20,7 @@ let editingId: string | null = null;
 function groupSignature(groups: readonly Group[], activeId: string | null): string {
   return [
     activeId ?? '',
+    isBusy() ? 'busy' : 'idle',
     editingId ?? '',
     ...groups.map((group) => `${group.id}:${group.kind}:${group.name}:${group.rounds.length}`),
   ].join('|');
@@ -33,6 +34,10 @@ function findItem(groupId: string): HTMLElement | null {
 }
 
 function beginRename(item: HTMLElement, group: Group): void {
+  if (isBusy()) {
+    setStatus('有任务正在进行，结束再改名');
+    return;
+  }
   if (item.querySelector('.rail__rename')) return;
   const nameNode = item.querySelector<HTMLElement>('.rail__name');
   if (!nameNode) return;
@@ -76,13 +81,19 @@ function groupMenu(anchor: HTMLElement, group: Group): void {
     [
       {
         label: '重命名',
-        hint: 'F2',
+        hint: isBusy() ? '跑分中' : 'F2',
+        disabled: isBusy(),
         onSelect: () => {
           const item = findItem(group.id);
           if (item) beginRename(item, group);
         },
       },
-      { label: '关闭跑分组', danger: true, onSelect: () => void closeGroup(group) },
+      {
+        label: '关闭跑分组',
+        danger: true,
+        disabled: isBusy(),
+        onSelect: () => void closeGroup(group),
+      },
     ],
     { label: `${group.name} 的操作` },
   );
@@ -184,6 +195,9 @@ export function mountRail(host: HTMLElement): RailHandle {
     const groups = workspace?.groups ?? [];
     const activeId = workspace?.activeGroupId ?? null;
     count.textContent = groups.length > 0 ? String(groups.length) : '';
+    const busy = isBusy();
+    newGroup.disabled = busy;
+    newGroup.title = busy ? '有任务正在进行，结束再新建跑分组' : '新建跑分组';
     const key = groupSignature(groups, activeId);
     if (key === lastKey) return;
     lastKey = key;

@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  ariaSortValue,
   compareSortValues,
   nextSortState,
   sortRowsBy,
@@ -29,6 +30,14 @@ describe('三态排序 nextSortState', () => {
       key: 'Butteraugli',
       dir: 1,
     });
+  });
+});
+
+describe('表头 aria-sort 取值', () => {
+  it('排序方向映射到 aria-sort 的三个真实值（读屏靠属性，不只画箭头）', () => {
+    expect(ariaSortValue(1)).toBe('ascending');
+    expect(ariaSortValue(-1)).toBe('descending');
+    expect(ariaSortValue(0)).toBe('none');
   });
 });
 

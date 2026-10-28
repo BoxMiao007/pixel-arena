@@ -125,7 +125,7 @@ describe('runLadder：逐项生成 + 失败不回滚 + 冲突协议', () => {
     expect(result.generated).toBe(0);
   });
 
-  it('进度文案带上 序号/总数（分区据此画真实 N/M）', async () => {
+  it('进度文案只给当前项标签（N/M 走结构化忙状态，不拼进 detail）', async () => {
     const progress: string[] = [];
     await runLadder({
       ladder: ITEMS.slice(0, 2),
@@ -135,8 +135,8 @@ describe('runLadder：逐项生成 + 失败不回滚 + 冲突协议', () => {
       onConflict: () => Promise.reject(new Error('不该问冲突')),
     });
     expect(progress).toEqual([
-      '正在生成 JPEG q60（1/2）',
-      '正在生成 JPEG q75（2/2）',
+      '正在生成 JPEG q60',
+      '正在生成 JPEG q75',
     ]);
   });
 });

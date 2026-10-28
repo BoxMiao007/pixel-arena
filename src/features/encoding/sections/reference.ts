@@ -4,12 +4,14 @@
 // 结构与拖放落区。原图缺失时给下一步动作而不是灰按钮。
 
 import { button } from '../../../ui/primitives';
+import { el } from '../../../ui/dom';
 import { formatSize } from '../../../core/format';
+import { formatLabelOrEmpty } from '../../../core/format-label';
 import { fileName, truncateFileName } from '../../../core/util';
 import { isBusy } from '../../../core/store';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
 import { dropOnReference, pickReference } from '../actions';
-import { block, dropTarget, imageFormatLabel, mountSection, paintBody } from './common';
+import { dropTarget, mountSection, paintBody } from './common';
 
 export const referenceSection: PanelSection = {
   id: 'reference',
@@ -29,36 +31,37 @@ export const referenceSection: PanelSection = {
     const render = (): void => {
       const path = ctx.round.referencePath;
       const size = ctx.round.referenceSize;
+      const formatLabel = path === null ? '' : formatLabelOrEmpty(path);
       paintBody(body, `reference:${path ?? ''}:${size ?? 0}`, () =>
         path === null
-          ? block('div', { class: 'enc-empty' }, [
-              block('span', { class: 'enc-empty__text', text: '还没有原图' }),
+          ? el('div', { class: 'enc-empty' }, [
+              el('span', { class: 'enc-empty__text', text: '还没有原图' }),
               button({
                 label: '选择原图',
                 variant: 'secondary',
                 size: 'sm',
                 onClick: () => void pickReference(ctx),
               }),
-              block('span', { class: 'enc-empty__hint', text: '或把图片拖到这里' }),
+              el('span', { class: 'enc-empty__hint', text: '或把图片拖到这里' }),
             ])
-          : block(
+          : el(
               'div',
               { class: 'source' },
               // 第一行：文件名（单行省略，title 给全路径）
-              block('div', { class: 'source__head' }, [
-                block('span', {
+              el('div', { class: 'source__head' }, [
+                el('span', {
                   class: 'source__name',
                   text: truncateFileName(fileName(path)),
                   title: path,
                 }),
               ]),
               // 第二行：大小与格式；右侧是唯一的动作（更换）
-              block('div', { class: 'source__metas' }, [
-                block('span', { class: 'source__meta-item', text: size === null ? '大小未知' : formatSize(size) }),
-                imageFormatLabel(path)
-                  ? block('span', { class: 'source__meta-item', text: imageFormatLabel(path) })
+              el('div', { class: 'source__metas' }, [
+                el('span', { class: 'source__meta-item', text: size === null ? '大小未知' : formatSize(size) }),
+                formatLabel
+                  ? el('span', { class: 'source__meta-item', text: formatLabel })
                   : null,
-                block('span', { class: 'source__spacer' }),
+                el('span', { class: 'source__spacer' }),
                 button({
                   label: '更换原图',
                   variant: 'secondary',

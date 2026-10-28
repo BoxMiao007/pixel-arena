@@ -3,7 +3,7 @@
 // 渲染是「分区式」的：每个区域自己维护 DOM 与增量子节点，状态变化只调 update()，
 // 不做整页 replaceChildren（那样会丢焦点、打断拖拽、重挂查看器）。
 
-import { isBusy, subscribe } from '../core/store';
+import { subscribe } from '../core/store';
 import { getPref, setPref } from '../core/ui-state';
 import { el } from '../ui/dom';
 import { mountTitlebar } from './titlebar';
@@ -24,6 +24,7 @@ function renderRegion(name: string, render: () => void): void {
 }
 
 const DOCK_MIN = 140;
+const DOCK_MAX = 560;
 const DOCK_MAX_RATIO = 0.72;
 
 /** 从界面偏好恢复折叠态（设置加载后再调一次，保证「不记录状态」时用默认值）。 */
@@ -38,10 +39,9 @@ let appRoot: HTMLElement | null = null;
 
 function applyDockHeight(height: number): void {
   const clamped = Math.round(
-    Math.max(DOCK_MIN, Math.min(height, window.innerHeight * DOCK_MAX_RATIO)),
+    Math.max(DOCK_MIN, Math.min(height, DOCK_MAX, window.innerHeight * DOCK_MAX_RATIO)),
   );
   appRoot?.style.setProperty('--dock-h', `${clamped}px`);
-  return;
 }
 
 /** 装配外壳并开始订阅状态。root 为 index.html 的 #app。 */
@@ -105,8 +105,6 @@ export function bootApp(root: HTMLElement): void {
     railHost.hidden = shellState.railCollapsed || shellState.immersive;
     inspectorHost.hidden = shellState.inspectorCollapsed || shellState.immersive;
     applyDockCollapse();
-    // 沉浸模式下工作栏保留，轮次与导出仍可用
-    workbarHost.hidden = shellState.immersive;
 
     renderRegion('顶栏', () => titlebar.update());
     renderRegion('左栏', () => rail.update());
@@ -115,11 +113,6 @@ export function bootApp(root: HTMLElement): void {
     renderRegion('检视器', () => inspector.update());
     renderRegion('结果坞', () => dock.update());
 
-    if (isBusy()) {
-      appRoot!.classList.add('is-busy');
-    } else {
-      appRoot!.classList.remove('is-busy');
-    }
   };
 
   // 拖拽分隔条调整结果坞高度
@@ -138,7 +131,9 @@ export function bootApp(root: HTMLElement): void {
     applyDockHeight(height);
     dockResizer.setAttribute(
       'aria-valuenow',
-      String(Math.round(Math.max(DOCK_MIN, Math.min(height, window.innerHeight * DOCK_MAX_RATIO)))),
+      String(
+        Math.round(Math.max(DOCK_MIN, Math.min(height, DOCK_MAX, window.innerHeight * DOCK_MAX_RATIO))),
+      ),
     );
     if (persist) setPref('dockHeight', Math.round(height));
   };

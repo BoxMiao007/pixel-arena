@@ -148,6 +148,11 @@ function nextSortLabel(column: TableColumn, sort: SortState | null): string {
   return sort.dir === preferred ? `按${column.label}反向排序` : `取消按${column.label}排序`;
 }
 
+/** 表头 aria-sort 的真实取值；箭头只是视觉补充，读屏靠这个属性（纯映射，可单测）。 */
+export function ariaSortValue(dir: 1 | -1 | 0): 'ascending' | 'descending' | 'none' {
+  return dir === 1 ? 'ascending' : dir === -1 ? 'descending' : 'none';
+}
+
 function columnSignature(columns: readonly TableColumn[]): string {
   return columns
     .map((column) =>
@@ -271,10 +276,7 @@ export function mountTable(host: HTMLElement, initial: TableSpec): TableHandle {
       const column = spec.columns.find((item) => item.key === key);
       if (!column) continue;
       const dir = spec.sort?.key === key ? spec.sort.dir : 0;
-      ref.th.setAttribute(
-        'aria-sort',
-        dir === 1 ? 'ascending' : dir === -1 ? 'descending' : 'none',
-      );
+      ref.th.setAttribute('aria-sort', ariaSortValue(dir));
       ref.iconHost.replaceChildren(
         ...(dir === 0
           ? []

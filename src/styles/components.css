@@ -424,7 +424,7 @@
 }
 
 .badge--ok {
-  background: rgba(88, 191, 140, 0.14);
+  background: var(--ok-soft);
   color: var(--ok);
 }
 
@@ -434,7 +434,7 @@
 }
 
 .badge--info {
-  background: rgba(111, 168, 214, 0.14);
+  background: var(--info-soft);
   color: var(--info);
 }
 
@@ -673,14 +673,14 @@
   display: grid;
   place-items: center;
   padding: var(--s-8);
-  background: rgba(8, 9, 11, 0.55);
+  background: var(--scrim);
   animation: overlay-in var(--dur) var(--ease-out);
 }
 
 .overlay--drawer {
   place-items: stretch end;
   padding: 0;
-  background: rgba(8, 9, 11, 0.4);
+  background: var(--scrim-soft);
 }
 
 @keyframes overlay-in {

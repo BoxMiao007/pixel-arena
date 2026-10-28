@@ -72,8 +72,7 @@ export interface KeyBinding {
 const keyBindings: KeyBinding[] = [];
 
 export function registerKeyBinding(binding: KeyBinding): void {
-  if (keyBindings.some((item) => item.id === binding.id)) return;
-  keyBindings.push(binding);
+  upsertById(keyBindings, binding);
 }
 
 export function keyBindingsSnapshot(): readonly KeyBinding[] {
@@ -85,9 +84,18 @@ const panelSections: PanelSection[] = [];
 const dockTabs: DockTab[] = [];
 const commands = new Map<string, Command>();
 
+/**
+ * 同 id 覆盖而不是静默丢弃：命令/视图/分区/页签都按 id 唯一，覆盖语义让热更新
+ * 与「后注册者优先」可预期，也避免「重复注册到底是忽略还是覆盖」两套行为。
+ */
+function upsertById<T extends { id: string }>(list: T[], item: T): void {
+  const index = list.findIndex((existing) => existing.id === item.id);
+  if (index >= 0) list[index] = item;
+  else list.push(item);
+}
+
 export function registerStageView(view: StageView): void {
-  if (stageViews.some((item) => item.id === view.id)) return;
-  stageViews.push(view);
+  upsertById(stageViews, view);
 }
 
 export function stageViewFor(kind: GroupKind): StageView | null {
@@ -95,8 +103,7 @@ export function stageViewFor(kind: GroupKind): StageView | null {
 }
 
 export function registerPanelSection(section: PanelSection): void {
-  if (panelSections.some((item) => item.id === section.id)) return;
-  panelSections.push(section);
+  upsertById(panelSections, section);
 }
 
 export function panelSectionsFor(kind: GroupKind): PanelSection[] {
@@ -106,8 +113,7 @@ export function panelSectionsFor(kind: GroupKind): PanelSection[] {
 }
 
 export function registerDockTab(tab: DockTab): void {
-  if (dockTabs.some((item) => item.id === tab.id)) return;
-  dockTabs.push(tab);
+  upsertById(dockTabs, tab);
 }
 
 export function dockTabsFor(kind: GroupKind): DockTab[] {

@@ -1,6 +1,6 @@
-// 界面主题（T23 设置中心）：浅色 / 深色 / 跟随系统，持久化在设置文件。
-// 实际主题写在 <html> 的 data-theme 属性上，style.css 用 CSS 变量随属性切换；
-// 画布底色不由 JS 常量写死，绘制时读 CSS 变量 --canvas-bg，与界面同源、切换即时生效。
+// 界面主题：浅色 / 深色 / 跟随系统，持久化在设置文件。
+// 实际主题写在 <html> 的 data-theme 属性上，tokens.css 用 CSS 变量随属性切换；
+// 画布底色由 CSS 变量承担（viewer/video 绘制时读 --canvas / --canvas-checker）。
 
 export type ThemePref = 'light' | 'dark' | 'system';
 
@@ -25,8 +25,4 @@ export function currentTheme(): 'light' | 'dark' {
   return current;
 }
 
-/** 画布底色：绘制时读 CSS 变量 --canvas-bg（缺失时回落现状深色底）。 */
-export function canvasBg(): string {
-  const value = getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim();
-  return value || '#2b2b2b';
-}
+

@@ -29,14 +29,19 @@
   --accent-hover: #f4b25a;
   --accent-soft: rgba(233, 161, 59, 0.14);
   --ok: #58bf8c;
+  --ok-soft: rgba(88, 191, 140, 0.14);
   --danger: #e4695f;
   --danger-soft: rgba(228, 105, 95, 0.14);
   --info: #6fa8d6;
+  --info-soft: rgba(111, 168, 214, 0.14);
 
   /* ---- 舞台 ---- */
   --canvas: #222222;
   --canvas-checker: #272727;
   --canvas-ink: #e6e9ec;
+  /* 模态/抽屉遮罩：主题相关，深色更暗 */
+  --scrim: rgba(8, 9, 11, 0.55);
+  --scrim-soft: rgba(8, 9, 11, 0.4);
 
   /* ---- 几何 ---- */
   --r-xs: 2px;
@@ -107,13 +112,17 @@
   --accent-hover: #7f4b0a;
   --accent-soft: rgba(154, 92, 13, 0.12);
   --ok: #177a4a;
+  --ok-soft: rgba(23, 122, 74, 0.12);
   --danger: #b3352c;
   --danger-soft: rgba(179, 53, 44, 0.1);
   --info: #2c6a9e;
+  --info-soft: rgba(44, 106, 158, 0.12);
 
   --canvas: #c9c9c9;
   --canvas-checker: #d2d2d2;
   --canvas-ink: #232527;
+  --scrim: rgba(20, 22, 25, 0.45);
+  --scrim-soft: rgba(20, 22, 25, 0.3);
 
   --shadow-pop: 0 8px 24px rgba(20, 22, 25, 0.16);
   --shadow-modal: 0 24px 64px rgba(20, 22, 25, 0.22);

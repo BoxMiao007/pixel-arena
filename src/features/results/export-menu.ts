@@ -10,7 +10,7 @@ import { pickSavePath } from '../../core/actions';
 import { activeRound } from '../../core/model';
 import type { Round } from '../../core/model';
 import { beginBusy, endBusy, getState, isBusy, setStatus } from '../../core/store';
-import { copyText } from '../../core/util';
+import { copyText, errorText } from '../../core/util';
 import { openMenu } from '../../ui/overlay';
 import { toast } from '../../ui/toast';
 import { setPanelCollapsed, requestRender, shellState } from '../../shell/controller';
@@ -20,10 +20,6 @@ import { roundBdrate, roundExport } from './ipc';
 import { toClipboardCsv, toMarkdown, type ClipboardInput } from './serialize';
 
 const BUSY_ID = 'export';
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** 生成时间只作展示，格式与旧界面一致（zh-CN、24 小时制）。 */
 function nowText(): string {
@@ -66,7 +62,7 @@ async function exportRound(kind: 'csv' | 'html'): Promise<void> {
       ],
     });
   } catch (err) {
-    const message = messageOf(err);
+    const message = errorText(err);
     setStatus(`打开保存对话框失败：${message}`, { isError: true, detail: message });
     return;
   }
@@ -92,7 +88,7 @@ async function exportRound(kind: 'csv' | 'html'): Promise<void> {
       action: { label: '复制路径', onSelect: () => copyText(written, () => toast('已复制路径', 'ok')) },
     });
   } catch (err) {
-    const message = messageOf(err);
+    const message = errorText(err);
     setStatus(`导出失败：${message}`, { isError: true, detail: message });
     toast('导出失败', 'danger', {
       action: { label: '重试', onSelect: () => void exportRound(kind) },
@@ -121,7 +117,7 @@ async function copyResults(kind: 'csv' | 'markdown'): Promise<void> {
       summary = await roundBdrate(session.group.id, session.round.id);
       rememberBdrate(session.round, summary);
     } catch (err) {
-      bdrateError = messageOf(err);
+      bdrateError = errorText(err);
     }
   }
 
@@ -155,6 +151,25 @@ function resolveAnchor(): HTMLElement | null {
   );
 }
 
+/** 菜单动作：写文件两项走核心库 report.rs，复制两项走 ./serialize 的纯文本。 */
+export interface ExportMenuAction {
+  label: string;
+  onSelect: () => void;
+}
+
+/**
+ * 导出菜单的四个动作。抽成纯函数是为了让「菜单里到底有哪几项」可单测——
+ * 每项的内部行为由 exportBlockedReason / exportFileName / serialize 的测试覆盖。
+ */
+export function exportMenuActions(): ExportMenuAction[] {
+  return [
+    { label: '导出 CSV…', onSelect: () => void exportRound('csv') },
+    { label: '导出 HTML…', onSelect: () => void exportRound('html') },
+    { label: '复制为 CSV', onSelect: () => void copyResults('csv') },
+    { label: '复制为 Markdown', onSelect: () => void copyResults('markdown') },
+  ];
+}
+
 /**
  * 打开导出菜单。anchor 省略时自动找锚点（快捷键入口用）。
  * 忙或没有可导出内容时不开菜单，改成状态栏说明（避免整菜单都是灰项）。
@@ -176,14 +191,5 @@ export function openExportMenu(anchor?: HTMLElement): void {
     setStatus('结果坞还没有打开，先打开一条评测轮');
     return;
   }
-  openMenu(
-    target,
-    [
-      { label: '导出 CSV…', onSelect: () => void exportRound('csv') },
-      { label: '导出 HTML…', onSelect: () => void exportRound('html') },
-      { label: '复制为 CSV', onSelect: () => void copyResults('csv') },
-      { label: '复制为 Markdown', onSelect: () => void copyResults('markdown') },
-    ],
-    { align: 'end', label: '导出本轮结果' },
-  );
+  openMenu(target, exportMenuActions(), { align: 'end', label: '导出本轮结果' });
 }

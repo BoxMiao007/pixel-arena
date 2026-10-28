@@ -18,6 +18,7 @@ import {
   updateBusy,
 } from '../../core/store';
 import { ipc as coreIpc } from '../../core/ipc';
+import { errorText } from '../../core/util';
 import {
   IMAGE_FILTER,
   addCandidates,
@@ -85,10 +86,6 @@ export type BusyScope = 'score' | 'ladder' | 'queue';
 
 export function busyIdOf(scope: BusyScope, key: string): string {
   return `${scope}:${key}`;
-}
-
-function errorText(err: unknown): string {
-  return String((err as Error)?.message ?? err);
 }
 
 /** 统一状态栏出口：错误带 detail（点开看全文），成功只留一行。 */
@@ -159,7 +156,7 @@ export async function removeCandidateAt(ctx: RoundCtx, path: string): Promise<vo
 /**
  * 整轮全量跑分（唯一全量入口）。返回是否成功。
  *
- * 进度是后端 Channel 推的真实 N/M：只写 busy.detail 与状态栏，不重建界面；
+ * 进度是后端 Channel 推的真实 N/M：写 busy.completed/total 与状态栏，不重建界面；
  * 完成时用返回的整份工作区刷新（结果坞与 BD-rate 由各自的订阅者更新）。
  */
 export async function runFullScore(ctx: RoundCtx): Promise<boolean> {
@@ -182,7 +179,11 @@ export async function runFullScore(ctx: RoundCtx): Promise<boolean> {
       groupId,
       roundId,
       onProgress: (progress) => {
-        updateBusy(id, { detail: `${progress.completed}/${progress.total}` });
+        updateBusy(id, {
+          completed: progress.completed,
+          total: progress.total,
+          detail: '正在计算指标',
+        });
         setStatus(`跑分中 ${progress.completed}/${progress.total}`);
       },
     });
@@ -273,7 +274,14 @@ export function queueDeps(groupId: string): QueueEditorHostDeps {
         groupId: targetGroupId,
         roundId,
         paths,
-        onProgress: (progress) => setStatus(`跑分中 ${progress.completed}/${progress.total}`),
+        onProgress: (progress) => {
+          updateBusy(busyIdOf('queue', groupId), {
+            completed: progress.completed,
+            total: progress.total,
+            detail: '正在计算指标',
+          });
+          setStatus(`跑分中 ${progress.completed}/${progress.total}`);
+        },
       });
       setWorkspace(workspace);
       return rowsOf(workspace, targetGroupId, roundId);
@@ -394,8 +402,14 @@ export async function runChangedEntries(groupId: string): Promise<void> {
     entries: queueEntries(groupId),
     deps: queueDeps(groupId),
     hooks: {
-      onImageStart: ({ path, index, total }) =>
-        setStatus(`正在跑分 第 ${index + 1}/${total} 张（${fileNameOf(path)}）…`),
+      onImageStart: ({ path, index, total }) => {
+        updateBusy(busyIdOf('queue', groupId), {
+          completed: index,
+          total,
+          detail: `正在跑分 ${fileNameOf(path)}`,
+        });
+        setStatus(`正在跑分 第 ${index + 1}/${total} 张（${fileNameOf(path)}）…`);
+      },
       askConflict: askConflictDialog,
     },
   });
@@ -551,10 +565,14 @@ export async function runSizeSearch(ctx: RoundCtx, state: LadderUiState): Promis
   const id = busyIdOf('ladder', ctx.round.id);
   beginBusy(id, '正在逼近目标大小');
   try {
-    for (const format of targets) {
+    for (const [index, format] of targets.entries()) {
       // 目标在搜索期间被改了：停下，等下一次触发
       if (String(state.targetBytes) !== sizeKey) break;
-      updateBusy(id, { detail: format.label });
+      updateBusy(id, {
+        completed: index,
+        total: targets.length,
+        detail: `正在逼近 ${format.label}`,
+      });
       setStatus(`正在搜索 ${format.label} 逼近目标大小…`);
       state.sizeOutcomes[format.format] = await searchSizeFormat({
         groupId: ctx.group.id,
@@ -661,8 +679,9 @@ export async function generateLadder(ctx: RoundCtx, state: LadderUiState): Promi
       },
       onProgress: (text) => {
         started += 1;
-        updateBusy(id, { detail: `${Math.min(started, items.length)}/${items.length}  ${text}` });
-        setStatus(text);
+        const completed = Math.min(started, items.length);
+        updateBusy(id, { completed, total: items.length, detail: text });
+        setStatus(`${text}（${completed}/${items.length}）`);
       },
       onConflict: askConflictDialog,
     });

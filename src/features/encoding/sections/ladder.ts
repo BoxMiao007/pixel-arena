@@ -7,6 +7,7 @@
 // - 一键只生成 + 跑分，进度用真实 N/M（不伪造），失败项就地展开。
 
 import { button, chip, progressBar, segmented, sliderField } from '../../../ui/primitives';
+import { el } from '../../../ui/dom';
 import { copyText } from '../../../core/util';
 import { isBusy } from '../../../core/store';
 import { runCommand } from '../../../shell/registry';
@@ -17,6 +18,7 @@ import {
   groupLadderByFormat,
   ladderItemKey,
 } from '../logic/ladder';
+import { busyProgressView } from '../logic/progress';
 import {
   busyIdOf,
   ensureLadderCatalog,
@@ -34,7 +36,7 @@ import {
   toggleLadderItem,
   toggleSelectionFormat,
 } from '../session';
-import { block, busyOf, debounce, mountSection, paintBody } from './common';
+import { busyOf, debounce, mountSection, paintBody } from './common';
 
 const UNIT_BYTES = { KB: 1024, MB: 1024 * 1024 } as const;
 
@@ -90,7 +92,7 @@ export const ladderSection: PanelSection = {
     };
 
     const sizeRow = (): HTMLElement => {
-      const input = block('input', {
+      const input = el('input', {
         class: 'input ladder__size',
         attrs: { type: 'number', min: '0', step: 'any', 'aria-label': '目标大小' },
       }) as HTMLInputElement;
@@ -107,22 +109,22 @@ export const ladderSection: PanelSection = {
         input.value = formatTargetIn(state);
         status('目标大小无效：请输入大于 0 的数值', true);
       });
-      const unit = block('select', {
+      const unit = el('select', {
         class: 'select ladder__unit',
         attrs: { 'aria-label': '大小单位' },
       }) as HTMLSelectElement;
       for (const name of ['KB', 'MB'] as const) {
-        unit.append(block('option', { text: name, attrs: { value: name } }));
+        unit.append(el('option', { text: name, attrs: { value: name } }));
       }
       unit.value = state.unit;
       unit.addEventListener('change', () => {
         state.unit = unit.value === 'MB' ? 'MB' : 'KB';
         repaint();
       });
-      return block(
+      return el(
         'div',
         { class: 'ladder__size-row' },
-        block('span', { class: 'field__label', text: '目标大小' }),
+        el('span', { class: 'field__label', text: '目标大小' }),
         input,
         unit,
       );
@@ -145,6 +147,8 @@ export const ladderSection: PanelSection = {
         state.ladder === null ? 'noladder' : 'ladder',
         Object.keys(state.sizeOutcomes).length,
         ladderBusy?.detail ?? '',
+        ladderBusy?.completed ?? '',
+        ladderBusy?.total ?? '',
         state.failures.length,
         state.encoderIssue === null ? '' : 'issue',
         busy ? 'busy' : 'idle',
@@ -169,9 +173,9 @@ export const ladderSection: PanelSection = {
         });
 
         const primaryParam = state.singlePoint
-          ? block('div', { class: 'ladder__locked' }, [
-              block('span', { class: 'ladder__locked-text', text: '单点模式' }),
-              block('span', {
+          ? el('div', { class: 'ladder__locked' }, [
+              el('span', { class: 'ladder__locked-text', text: '单点模式' }),
+              el('span', {
                 class: 'ladder__locked-hint',
                 text: '每个有损格式只压一个质量点；关掉可回到多档取点',
               }),
@@ -191,7 +195,7 @@ export const ladderSection: PanelSection = {
               }).node
             : sizeRow();
 
-        const formatChips = block(
+        const formatChips = el(
           'div',
           { class: 'ladder__chips', attrs: { role: 'group', 'aria-label': '编码格式' } },
           ...LOSSY_FORMATS.map((format) =>
@@ -210,7 +214,7 @@ export const ladderSection: PanelSection = {
           ),
         );
 
-        const singleToggle = block(
+        const singleToggle = el(
           'button',
           {
             class: `ladder__toggle${state.singlePoint ? ' is-on' : ''}`,
@@ -230,15 +234,15 @@ export const ladderSection: PanelSection = {
               },
             },
           },
-          block(
+          el(
             'span',
             { class: 'ladder__toggle-track' },
-            block('span', { class: 'ladder__toggle-thumb' }),
+            el('span', { class: 'ladder__toggle-thumb' }),
           ),
-          block('span', { text: '单点模式' }),
+          el('span', { text: '单点模式' }),
         );
 
-        const losslessChips = block(
+        const losslessChips = el(
           'div',
           { class: 'ladder__chips', attrs: { role: 'group', 'aria-label': '无损对照组' } },
           ...LOSSLESS_FORMATS.map((format) =>
@@ -259,9 +263,9 @@ export const ladderSection: PanelSection = {
         const previewLadder =
           sizeMode() ? sizeLadderPreview(state) : formatLadderOf(state);
         const rows = groupLadderByFormat(previewLadder);
-        const grid = block('div', { class: 'ladder__grid' });
+        const grid = el('div', { class: 'ladder__grid' });
         for (const row of rows) {
-          const points = block('div', { class: 'ladder__points' });
+          const points = el('div', { class: 'ladder__points' });
           for (const item of row.items) {
             const on = !state.excluded.has(ladderItemKey(item));
             points.append(
@@ -280,8 +284,8 @@ export const ladderSection: PanelSection = {
             );
           }
           grid.append(
-            block('div', { class: 'ladder__row' }, [
-              block('span', {
+            el('div', { class: 'ladder__row' }, [
+              el('span', {
                 class: 'ladder__row-label',
                 text: row.lossless ? `${row.label}（无损）` : row.label,
               }),
@@ -293,9 +297,9 @@ export const ladderSection: PanelSection = {
         const planned = plannedCount(state);
         const progress = progressBar({ label: '生成进度' });
         if (ladderBusy) {
-          const match = /^(\d+)\/(\d+)/.exec(ladderBusy.detail);
-          if (match) progress.set(Number(match[1]), Number(match[2]));
-          else progress.setIndeterminate(ladderBusy.detail || ladderBusy.label);
+          const view = busyProgressView(ladderBusy);
+          if (view.kind === 'determinate') progress.set(view.completed, view.total, view.label);
+          else progress.setIndeterminate(view.label);
         }
 
         const selectedAny =
@@ -312,20 +316,20 @@ export const ladderSection: PanelSection = {
 
         const runDisabled = busy || ctx.round.referencePath === null || planned === 0;
 
-        return block(
+        return el(
           'div',
           { class: 'ladder' },
-          block('div', { class: 'ladder__controls' }, [modeControl.node, primaryParam]),
+          el('div', { class: 'ladder__controls' }, [modeControl.node, primaryParam]),
           formatChips,
-          block('div', { class: 'ladder__secondary' }, [singleToggle, losslessChips]),
-          block('div', { class: 'ladder__preview' }, [
-            block('div', { class: 'ladder__preview-head' }, [
-              block('span', { class: 'ladder__preview-title', text: '本次清单' }),
-              block('span', { class: 'ladder__preview-count', text: countText }),
+          el('div', { class: 'ladder__secondary' }, [singleToggle, losslessChips]),
+          el('div', { class: 'ladder__preview' }, [
+            el('div', { class: 'ladder__preview-head' }, [
+              el('span', { class: 'ladder__preview-title', text: '本次清单' }),
+              el('span', { class: 'ladder__preview-count', text: countText }),
             ]),
             grid,
           ]),
-          block('div', { class: 'ladder__actions' }, [
+          el('div', { class: 'ladder__actions' }, [
             button({
               label: state.singlePoint ? '按单点自动跑分' : '开始自动跑分',
               variant: 'primary',
@@ -349,11 +353,11 @@ export const ladderSection: PanelSection = {
                 })
               : null,
           ]),
-          ladderBusy ? block('div', { class: 'ladder__progress' }, progress.node) : null,
+          ladderBusy ? el('div', { class: 'ladder__progress' }, progress.node) : null,
           state.encoderIssue
-            ? block('div', { class: 'ladder__issue' }, [
-                block('p', { class: 'ladder__issue-text', text: state.encoderIssue.split('\n')[0] }),
-                block('div', { class: 'ladder__issue-actions' }, [
+            ? el('div', { class: 'ladder__issue' }, [
+                el('p', { class: 'ladder__issue-text', text: state.encoderIssue.split('\n')[0] }),
+                el('div', { class: 'ladder__issue-actions' }, [
                   button({
                     label: '打开设置',
                     variant: 'secondary',
@@ -375,24 +379,24 @@ export const ladderSection: PanelSection = {
               ])
             : null,
           state.failures.length > 0
-            ? block(
+            ? el(
                 'details',
                 { class: 'ladder__failures' },
-                block('summary', {
+                el('summary', {
                   class: 'ladder__summary',
                   text: `${state.failures.length} 项生成失败（展开）`,
                 }),
-                block(
+                el(
                   'ul',
                   { class: 'ladder__failure-list' },
                   ...state.failures.map((line) =>
-                    block('li', { class: 'ladder__failure', text: line }),
+                    el('li', { class: 'ladder__failure', text: line }),
                   ),
                 ),
               )
             : null,
           planned > 0 && ctx.round.referencePath !== null
-            ? block('p', {
+            ? el('p', {
                 class: 'ladder__note',
                 text: `${planned} 份产物写进原图旁的 Pixel Arena 文件夹并纳入本轮`,
               })

@@ -5,6 +5,7 @@
 // 里再长出一套完整列表。日常单张调参不必开模态：候选分区里点胶囊即可就地编辑。
 
 import { badge, button, emptyState, toolbar } from '../../../ui/primitives';
+import { el } from '../../../ui/dom';
 import { fileName } from '../../../core/util';
 import { isBusy } from '../../../core/store';
 import { badgeText, judgeEntries, planScore } from '../logic/entries';
@@ -12,7 +13,7 @@ import { queueIdentityProbe } from '../logic/runtime';
 import { addQueuePaths, openQueue, pickQueueImages, queueEntries } from '../actions';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
 import { STATE_BADGE_KIND } from '../overlay/queue-modal';
-import { block, dropTarget, mountSection, paintBody } from './common';
+import { dropTarget, mountSection, paintBody } from './common';
 
 /** 概览里最多列几行（其余进模态看）。 */
 const PREVIEW_ROWS = 4;
@@ -69,21 +70,21 @@ export const advancedSection: PanelSection = {
           });
         }
         const verdicts = judgeEntries(entries, queueIdentityProbe());
-        const rows = block('div', { class: 'adv-list' });
+        const rows = el('div', { class: 'adv-list' });
         entries.slice(0, PREVIEW_ROWS).forEach((entry, index) => {
           const verdict = verdicts[index];
           rows.append(
-            block(
+            el(
               'div',
               { class: 'adv-row' },
-              block('span', {
+              el('span', {
                 class: 'adv-row__name',
                 text: fileName(entry.path),
                 title: entry.path,
               }),
               badge(badgeText(verdict.state, verdict.reasons), STATE_BADGE_KIND[verdict.state]),
-              block('span', { class: 'adv-row__spacer', text: '' }),
-              block('span', {
+              el('span', { class: 'adv-row__spacer', text: '' }),
+              el('span', {
                 class: 'adv-row__cards',
                 text: `${entry.encoders.length} 条配置`,
               }),
@@ -92,14 +93,14 @@ export const advancedSection: PanelSection = {
         });
         if (entries.length > PREVIEW_ROWS) {
           rows.append(
-            block('p', {
+            el('p', {
               class: 'adv-more',
               text: `另有 ${entries.length - PREVIEW_ROWS} 张，打开队列查看全部`,
             }),
           );
         }
 
-        return block(
+        return el(
           'div',
           { class: 'adv' },
           toolbar(
@@ -117,13 +118,13 @@ export const advancedSection: PanelSection = {
               title: '完整工作流：条目列表 → 逐图编辑 → 跑分',
               onClick: open,
             }),
-            block('span', {
+            el('span', {
               class: 'adv__count',
               text: `${entries.length} 张，待跑 ${plan.runImageCount} 张`,
             }),
           ),
           rows,
-          block('p', {
+          el('p', {
             class: 'adv__note',
             text:
               plan.runImageCount > 0

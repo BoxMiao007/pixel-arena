@@ -9,6 +9,9 @@
 
 export type Child = Node | string | number | null | undefined | false;
 
+/** 子节点允许数组（按行分组写更清楚，不必到处 spread）。 */
+export type ChildGroups = Child | Child[];
+
 export interface ElProps {
   class?: string;
   text?: string;
@@ -22,8 +25,12 @@ export interface ElProps {
   };
 }
 
-function append(parent: Node, children: Child[]): void {
+function append(parent: Node, children: ChildGroups[]): void {
   for (const child of children) {
+    if (Array.isArray(child)) {
+      append(parent, child);
+      continue;
+    }
     if (child === null || child === undefined || child === false) continue;
     if (typeof child === 'string' || typeof child === 'number') {
       parent.appendChild(document.createTextNode(String(child)));
@@ -49,7 +56,7 @@ function append(parent: Node, children: Child[]): void {
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   props: ElProps = {},
-  ...children: Child[]
+  ...children: ChildGroups[]
 ): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (props.class) node.className = props.class;
@@ -77,7 +84,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(
 }
 
 /** 文档片段（一次插入多个节点，避免多次回流）。 */
-export function frag(...children: Child[]): DocumentFragment {
+export function frag(...children: ChildGroups[]): DocumentFragment {
   const fragment = document.createDocumentFragment();
   append(fragment, children);
   return fragment;

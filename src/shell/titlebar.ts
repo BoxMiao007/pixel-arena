@@ -2,12 +2,14 @@
 //
 // 状态文本单行截断，点击弹出可复制的完整内容（长错误不会被挤成一团或撑高顶栏）。
 
-import { getState } from '../core/store';
+import { getState, isBusy, setStatus } from '../core/store';
 import { ffmpegReady, ffmpegReason } from '../core/ffmpeg';
 import { activeRound } from '../core/model';
 import { el } from '../ui/dom';
 import { icon } from '../ui/icons';
 import { badge, button, iconButton, spinner } from '../ui/primitives';
+import { prompt } from '../ui/overlay';
+import { renameGroup, renameRound } from '../core/actions';
 import { openPopover } from '../ui/overlay';
 import { copyText } from '../core/util';
 import { toast } from '../ui/toast';
@@ -69,9 +71,43 @@ export function mountTitlebar(host: HTMLElement): TitlebarHandle {
     onClick: () => togglePanel('rail'),
   });
 
-  const groupLabel = el('span', { class: 'titlebar__doc-group' });
+  /** 面包屑改名：双击或聚焦后 F2，弹命名框（与左栏/轮次栏同一套动作）。 */
+  const renameWithPrompt = async (kind: 'group' | 'round'): Promise<void> => {
+    const session = activeRound(getState().workspace);
+    if (!session) return;
+    if (isBusy()) {
+      setStatus('有任务正在进行，结束再改名');
+      return;
+    }
+    const target = kind === 'group' ? session.group : session.round;
+    const name = await prompt({
+      title: kind === 'group' ? '重命名跑分组' : '重命名评测轮',
+      label: '名称',
+      value: target.name,
+      confirmLabel: '保存',
+    });
+    if (name === null || name === target.name) return;
+    if (kind === 'group') await renameGroup(session.group, name);
+    else await renameRound(session.group, session.round, name);
+  };
+
+  const crumb = (kind: 'group' | 'round', className: string): HTMLButtonElement =>
+    el('button', {
+      class: className,
+      attrs: { type: 'button', title: '双击或按 F2 改名' },
+      on: {
+        dblclick: () => void renameWithPrompt(kind),
+        keydown: (event) => {
+          if (event.key !== 'F2') return;
+          event.preventDefault();
+          void renameWithPrompt(kind);
+        },
+      },
+    });
+
+  const groupLabel = crumb('group', 'titlebar__doc-group');
   const docSep = el('span', { class: 'titlebar__doc-sep', text: '/' });
-  const roundLabel = el('span', { class: 'titlebar__doc-round' });
+  const roundLabel = crumb('round', 'titlebar__doc-round');
   const docTitle = el('div', { class: 'titlebar__doc' }, groupLabel, docSep, roundLabel);
 
   const status = el('div', { class: 'titlebar__status' });

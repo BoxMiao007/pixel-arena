@@ -5,7 +5,8 @@
 // 表格骨架（表头/行渲染/排序比较）在 ./table.ts，视频域只读复用。
 
 import { formatRatio, formatSize } from '../../core/format';
-import type { CandidateImage, Round } from '../../core/model';
+import { formatLabelForPath } from '../../core/format-label';
+import type { CandidateImage, GroupKind, Round } from '../../core/model';
 import { isBusy, isPathRunning } from '../../core/store';
 import {
   getActiveCandidate,
@@ -22,7 +23,6 @@ import { button, iconButton, toolbar } from '../../ui/primitives';
 import { toast } from '../../ui/toast';
 import { requestRender } from '../../shell/controller';
 import type { DockTab, MountedView, ViewCtx } from '../../shell/registry';
-import { formatLabelForPath } from './format-label';
 import {
   formatMetricFor,
   metricHeaderTitle,
@@ -237,14 +237,14 @@ function sortValueFor(candidate: CandidateImage, key: string): SortValue {
   }
 }
 
-interface BestValue {
+export interface BestValue {
   value: number;
   /** 有值的行数：只有一行有值时不高亮（整列发亮没有信息量）。 */
   present: number;
 }
 
 /** 每列最优值（只对「越小/越大更好」的数值列算）；失败行与缺值不参与。 */
-function bestValues(candidates: readonly CandidateImage[], metricKeys: readonly string[]): Map<string, BestValue> {
+export function bestValues(candidates: readonly CandidateImage[], metricKeys: readonly string[]): Map<string, BestValue> {
   const best = new Map<string, BestValue>();
   const scored = candidates.filter((candidate) => candidate.error === null && candidate.metrics !== null);
 
@@ -281,7 +281,11 @@ function isBest(best: Map<string, BestValue>, key: string, value: number | null)
   return entry !== undefined && entry.present > 1 && entry.value === value;
 }
 
-function formatCellFor(candidate: CandidateImage, key: string, best: Map<string, BestValue>): TableCell {
+/**
+ * 单元格内容（除带交互的文件名列与状态列）。纯函数：最优值标记、格式化都在这层
+ * 决定，表格骨架只负责把它画出来（含 srText 的视觉隐藏文本）。
+ */
+export function formatCellFor(candidate: CandidateImage, key: string, best: Map<string, BestValue>): TableCell {
   switch (key) {
     case 'format':
       return { text: formatLabelForPath(candidate.path) };
@@ -345,6 +349,14 @@ function referenceCellFor(key: string, round: Round): TableCell | null {
     default:
       return { text: '—' };
   }
+}
+
+/**
+ * 无结果空态的一行说明（不铺大空态组件、不占满结果坞，样式见 results.css）。
+ * 视频分组里这张表仍用于旧工作区的图片结果，所以文案要说清「会显示在这里」。
+ */
+export function emptyNoteText(kind: GroupKind): string {
+  return kind === 'video' ? '旧工作区的图片跑分结果会显示在这里' : '跑分后这里出现指标表';
 }
 
 function mountResultsTab(host: HTMLElement, ctx: ViewCtx): MountedView {
@@ -635,10 +647,7 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): MountedView {
       emptyHost.replaceChildren(
         el('p', {
           class: 'results-empty-note',
-          text:
-            ctx.group.kind === 'video'
-              ? '旧工作区的图片跑分结果会显示在这里'
-              : '跑分后这里出现指标表',
+          text: emptyNoteText(ctx.group.kind),
         }),
       );
       statusLine.hidden = true;

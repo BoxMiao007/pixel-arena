@@ -215,7 +215,7 @@ export interface LadderRunDeps {
   encode: (item: LadderItem, overwrite: boolean) => Promise<OnestopEncodeOutcome>;
   /** 全部成功产物一次性纳入本轮（失败项不进来）。 */
   addCandidates: (products: readonly OnestopProduct[]) => Promise<void>;
-  /** 阶段进度文本（如「正在生成 AVIF q75（5/15）」）。 */
+  /** 阶段进度文案（如「正在生成 AVIF q75」）；N/M 由调用方以结构化进度提供。 */
   onProgress: (text: string) => void;
   /** 产物命名冲突询问（覆盖 / 跳过，含「本次全部」的批量语义）。 */
   onConflict: (fileName: string) => Promise<ConflictAnswer>;
@@ -235,7 +235,7 @@ export async function runLadder(deps: LadderRunDeps): Promise<OnestopResult> {
 
   for (let i = 0; i < deps.ladder.length; i++) {
     const item = deps.ladder[i];
-    deps.onProgress(`正在生成 ${item.label}（${i + 1}/${deps.ladder.length}）`);
+    deps.onProgress(`正在生成 ${item.label}`);
     try {
       let outcome = await deps.encode(item, false);
       if (outcome.kind === 'conflict') {

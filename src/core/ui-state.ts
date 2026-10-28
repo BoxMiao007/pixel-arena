@@ -28,7 +28,7 @@ export const UI_DEFAULTS: UiPrefs = {
   railCollapsed: false,
   inspectorCollapsed: false,
   dockCollapsed: false,
-  dockHeight: 232,
+  dockHeight: 248,
   sections: {},
   viewerMode: 'split',
   resultsColumns: null,

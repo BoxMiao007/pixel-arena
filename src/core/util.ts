@@ -75,3 +75,11 @@ export function uid(prefix = 'u'): string {
   uidSeed += 1;
   return `${prefix}-${uidSeed}`;
 }
+
+/**
+ * 把 IPC / 任意抛出物归一成可展示的中文消息。
+ * 11 处 `err instanceof Error ? err.message : String(err)` 收敛到这里。
+ */
+export function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

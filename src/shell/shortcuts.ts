@@ -5,10 +5,10 @@
 import { getState } from '../core/store';
 import { activeRound } from '../core/model';
 import { isTypingTarget } from '../ui/dom';
-import { closeTopOverlay, overlayOpen } from '../ui/overlay';
+import { overlayOpen } from '../ui/overlay';
 import { activateGroup, createGroup, createRound } from '../core/actions';
 import { focusDockTab } from './regions';
-import { exitImmersive, requestRender, toggleImmersive, togglePanel } from './controller';
+import { exitImmersive, toggleImmersive, togglePanel } from './controller';
 import { keyBindingsSnapshot, runCommand, runKindCommand } from './registry';
 
 /** 归一化按键：单个字符统一小写（1–6、空格、+、-、0、?），其余原样。 */
@@ -123,8 +123,8 @@ export function installShortcuts(): void {
 
     // ---- 外壳自己的无修饰键 ----
     if (event.key === 'Escape') {
-      if (exitImmersive()) event.preventDefault();
-      else closeTopOverlay();
+      // 浮层打开时它的 capture 监听已经处理并阻止冒泡，这里只剩「退出沉浸」
+      exitImmersive();
       return;
     }
     if (event.key === '?') {
@@ -135,7 +135,6 @@ export function installShortcuts(): void {
     if (keyOf(event) === 'f') {
       event.preventDefault();
       toggleImmersive();
-      requestRender();
     }
   });
 }

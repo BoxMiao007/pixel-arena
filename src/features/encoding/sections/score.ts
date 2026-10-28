@@ -7,14 +7,16 @@
 // - 自动生成跑分在「编码阶梯」分区里，不在这里抢位置。
 
 import { button, progressBar } from '../../../ui/primitives';
+import { el } from '../../../ui/dom';
 import { isBusy } from '../../../core/store';
 import { fileName } from '../../../core/util';
 import { planScore } from '../logic/entries';
+import { busyProgressView } from '../logic/progress';
 import { rerunChangedButtonLabel } from '../logic/run';
 import { queueIdentityProbe } from '../logic/runtime';
 import { busyIdOf, queueEntries, runChangedEntries, runFullScore } from '../actions';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
-import { block, busyOf, hintWrap, mountSection, paintBody } from './common';
+import { busyOf, hintWrap, mountSection, paintBody } from './common';
 
 export const scoreSection: PanelSection = {
   id: 'score',
@@ -40,19 +42,16 @@ export const scoreSection: PanelSection = {
         failed.length,
         busy ? 'busy' : 'idle',
         scoringBusy?.detail ?? '',
+        scoringBusy?.completed ?? '',
+        scoringBusy?.total ?? '',
       ].join(':');
 
       paintBody(body, key, () => {
         const progress = progressBar({ label: '跑分进度' });
         if (scoringBusy) {
-          const [done, total] = scoringBusy.detail.split('/');
-          const value = Number(done);
-          const max = Number(total);
-          if (Number.isFinite(value) && Number.isFinite(max) && max > 0) {
-            progress.set(value, max);
-          } else {
-            progress.setIndeterminate(scoringBusy.label);
-          }
+          const view = busyProgressView(scoringBusy);
+          if (view.kind === 'determinate') progress.set(view.completed, view.total, view.label);
+          else progress.setIndeterminate(view.label);
         }
 
         const runDisabled = !hasReference || candidates.length === 0 || busy;
@@ -87,42 +86,42 @@ export const scoreSection: PanelSection = {
           onClick: () => void runChangedEntries(ctx.group.id),
         });
 
-        return block(
+        return el(
           'div',
           { class: 'score' },
           ready
-            ? block('div', { class: 'score__lead' }, [
-                block('span', {
+            ? el('div', { class: 'score__lead' }, [
+                el('span', {
                   class: 'score__count',
                   text: `本轮 ${candidates.length} 张跑分图`,
                 }),
               ])
-            : block('p', {
+            : el('p', {
                 class: 'score__blocked',
                 text: '选好原图与跑分图后在这里开始跑分',
               }),
-          block('div', { class: 'score__actions' }, [
+          el('div', { class: 'score__actions' }, [
             runDisabled ? hintWrap(runButton, runHint, true) : runButton,
             rerunDisabled ? hintWrap(rerunButton, rerunHint) : rerunButton,
           ]),
           scoringBusy
-            ? block('div', { class: 'score__progress' }, progress.node)
+            ? el('div', { class: 'score__progress' }, progress.node)
             : null,
           failed.length > 0
-            ? block(
+            ? el(
                 'details',
                 { class: 'score__failures' },
-                block('summary', {
+                el('summary', {
                   class: 'score__summary',
                   text: `${failed.length} 张失败（展开看原因）`,
                 }),
-                block(
+                el(
                   'ul',
                   { class: 'score__failure-list' },
                   ...failed.map((candidate) =>
-                    block('li', { class: 'score__failure' }, [
-                      block('span', { class: 'score__failure-name', text: fileName(candidate.path) }),
-                      block('span', {
+                    el('li', { class: 'score__failure' }, [
+                      el('span', { class: 'score__failure-name', text: fileName(candidate.path) }),
+                      el('span', {
                         class: 'score__failure-reason',
                         text: candidate.error ?? '',
                         title: candidate.error ?? '',

@@ -17,7 +17,7 @@ import {
   type PanelSection,
   type ViewCtx,
 } from './registry';
-import { requestRender, setDockTab, shellState } from './controller';
+import { setDockTab, setPanelCollapsed, shellState } from './controller';
 
 export interface RegionHandle {
   update(): void;
@@ -176,10 +176,7 @@ export function mountDock(host: HTMLElement): RegionHandle {
     label: '收起结果坞（Ctrl+J）',
     icon: 'chevronDown',
     variant: 'quiet',
-    onClick: () => {
-      shellState.dockCollapsed = true;
-      requestRender();
-    },
+    onClick: () => setPanelCollapsed('dock', true),
   });
   const content = el('div', { class: 'dock__content' });
   const head = el(
@@ -290,9 +287,8 @@ function countBadge(ctx: ViewCtx): HTMLElement | null {
 
 /** 供其它域按需触发的「切到某页签后打开」。 */
 export function focusDockTab(id: string): void {
+  setPanelCollapsed('dock', false);
   setDockTab(id);
-  shellState.dockCollapsed = false;
-  requestRender();
 }
 
 /** 组类型对应的图标名（左栏与顶栏共用）。 */

@@ -224,6 +224,11 @@ describe('runQueuePlanOnce：无待跑时零编码零跑分调用', () => {
     expect(notices[0].lines).toEqual([EMPTY_QUEUE_MESSAGE]);
     expect(lastStatus(statuses)).toBe(EMPTY_QUEUE_MESSAGE);
   });
+
+  it('空队列提示指向检视器「高级」分区，不再指向已不存在的高级创建路径', () => {
+    expect(EMPTY_QUEUE_MESSAGE).toContain('检视器「高级」');
+    expect(EMPTY_QUEUE_MESSAGE).not.toContain('新建评测轮');
+  });
 });
 
 // ---------- 有待跑：走增量引擎 ----------

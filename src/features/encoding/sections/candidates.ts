@@ -5,6 +5,7 @@
 // 实现）；人工导入 / 一站式生成的图没有可调参数，只说明为什么点不开（不给假交互）。
 
 import { badge, button, iconButton, toolbar } from '../../../ui/primitives';
+import { el } from '../../../ui/dom';
 import { isPathRunning } from '../../../core/store';
 import { formatRatio, formatSize } from '../../../core/format';
 import { fileName, truncateFileName } from '../../../core/util';
@@ -21,7 +22,7 @@ import {
   removeCandidateAt,
 } from '../actions';
 import { renderEntryEditor, type EntryEditorView } from '../overlay/entry-editor';
-import { block, dropTarget, mountSection, paintBody } from './common';
+import { dropTarget, mountSection, paintBody } from './common';
 
 type StatusKind = 'ok' | 'danger' | 'info' | 'neutral';
 
@@ -98,35 +99,35 @@ export const candidatesSection: PanelSection = {
       paintBody(body, key, () => {
         const candidates = ctx.round.candidates;
         if (candidates.length === 0) {
-          return block(
+          return el(
             'div',
             { class: 'source' },
-            block('div', { class: 'enc-empty' }, [
-              block('span', { class: 'enc-empty__text', text: '还没有跑分图' }),
+            el('div', { class: 'enc-empty' }, [
+              el('span', { class: 'enc-empty__text', text: '还没有跑分图' }),
               button({
                 label: '添加跑分图',
                 variant: 'secondary',
                 size: 'sm',
                 onClick: () => void pickCandidates(ctx),
               }),
-              block('span', { class: 'enc-empty__hint', text: '或把图片拖到这里' }),
+              el('span', { class: 'enc-empty__hint', text: '或把图片拖到这里' }),
             ]),
           );
         }
 
-        const list = block('div', { class: 'cand-list' });
+        const list = el('div', { class: 'cand-list' });
         for (const candidate of candidates) {
           const owner = entryForArtifact(entries, candidate.path);
           const running = isPathRunning(candidate.path);
           const status = candidateStatus(candidate, running);
           const nameNode =
             owner === null
-              ? block('span', {
+              ? el('span', {
                   class: 'cand__name',
                   text: truncateFileName(fileName(candidate.path)),
                   title: `${candidate.path}\n人工导入或自动生成的跑分图：没有可调的编码器参数`,
                 })
-              : block('button', {
+              : el('button', {
                   class: 'cand__name cand__name--action',
                   text: truncateFileName(fileName(candidate.path)),
                   title: `${candidate.path}\n点开调整这张图的编码器参数（改动即时生效）`,
@@ -147,20 +148,20 @@ export const candidatesSection: PanelSection = {
           if (candidate.encodingParams) metaItems.push(candidate.encodingParams);
 
           list.append(
-            block(
+            el(
               'div',
               {
                 class: `cand${ui.expanded !== null && owner !== null && ui.expanded === owner.id ? ' cand--open' : ''}`,
               },
-              block(
+              el(
                 'div',
                 { class: 'cand__row' },
                 // 第一行：文件名 + 右侧状态与移除
-                block(
+                el(
                   'div',
                   { class: 'cand__line' },
                   nameNode,
-                  block('span', { class: 'cand__spacer' }),
+                  el('span', { class: 'cand__spacer' }),
                   badge(status.text, status.kind, status.title),
                   iconButton({
                     label: `移除 ${fileName(candidate.path)}`,
@@ -172,20 +173,20 @@ export const candidatesSection: PanelSection = {
                   }),
                 ),
                 // 第二行：元信息，极细分隔线分项（不用中点）
-                block(
+                el(
                   'div',
                   { class: 'cand__metas' },
-                  ...metaItems.map((text) => block('span', { class: 'cand__meta', text })),
+                  ...metaItems.map((text) => el('span', { class: 'cand__meta', text })),
                 ),
               ),
               ui.expanded !== null && owner !== null && ui.expanded === owner.id
-                ? block('div', { class: 'cand__editor' }, buildEditor(owner).node)
+                ? el('div', { class: 'cand__editor' }, buildEditor(owner).node)
                 : null,
             ),
           );
         }
 
-        return block(
+        return el(
           'div',
           { class: 'source' },
           toolbar(
@@ -194,7 +195,7 @@ export const candidatesSection: PanelSection = {
               variant: 'secondary',
               onClick: () => void pickCandidates(ctx),
             }),
-            block('span', { class: 'source__count', text: `共 ${candidates.length} 张` }),
+            el('span', { class: 'source__count', text: `共 ${candidates.length} 张` }),
           ),
           list,
         );

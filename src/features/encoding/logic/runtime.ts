@@ -190,7 +190,7 @@ export function buildQueueRunExecutor(
 
 /** 队列里没有任何图片条目时的提示（主界面按钮在条目被清空后也会走到这里）。 */
 export const EMPTY_QUEUE_MESSAGE =
-  '还没有图片条目：先点「＋ 新建评测轮 → 高级创建…」添加图片（新条目自带一条 JPEG 有损配置）';
+  '还没有图片条目：到检视器「高级」分区点「＋ 添加图片」添加图片条目（新条目自带一条 JPEG 有损配置）';
 
 /** 一次增量跑分编排的界面回调（面板刷新列表、主界面重渲染都是调用方的事）。 */
 export interface QueuePlanRunHooks {

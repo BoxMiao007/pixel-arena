@@ -5,6 +5,7 @@
 // 失败不清空上一次成功结果：表格留着，上面加一条可重试的错误条。
 
 import type { Round } from '../../core/model';
+import { errorText } from '../../core/util';
 import { el } from '../../ui/dom';
 import { button, spinner } from '../../ui/primitives';
 import type { DockTab, MountedView, ViewCtx } from '../../shell/registry';
@@ -19,10 +20,6 @@ import {
   type TableRow,
   type TableSpec,
 } from './table';
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 const COLUMNS: TableColumn[] = [
   { key: 'format', label: '格式', width: 120, align: 'start' },
@@ -134,7 +131,7 @@ function mountBdrateTab(host: HTMLElement, ctx: ViewCtx): MountedView {
     } catch (err) {
       if (myToken !== token) return;
       loading = false;
-      error = messageOf(err);
+      error = errorText(err);
       // 记下当前指纹，避免每次状态通知都自动重试；重试交给错误条上的按钮。
       currentSignature = bdrateSignature(currentRound());
     }

@@ -15,7 +15,7 @@ import type { FFmpegCheck } from './ipc';
 export interface BusyEntry {
   /** 展示用动词，如「正在跑分」「正在自动编码」。 */
   label: string;
-  /** 细节行，如「AVIF q75（5/12）」；空串表示只显示 label。 */
+  /** 人类可读的细节行（如「正在生成 AVIF q75」）；进度数字走 completed/total，不拼进这里。 */
   detail: string;
   /** 正在处理、需要在行内显示「进行中」的路径集合。 */
   running: ReadonlySet<string>;

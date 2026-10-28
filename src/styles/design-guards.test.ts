@@ -92,6 +92,23 @@ describe('设计守卫：文案与排版', () => {
     expect(bad.map((file) => file.path)).toEqual([]);
   });
 
+  it('彩色 rgba 必须走令牌（纯黑/纯白叠层例外）', () => {
+    const bad: string[] = [];
+    for (const file of NON_TOKEN_CSS) {
+      for (const match of file.text.matchAll(/rgba\(\s*([^)]*)\)/g)) {
+        const channels = match[1]
+          .split(',')
+          .slice(0, 3)
+          .map((part) => part.trim());
+        const neutral =
+          (channels[0] === '0' && channels[1] === '0' && channels[2] === '0') ||
+          (channels[0] === '255' && channels[1] === '255' && channels[2] === '255');
+        if (!neutral) bad.push(`${file.path}: ${match[0]}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
   it('字面色值只允许出现在 tokens.css', () => {
     const bad: string[] = [];
     for (const file of NON_TOKEN_CSS) {
