@@ -44,6 +44,17 @@
   color: var(--text-subtle);
 }
 
+/* 缺图时的「下一步」引导行：文案 + 直达动作靠右，不把原因藏在悬浮提示里。 */
+.score__blocked--next {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.score__next-spacer {
+  flex: 1;
+}
+
 /* 禁用按钮的提示宿主：原生 disabled 不触发悬浮提示，由外层 span 承载 title。 */
 .hint-host {
   display: inline-flex;

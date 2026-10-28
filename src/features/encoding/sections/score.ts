@@ -4,6 +4,8 @@
 // - 「开始跑分」= 唯一主按钮（整轮全量，Ctrl+Enter）；
 // - 「只跑改过的（N 张）」= 次级动作，只跑参数改过 / 换过图 / 上次失败的条目，
 //   0 张时置灰并在 title 里说明原因（不静默，也不假装能跑）；
+// - 缺图时不只靠置灰按钮的悬浮提示：正文直接给「选择原图 / 添加跑分图」下一步
+//   入口（设计契约 §3.3 渐进披露），点了就开对应的文件对话框；
 // - 自动生成跑分在「编码阶梯」分区里，不在这里抢位置。
 
 import { button, progressBar } from '../../../ui/primitives';
@@ -14,7 +16,7 @@ import { planScore } from '../logic/entries';
 import { busyProgressView } from '../logic/progress';
 import { rerunChangedButtonLabel } from '../logic/run';
 import { queueIdentityProbe } from '../logic/runtime';
-import { busyIdOf, queueEntries, runChangedEntries, runFullScore } from '../actions';
+import { busyIdOf, pickCandidates, pickReference, queueEntries, runChangedEntries, runFullScore } from '../actions';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
 import { busyOf, hintWrap, liveRoundOf, mountSection, paintBody } from './common';
 
@@ -100,10 +102,25 @@ export const scoreSection: PanelSection = {
                   text: `本轮 ${candidates.length} 张跑分图`,
                 }),
               ])
-            : el('p', {
-                class: 'score__blocked',
-                text: '选好原图与跑分图后在这里开始跑分',
-              }),
+            : el(
+                'p',
+                { class: 'score__blocked score__blocked--next' },
+                el('span', {
+                  class: 'score__next-text',
+                  text: !hasReference ? '还没有原图：先选一张作为基准' : '还没有跑分图：加一张已压好的图',
+                }),
+                el('span', { class: 'score__next-spacer' }),
+                button({
+                  label: hasReference ? '添加跑分图' : '选择原图',
+                  variant: 'secondary',
+                  size: 'sm',
+                  disabled: busy,
+                  title: !hasReference
+                    ? '选一张未压缩的原图作为本轮基准'
+                    : '把用其它工具压好的图加入本轮',
+                  onClick: () => void (hasReference ? pickCandidates(ctx) : pickReference(ctx)),
+                }),
+              ),
           el('div', { class: 'score__actions' }, [
             runDisabled ? hintWrap(runButton, runHint, true) : runButton,
             rerunDisabled ? hintWrap(rerunButton, rerunHint) : rerunButton,
