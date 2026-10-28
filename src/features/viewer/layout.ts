@@ -39,3 +39,29 @@ export const GRID_MIN_CELL_PX = 280;
 
 /** 分屏每栏的最小可用宽度（px）：7 栏时横向滚动，保证每栏能看清并放下错误态按钮。 */
 export const SPLIT_MIN_PANE_PX = 240;
+
+/** 宽高对（结构兼容 DOMRect / Size，避免为取值引入依赖）。 */
+export interface Box {
+  width: number;
+  height: number;
+}
+
+/**
+ * 窗格尺寸是否已被舞台约束（真窗首帧回归）：
+ * 刚挂载的那一帧浏览器可能还没把祖先的网格/弹性约束算进来，canvas 会量到接近整窗的
+ * 宽或高。这种值不能用于 fit，否则分屏 7 栏会按 78% 裁切、点一次「适应」才回到 15%。
+ * 容差 1px：取整/边框造成的差值是正常的。
+ */
+export function isPaneSizeSane(pane: Box, stage: Box): boolean {
+  return pane.width <= stage.width + 1 && pane.height <= stage.height + 1;
+}
+
+/** 两次量到的尺寸是否可视为同一个（默认容差 1px）。 */
+export function sameBox(
+  a: Box | null | undefined,
+  b: Box | null | undefined,
+  tolerance = 1,
+): boolean {
+  if (!a || !b) return false;
+  return Math.abs(a.width - b.width) <= tolerance && Math.abs(a.height - b.height) <= tolerance;
+}

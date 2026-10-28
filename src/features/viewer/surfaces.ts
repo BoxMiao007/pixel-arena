@@ -34,8 +34,8 @@ export interface ViewerSurface {
   root: HTMLElement;
   /** 按栏/格顺序的画布（single 只有 1 个）。 */
   canvases: readonly HTMLCanvasElement[];
-  /** 更新选图按钮文案与空态样式。 */
-  setPicker: (index: number, label: string, empty: boolean) => void;
+  /** 更新选图按钮文案、空态样式与悬浮提示（title 带栏号与完整路径）。 */
+  setPicker: (index: number, label: string, empty: boolean, title?: string) => void;
   /** 聚焦高亮（分屏/网格）。 */
   setFocus: (index: number | null) => void;
   /** 占位状态；同状态重复调用不会重建 DOM。 */
@@ -63,6 +63,13 @@ function decorateCanvas(canvas: HTMLCanvasElement, tabbable = true): HTMLCanvasE
   return canvas;
 }
 
+function pickerChildren(label: string): Node[] {
+  return [
+    el('span', { class: 'viewer__picker-label', text: label }),
+    icon('chevronDown', 'icon icon--12 viewer__picker-chevron'),
+  ];
+}
+
 function buildPicker(onClick: () => void): HTMLButtonElement {
   return el(
     'button',
@@ -71,8 +78,7 @@ function buildPicker(onClick: () => void): HTMLButtonElement {
       attrs: { type: 'button' },
       on: { click: onClick },
     },
-    el('span', { class: 'viewer__picker-label', text: '' }),
-    icon('chevronDown', 'icon icon--12 viewer__picker-chevron'),
+    ...pickerChildren(''),
   ) as HTMLButtonElement;
 }
 
@@ -205,14 +211,22 @@ export function mountSurface(options: SurfaceOptions): ViewerSurface {
   return {
     root,
     canvases: panes.map((pane) => pane.canvas),
-    setPicker: (index, label, empty) => {
+    setPicker: (index, label, empty, title) => {
+      // 真窗回归：可见标签曾与 aria 名错位一格。这里不再「按数组下标找 picker 再改子节点」，
+      // 而是按 data-index 在 DOM 里定位，并整块重建可见内容——标签与名字同源于这一次调用。
+      const wrapper = root.querySelector<HTMLElement>(
+        `.viewer__pane[data-index="${index}"]`,
+      );
+      const picker = wrapper?.querySelector<HTMLButtonElement>('.viewer__picker') ?? panes[index]?.picker;
+      if (!picker) return;
+      const nextTitle = title ?? (empty ? '选择这一格显示的图片' : `换图：${label}`);
+      picker.replaceChildren(...pickerChildren(label));
+      picker.title = nextTitle;
+      picker.setAttribute('aria-label', nextTitle);
+      picker.dataset.path = label;
+      picker.classList.toggle('is-empty', empty);
       const pane = panes[index];
-      if (!pane?.picker) return;
-      const text = pane.picker.querySelector('.viewer__picker-label');
-      if (text) text.textContent = label;
-      pane.picker.title = empty ? '选择这一格显示的图片' : `换图：${label}`;
-      pane.picker.classList.toggle('is-empty', empty);
-      pane.pickerEmpty = empty;
+      if (pane) pane.pickerEmpty = empty;
     },
     setFocus: (index) => {
       panes.forEach((pane, i) => pane.wrapper.classList.toggle('is-focused', i === index));

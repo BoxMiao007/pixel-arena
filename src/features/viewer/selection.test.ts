@@ -4,8 +4,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyPick,
+  defaultLayout,
   defaultPaneImage,
   pickSlot,
+  reconcileExplicitPaths,
   resolveCandidatePath,
   resolveModeCandidatePath,
   resolvePaneImage,
@@ -159,5 +161,115 @@ describe('applyPick（把一次选图写成状态切片，不就地改入参）'
 
   it('模式槽但当前不是单槽模式时返回空补丁（不误写状态）', () => {
     expect(applyPick(base, { kind: 'mode' }, null, '/demo/a.jpg')).toEqual({});
+  });
+});
+
+
+// 真窗回归：分屏 7 栏时第 2、3 栏曾都显示同一张（候选 q55/q78），根因是候选增删后
+// 旧的显式选择叠在位移后的默认布局上。这里把「默认逐位映射」与「失效对账」都钉住。
+const six = {
+  referencePath: '/shots/landscape.png',
+  candidates: [
+    { path: '/out/landscape_q55.jpg' },
+    { path: '/out/landscape_q78.jpg' },
+    { path: '/out/landscape_q92.jpg' },
+    { path: '/out/landscape_q70.jpg' },
+    { path: '/out/landscape_q90.jpg' },
+    { path: '/out/landscape_broken.jpg' },
+  ],
+};
+
+describe('分屏默认顺序（真窗回归：每栏 = 原图 + 第 i 张候选）', () => {
+  it('无显式选择时 resolvePaneImage(0..6) 依次是原图与候选 1..6', () => {
+    const slots = Array.from({ length: 7 }, (_, index) => resolvePaneImage([], index, six));
+    expect(slots).toEqual([
+      '/shots/landscape.png',
+      '/out/landscape_q55.jpg',
+      '/out/landscape_q78.jpg',
+      '/out/landscape_q92.jpg',
+      '/out/landscape_q70.jpg',
+      '/out/landscape_q90.jpg',
+      '/out/landscape_broken.jpg',
+    ]);
+  });
+
+  it('defaultLayout 与逐位解析完全一致（分屏栏数 = 候选数 + 1）', () => {
+    expect(defaultLayout(six, 7)).toEqual(
+      Array.from({ length: 7 }, (_, index) => resolvePaneImage(null, index, six)),
+    );
+  });
+
+  it('重建 surface（同样的状态再解析一遍）标签与路径不变、且第 2/3 栏不同图', () => {
+    const state = { panePaths: [] as (string | null)[] };
+    const first = Array.from({ length: 7 }, (_, i) => resolvePaneImage(state.panePaths, i, six));
+    const afterRebuild = Array.from({ length: 7 }, (_, i) =>
+      resolvePaneImage(state.panePaths, i, six),
+    );
+    expect(afterRebuild).toEqual(first);
+    expect(afterRebuild[1]).toBe('/out/landscape_q55.jpg');
+    expect(afterRebuild[2]).toBe('/out/landscape_q78.jpg');
+    expect(new Set(afterRebuild).size).toBe(7);
+  });
+
+  it('网格（7 张图 → 3×3）同样按位映射，多出的两格为 null', () => {
+    const cells = defaultLayout(six, 9);
+    expect(cells.slice(0, 7)).toEqual([
+      '/shots/landscape.png',
+      '/out/landscape_q55.jpg',
+      '/out/landscape_q78.jpg',
+      '/out/landscape_q92.jpg',
+      '/out/landscape_q70.jpg',
+      '/out/landscape_q90.jpg',
+      '/out/landscape_broken.jpg',
+    ]);
+    expect(cells.slice(7)).toEqual([null, null]);
+  });
+});
+
+describe('reconcileExplicitPaths（候选增删后显式选择失效）', () => {
+  const ref = '/shots/landscape.png';
+
+  it('默认布局没变：显式选择原样保留', () => {
+    const defaults = [ref, '/out/a.jpg', '/out/b.jpg'];
+    expect(reconcileExplicitPaths([null, '/out/x.jpg', '/out/y.jpg'], defaults, defaults)).toEqual([
+      null,
+      '/out/x.jpg',
+      '/out/y.jpg',
+    ]);
+  });
+
+  it('默认布局在该位变了（前面插入候选）：该位显式选择回默认，其它位不受影响', () => {
+    const previous = [ref, '/out/q78.jpg'];
+    const next = [ref, '/out/q55.jpg'];
+    expect(reconcileExplicitPaths([null, '/out/q78.jpg'], previous, next)).toEqual([null, null]);
+    // 第三位默认没变，显式选择保住
+    expect(
+      reconcileExplicitPaths(
+        [null, '/out/q78.jpg', '/out/q92.jpg'],
+        [ref, '/out/q78.jpg', '/out/q92.jpg'],
+        [ref, '/out/q55.jpg', '/out/q92.jpg'],
+      ),
+    ).toEqual([null, null, '/out/q92.jpg']);
+  });
+
+  it('真窗场景：先只有 q78 时手动选过第 1 栏，之后加入 q55 → 不再出现「第 2、3 栏都是 q78」', () => {
+    // 上一轮只有一张候选
+    const previousRound = { referencePath: ref, candidates: [{ path: '/out/q78.jpg' }] };
+    const nextRound = {
+      referencePath: ref,
+      candidates: [{ path: '/out/q55.jpg' }, { path: '/out/q78.jpg' }],
+    };
+    const previousDefaults = defaultLayout(previousRound, 2); // [ref, q78]
+    const nextDefaults = defaultLayout(nextRound, 3); // [ref, q55, q78]
+    const panePaths = reconcileExplicitPaths([null, '/out/q78.jpg'], previousDefaults, nextDefaults);
+    expect(panePaths).toEqual([null, null]);
+    expect(resolvePaneImage(panePaths, 1, nextRound)).toBe('/out/q55.jpg');
+    expect(resolvePaneImage(panePaths, 2, nextRound)).toBe('/out/q78.jpg');
+  });
+
+  it('长度变化：旧显式位在新默认布局下越界/换图时清空，不把旧值带到新位置', () => {
+    const previous = [ref, '/out/a.jpg'];
+    const next = [ref, '/out/b.jpg', '/out/c.jpg'];
+    expect(reconcileExplicitPaths([null, '/out/a.jpg'], previous, next)).toEqual([null, null]);
   });
 });

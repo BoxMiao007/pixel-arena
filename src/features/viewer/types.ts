@@ -99,6 +99,9 @@ export interface ViewerState {
   cellPaths: (string | null)[];
   /** 分屏每栏显式选图：数组缺省位=默认布局（第 0 栏原图、第 i 栏第 i 张跑分图）。 */
   panePaths: (string | null)[];
+  /** 上一次构建时各栏/各格的默认布局（候选增删后据此让过期的显式选择失效）。 */
+  paneDefaults: (string | null)[];
+  cellDefaults: (string | null)[];
   /** 全窗格共享视口；null = 待适配（图片就绪后按窗格尺寸 fit）。 */
   viewport: { centerX: number; centerY: number; zoom: number } | null;
   /**
@@ -129,6 +132,8 @@ export function defaultViewerState(): ViewerState {
     candidateChoices: {},
     cellPaths: [],
     panePaths: [],
+    paneDefaults: [],
+    cellDefaults: [],
     viewport: null,
     viewportTouched: false,
     compare: defaultCompareUi(),

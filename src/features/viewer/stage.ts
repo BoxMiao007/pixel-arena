@@ -43,10 +43,12 @@ import {
   type Rgb,
 } from './probe';
 import { buildFilmstrip, type FilmstripHandle, type FilmstripItem } from './filmstrip';
-import { gridLayout, paneCount } from './layout';
+import { gridLayout, isPaneSizeSane, paneCount, sameBox } from './layout';
 import {
   applyPick,
+  defaultLayout,
   pickSlot,
+  reconcileExplicitPaths,
   resolveModeCandidatePath,
   resolvePaneImage,
 } from './selection';
@@ -151,6 +153,13 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   let rebuildRetry: number | null = null;
   let structureKey = '';
 
+  // 首帧 fit 保护：布局稳定前测到的窗格尺寸不可信（真窗启动时曾量到整窗宽/高，
+  // 导致分屏 7 栏按 78% 裁切、点「适应」才回到 15%）。
+  let lastFitPane: Size | null = null;
+  let fitProbePane: Size | null = null;
+  let fitProbeTries = 0;
+  let insanePaneTries = 0;
+
   // 差异图：单条缓存 + 计算中标记（不在绘制里同步做重活）
   let diffCache: { key: string; canvas: HTMLCanvasElement } | null = null;
   let diffComputing = false;
@@ -189,6 +198,49 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     for (const image of round.candidates) imagesByPath.set(image.path, image);
   };
   refreshImageMap();
+
+  /** 各栏/各格的默认布局（候选顺序的纯投影）。 */
+  function paneDefaultsFor(target: ViewerRound): (string | null)[] {
+    return defaultLayout(roundPaths(target), paneCount(target.candidates.length));
+  }
+
+  function cellDefaultsFor(target: ViewerRound): (string | null)[] {
+    const { rows, cols } = gridLayout(target.candidates.length + 1);
+    return defaultLayout(roundPaths(target), rows * cols);
+  }
+
+  /**
+   * 候选增删后对账：默认布局在哪一位换了图，就把那一位的显式选择清掉回默认。
+   * 「第 2、3 栏都显示同一张」就是旧显式选择叠在位移后的默认布局上造成的。
+   */
+  function syncLayoutDefaults(previous: ViewerRound, next: ViewerRound): void {
+    const previousPaneDefaults = paneDefaultsFor(previous);
+    const previousCellDefaults = cellDefaultsFor(previous);
+    const nextPaneDefaults = paneDefaultsFor(next);
+    const nextCellDefaults = cellDefaultsFor(next);
+    state.panePaths = reconcileExplicitPaths(state.panePaths, previousPaneDefaults, nextPaneDefaults);
+    state.cellPaths = reconcileExplicitPaths(state.cellPaths, previousCellDefaults, nextCellDefaults);
+    state.paneDefaults = nextPaneDefaults;
+    state.cellDefaults = nextCellDefaults;
+  }
+
+  // 首次挂载：初始化默认布局；若该轮此前的显式选择是在旧默认布局下做的，先对账
+  if (state.paneDefaults.length > 0) {
+    state.panePaths = reconcileExplicitPaths(
+      state.panePaths,
+      state.paneDefaults,
+      paneDefaultsFor(round),
+    );
+  }
+  if (state.cellDefaults.length > 0) {
+    state.cellPaths = reconcileExplicitPaths(
+      state.cellPaths,
+      state.cellDefaults,
+      cellDefaultsFor(round),
+    );
+  }
+  state.paneDefaults = paneDefaultsFor(round);
+  state.cellDefaults = cellDefaultsFor(round);
 
   const onImageSettled = (): void => schedule();
 
@@ -375,16 +427,58 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     return { width, height };
   };
 
-  /** 待适配时用「原图优先、否则第一张候选」按窗格尺寸 fit；窗格还没量出来就等下一帧。 */
+  /**
+   * 窗格尺寸是否已经受舞台约束：刚挂载的那一帧，浏览器可能还没把祖先的网格/弹性
+   * 约束算进来，canvas 会量到接近整窗的宽或高。这种值一律不用于 fit。
+   */
+  function paneSizeSane(pane: Size): boolean {
+    return isPaneSizeSane(pane, stage.getBoundingClientRect());
+  }
+
+  /**
+   * 待适配时用「原图优先、否则第一张候选」按窗格尺寸 fit。
+   * 两道保险，任何一道不过就等下一帧：
+   * 1) 尺寸必须已被舞台约束（挡住「整窗大小」的过渡值）；
+   * 2) 连续两帧量到同一尺寸（挡住布局尚未收敛的首帧）。
+   */
   function ensureViewport(): boolean {
     if (state.viewport) return true;
     const pane = primaryPaneSize();
-    if (!pane) return false;
+    if (!pane) {
+      // 窗格还没量出尺寸（隐藏/未布局）：等画布 ResizeObserver 唤醒，不要空转 rAF
+      fitProbePane = null;
+      fitProbeTries = 0;
+      return false;
+    }
+    if (!paneSizeSane(pane)) {
+      // 过渡尺寸（比舞台还大）：最多再追几帧；仍不正常时按当前值兜底，
+      // 避免极窄舞台（分屏每栏 240px 比舞台还宽、本来就该横向滚动）一直不显示。
+      fitProbePane = null;
+      fitProbeTries = 0;
+      if (insanePaneTries < 5) {
+        insanePaneTries += 1;
+        schedule();
+        return false;
+      }
+    }
+    insanePaneTries = 0;
     const slotPath = candidatePathOf();
     const preferred = referenceEntry() ?? (slotPath ? entryFor(slotPath) : null);
     const entry = preferred && preferred.status === 'ok' ? preferred : firstReadyEntry();
     if (!entry || entry.status !== 'ok') return false;
+    if (!sameBox(fitProbePane, pane)) {
+      fitProbePane = pane;
+      fitProbeTries += 1;
+      // 最多等 3 帧布局收敛；仍不稳定就用当前值兜底，避免永远不显示
+      if (fitProbeTries < 3) {
+        schedule();
+        return false;
+      }
+    }
+    fitProbePane = null;
+    fitProbeTries = 0;
     state.viewport = fitViewport({ width: entry.width, height: entry.height }, pane);
+    lastFitPane = pane;
     return true;
   }
 
@@ -460,6 +554,10 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   function buildSurface(): void {
     // 栏数/格数变化会改变窗格尺寸：自动模式对新几何重新 fit
     if (!state.viewportTouched) state.viewport = null;
+    lastFitPane = null;
+    fitProbePane = null;
+    fitProbeTries = 0;
+    insanePaneTries = 0;
     disposeSurface();
     const kind = surfaceKind();
     const info = layoutInfo();
@@ -496,6 +594,22 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       );
       detachers.push(attachCanvasKeys(canvas));
       detachers.push(attachProbe(canvas, index));
+      // 逐画布监听：栏/格尺寸真正定下来（或窗口/面板变化）时，自动模式重算 fit。
+      // 只监听舞台外层曾在真窗里漏掉「外层不变、内部分栏宽度变化」的情况。
+      detachers.push(
+        watchSize(canvas, (size) => {
+          if (destroyed) return;
+          const pane = { width: Math.round(size.width), height: Math.round(size.height) };
+          if (pane.width < 4 || pane.height < 4) return;
+          if (state.viewportTouched || !state.viewport) return;
+          if (sameBox(lastFitPane, pane)) return;
+          state.viewport = null;
+          fitProbePane = null;
+          fitProbeTries = 0;
+          insanePaneTries = 0;
+          schedule();
+        }),
+      );
     });
 
     if (kind === 'single') {
@@ -1271,11 +1385,13 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     for (let index = 0; index < count; index++) {
       const path = resolveSlot(index);
       if (!path) {
-        surface.setPicker(index, '选择图片', true);
+        surface.setPicker(index, '选择图片', true, `第 ${index + 1} 栏：未选择图片`);
         continue;
       }
       const name = truncateFileName(fileName(path));
-      surface.setPicker(index, path === round.reference?.path ? `原图：${name}` : name, false);
+      const label = path === round.reference?.path ? `原图：${name}` : name;
+      const full = path === round.reference?.path ? `原图 ${path}` : path;
+      surface.setPicker(index, label, false, `第 ${index + 1} 栏：${full}`);
     }
     surface.setFocus(focusIndex);
   }
@@ -1343,7 +1459,9 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   activeCommands = commands;
 
   function adoptRound(next: ViewerRound): void {
+    const previousRound = round;
     const previousReference = round.reference?.path ?? null;
+    syncLayoutDefaults(previousRound, next);
     round = next;
     refreshImageMap();
     if ((next.reference?.path ?? null) !== previousReference) {

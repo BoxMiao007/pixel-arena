@@ -8,7 +8,9 @@ import {
   SPLIT_MIN_PANE_PX,
   cellCount,
   gridLayout,
+  isPaneSizeSane,
   paneCount,
+  sameBox,
 } from './layout';
 
 describe('gridLayout（行列自动排布）', () => {
@@ -66,5 +68,33 @@ describe('cellCount / paneCount（布局尺寸）', () => {
     expect(GRID_MIN_ROW_PX).toBeGreaterThanOrEqual(160);
     expect(GRID_MIN_CELL_PX).toBeGreaterThanOrEqual(240);
     expect(SPLIT_MIN_PANE_PX).toBeGreaterThanOrEqual(200);
+  });
+});
+
+// 真窗回归：首帧 canvas 曾量到接近整窗的宽/高（布局尚未收敛），fit 出 78% 裁切。
+// 这两条纯函数是「能不能拿这个尺寸去 fit」的唯一判据。
+describe('首帧 fit 的尺寸判据（真窗回归）', () => {
+  const stage = { width: 670, height: 400 };
+
+  it('窗格已被舞台约束（240×204）→ 可以 fit', () => {
+    expect(isPaneSizeSane({ width: 240, height: 204 }, stage)).toBe(true);
+  });
+
+  it('量到整窗宽/高的过渡值（1233×745）→ 不能 fit', () => {
+    expect(isPaneSizeSane({ width: 1233, height: 204 }, stage)).toBe(false);
+    expect(isPaneSizeSane({ width: 240, height: 745 }, stage)).toBe(false);
+  });
+
+  it('1px 取整/边框容差不算异常', () => {
+    expect(isPaneSizeSane({ width: 671, height: 401 }, stage)).toBe(true);
+    expect(isPaneSizeSane({ width: 672, height: 400 }, stage)).toBe(false);
+  });
+
+  it('连续两帧尺寸一致才认为布局稳定（1px 内视为同一尺寸）', () => {
+    expect(sameBox({ width: 240, height: 204 }, { width: 240, height: 204 })).toBe(true);
+    expect(sameBox({ width: 240, height: 204 }, { width: 241, height: 204 })).toBe(true);
+    expect(sameBox({ width: 654, height: 204 }, { width: 240, height: 204 })).toBe(false);
+    expect(sameBox(null, { width: 240, height: 204 })).toBe(false);
+    expect(sameBox(undefined, undefined)).toBe(false);
   });
 });

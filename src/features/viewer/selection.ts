@@ -94,6 +94,34 @@ export function pickSlot(
 }
 
 /**
+ * 一整排栏/格的默认布局：第 0 位原图，第 i 位第 i 张跑分图，越界为 null。
+ * 分屏 7 栏与网格 3×3 都用它，保证「默认顺序 = 候选顺序」这一条只有一个真源。
+ */
+export function defaultLayout(round: RoundLike, count: number): (string | null)[] {
+  return Array.from({ length: Math.max(0, count) }, (_, index) => defaultPaneImage(index, round));
+}
+
+/**
+ * 候选增删会让默认布局在部分位置换图。显式选图记的是「这个位置当时显示什么」，
+ * 默认布局位移后继续沿用旧选择就会出现「第 2、3 栏都显示同一张」这类错位；
+ * 这些位置直接回默认（返回 null 表示该位不再有显式选择）。
+ *
+ * 只清「默认目标变了」的位置，没受候选增删影响的显式选择保持不动。
+ */
+export function reconcileExplicitPaths(
+  paths: readonly (string | null)[],
+  previousDefaults: readonly (string | null)[],
+  nextDefaults: readonly (string | null)[],
+): (string | null)[] {
+  return paths.map((chosen, index) => {
+    if (chosen === null || chosen === undefined) return null;
+    const previous = previousDefaults[index] ?? null;
+    const next = nextDefaults[index] ?? null;
+    return previous === next ? chosen : null;
+  });
+}
+
+/**
  * 把一次选图写成新的状态切片（不改入参，返回要写回的字段）：
  * 空串表示显式留空（只对网格有意义），胶片条不提供该值。
  */

@@ -422,7 +422,7 @@
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.94);
-  color: rgba(24, 24, 24, 0.95);
+  color: rgba(0, 0, 0, 0.9);
   font-size: var(--fs-body);
   user-select: none;
 }
