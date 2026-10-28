@@ -733,3 +733,31 @@ export function applyRunResults(
       : null;
   entry.replaced = false;
 }
+
+// ---------- 产物 → 条目反查（票 #82：主界面胶囊即参数入口） ----------
+
+/**
+ * 由一张跑分图的路径反查「产出它的图片条目」；找不到返回 null。
+ *
+ * 为什么只认快照里的 artifactPath（不按文件名前缀或编码参数猜）：快照是「这张产物由
+ * 哪个条目、哪条编码器卡跑出来」的唯一权威记录（applyRunResults 写在成功结果上）。
+ * 猜会张冠李戴——把 A 图的参数弹窗开到 B 图身上，比「点不开」危险得多。
+ *
+ * 因此以下情况一律返回 null（界面据此不挂点击、只说明原因）：
+ * - 人工导入 / 一站式生成的跑分图：从未经过条目，快照里没有这条路径；
+ * - 从未成功跑分的条目（快照为 null）；
+ * - 换过图的条目：replaceImagePath 清掉了旧快照，旧产物已被清出评测轮。
+ *
+ * 命中多条时取列表里的第一条：产物路径在正常工作流里唯一，这条只用于让结果确定
+ * （不随对象遍历顺序抖动），不代表支持「一张产物属于多个条目」。
+ */
+export function entryForArtifact(
+  entries: readonly ImageEntry[],
+  artifactPath: string,
+): ImageEntry | null {
+  for (const entry of entries) {
+    const records = entry.snapshot?.encoders ?? [];
+    if (records.some((record) => record.artifactPath === artifactPath)) return entry;
+  }
+  return null;
+}

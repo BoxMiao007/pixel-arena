@@ -18,127 +18,57 @@
 //    时调 createRound），仅添加图片不建轮；本次新建的轮若一条产物都没产出就回滚删掉。
 // 3. **增量判定单一来源**：跑哪些卡、跳过哪些图全走 T2 的 planScore；本面板不另造脏判定。
 //
-// 本文件分工：上半是面板对宿主/后端的薄契约与标识回包适配（node 可测），下半是 DOM 渲染
-// 与转发（仓库约定不引 jsdom，DOM 侧只做机制守卫）。跑分编排决策与执行在
-// src/image-queue-run.ts（纯逻辑 + 注入执行器，node 环境真跑）。
+// 本文件分工：上半是面板对宿主的依赖声明（跑分编排那一半在 src/image-queue-runtime.ts，
+// 与主界面「重跑改过的」/ 胶囊的参数弹窗共用），下半是 DOM 渲染与转发（仓库约定不引
+// jsdom，DOM 侧只做机制守卫）。跑分编排决策与执行在 src/image-queue-run.ts
+// （纯逻辑 + 注入执行器，node 环境真跑）。
 
-import { askFileConflict, type ConflictSession } from './conflict';
 import {
   addImagePaths,
   badgeText,
   duplicateEntryIds,
   entryFailures,
-  imageIdentityFrom,
   imageQueueFor,
   judgeEntries,
   planScore,
-  probeFromCache,
   removeImageEntry,
-  type EncoderCard,
   type ImageEntry,
-  type ImageIdentityReading,
   type RoundSummary,
 } from './image-queue';
+import { scoreButtonLabel } from './image-queue-run';
 import {
-  nothingToRunNotice,
-  runScorePlan,
-  scoreButtonLabel,
-  summaryLines,
-  type QueueRunExecutor,
-  type ScoredCandidate,
-} from './image-queue-run';
-import type { ImageSpec } from './advanced';
-import type { AdvancedProductDto } from './advanced-ui';
+  queueEditorDeps,
+  queueIdentityProbe,
+  refreshQueueIdentities,
+  runQueuePlanOnce,
+  type QueueEditorHostDeps,
+} from './image-queue-runtime';
 import { openImageEntryEditor } from './image-entry-editor';
 import { fileName, truncateFileName } from './util';
 import { openModalCard } from './modal-card';
 
 export type { ScoredCandidate } from './image-queue-run';
 
-// ---------- 与后端的薄契约 ----------
-
-/**
- * image_identities IPC 回包的一行（camelCase，与 src-tauri 的 ImageIdentityDto 一一对应）：
- * 读不到文件时 sizeBytes / modifiedMs 为 null、error 给出中文原因，前端据此走
- * 「读取失败 → 保守判已变更」的既有分支（T2 的 ImageIdentityReading）。
- */
-export interface ImageIdentityDto {
-  path: string;
-  sizeBytes: number | null;
-  modifiedMs: number | null;
-  error: string | null;
-}
+// ---------- 对宿主的依赖 ----------
 
 /**
  * 面板对宿主（main.ts）的依赖：文件对话框、原图标识读取、工作区写入与主界面刷新。
  * 面板自己不 import invoke——IPC 全部经这里注入，与 advanced-ui.ts 的 deps 同一路数。
+ *
+ * 跑分编排用到的那一半（标识读取 / 建轮 / 编码 / 跑分 / 提示卡片）来自
+ * src/image-queue-runtime.ts 的 QueueEditorHostDeps：面板的「跑分 / 重跑」、主界面的
+ * 「重跑改过的（N 张）」与胶囊的参数弹窗用的是同一份契约与同一份编排，面板只多要
+ * 「多选图片」与「面板自己的刷新」两件面板专属能力。
  */
-export interface ImageQueueDeps {
+export interface ImageQueueDeps extends QueueEditorHostDeps {
   /** 系统多选对话框选图片；取消返回空数组。 */
   pickImages(): Promise<string[]>;
-  /** 异步批量读原图标识（IPC image_identities；读不到的行带 error）。 */
-  probeIdentities(paths: string[]): Promise<ImageIdentityDto[]>;
-  /** 惰性建轮 + 激活：宿主按「现有轮数 + 1」与图片文件名生成轮名（roundName）。 */
-  createRound(groupId: string, sourcePath: string): Promise<{ groupId: string; roundId: string }>;
-  setReference(groupId: string, roundId: string, path: string): Promise<void>;
-  /** 单个编码任务（advanced_encode；参数合并 / 冲突协议与高级创建面板同一实现）。 */
-  encode(
-    groupId: string,
-    roundId: string,
-    referencePath: string,
-    card: EncoderCard,
-    conflicts: ConflictSession,
-  ): Promise<AdvancedProductDto>;
-  /** 产物带 encodingParams 纳入本轮。 */
-  addCandidates(groupId: string, roundId: string, paths: string[], params: string[]): Promise<void>;
-  /** 清空某轮跑分图行（换图前清旧行；原图与轮保留，磁盘产物文件不删）。 */
-  clearCandidates(groupId: string, roundId: string): Promise<void>;
-  /** 删除评测轮（删条目时连带删除）。 */
-  deleteRound(groupId: string, roundId: string): Promise<void>;
-  /**
-   * 只跑指定路径的跑分图（T5 增量：paths = 本次新增产物），返回逐行结果供失败判定。
-   * 未列入的跑分图行由后端保持逐 bit 不变。
-   */
-  scoreRound(groupId: string, roundId: string, paths: string[]): Promise<ScoredCandidate[]>;
   /** 跑分期间与主界面一致地置灰（主界面的 scoring 忙标志由宿主维护）。 */
   withBusy<T>(task: () => Promise<T>): Promise<T>;
   /** 主界面忙标志（忙时面板不再发起新的跑分）。 */
   isBusy(): boolean;
-  /** 当前工作区里某轮的名字与结果条数；轮已不在工作区时返回 null。 */
-  describeRound(groupId: string, roundId: string): RoundSummary | null;
-  /** 逐图编辑弹窗（T4）：拉图片编码器目录（advanced_image_catalog）。 */
-  loadImageCatalog(): Promise<ImageSpec[]>;
-  /** 逐图编辑弹窗（T4）：系统单选对话框选一张新图片（换图）；取消返回 null。 */
-  pickReplacementImage(): Promise<string | null>;
   /** 新建了评测轮之后刷新主界面（轮次栏与标签页）。 */
   rerender(): void;
-  setStatus(text: string, isError?: boolean, title?: string): void;
-}
-
-// ---------- 标识回包适配（纯函数，node 环境可测） ----------
-
-/**
- * 把 image_identities 的回包折成 T2 的「标识读取」缓存（喂 probeFromCache）。
- *
- * 有 error 的行原样透传后端原因；没有 error 的行走 imageIdentityFrom 的口径校验
- * （字段缺失或不是有限数一律算读取失败 → 判定保守重跑，绝不误跳过）。
- */
-export function identityReadingsOf(dtos: ImageIdentityDto[]): Map<string, ImageIdentityReading> {
-  const readings = new Map<string, ImageIdentityReading>();
-  for (const dto of dtos) {
-    if (dto.error !== null && dto.error !== undefined) {
-      readings.set(dto.path, { kind: 'failed', path: dto.path, reason: dto.error });
-      continue;
-    }
-    readings.set(
-      dto.path,
-      imageIdentityFrom(dto.path, {
-        sizeBytes: dto.sizeBytes ?? undefined,
-        modifiedMs: dto.modifiedMs ?? undefined,
-      }),
-    );
-  }
-  return readings;
 }
 
 // ---------- 删条目的计划（纯函数） ----------
@@ -177,9 +107,6 @@ export function planDelete(entry: ImageEntry, round: RoundSummary | null): Delet
 
 // ---------- 面板 DOM ----------
 
-/** 标识缓存（模块级：标识是文件元数据，跨面板开关与跑分组共用一份，读新即可）。 */
-const identityCache = new Map<string, ImageIdentityReading>();
-
 /**
  * 删除确认卡片：返回 true = 用户点了「删除」，false = × / 点遮罩 / Esc / 「取消」。
  * 脚手架（遮罩 / 标题 / × / 正文 <pre> / 底部按钮 / 三路关闭 + 监听清理）走共享实现
@@ -216,29 +143,6 @@ function confirmCard(options: ConfirmCardOptions): Promise<boolean> {
       // 卡片关闭（三路之一）之后再交答案：按钮回调一定先于关闭执行
       onClose: () => resolve(confirmed),
     });
-  });
-}
-
-/** 提示 / 汇总卡片选项。 */
-export interface QueueNoticeOptions {
-  /** 卡片标题（如「无需重跑」「跑分汇总」）。 */
-  title: string;
-}
-
-/**
- * 应用内提示 / 汇总卡片（票 #79）：结构走共享实现 src/modal-card.ts
- * （`settings-overlay` 遮罩 + `.status-card` + × / 点遮罩 / Esc 三路关闭，
- * 关闭时先摘 document 上的 keydown 监听再移除遮罩）。
- *
- * 汇总卡片正文 = 本次跑分 N 张，跳过 M 张 + 逐张跳过原因；无待跑提示 = 提示文案
- * （可能带逐张点名）+ 跳过原因行。
- */
-export function showQueueNotice(lines: string[], options: QueueNoticeOptions): void {
-  openModalCard({
-    title: options.title,
-    lines,
-    cardClassName: 'queue-notice-card',
-    actions: [{ label: '知道了', className: 'settings-primary-btn' }],
   });
 }
 
@@ -316,7 +220,7 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
   panel.append(actions);
 
   /** 当前计划（按钮待跑张数与列表徽章同一判定口径）。 */
-  const currentPlan = () => planScore(session.entries, probeFromCache(identityCache));
+  const currentPlan = () => planScore(session.entries, queueIdentityProbe());
 
   /** 按钮与标题随会话态同步（不重建 DOM，避免清掉焦点）。 */
   const syncChrome = (): void => {
@@ -330,28 +234,13 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
     scoreBtn.disabled = running || deps.isBusy() || count === 0;
   };
 
-  /** 读一次全部条目的原图标识（新增/跑分前都读新；失败只警告，不影响判定保守重跑）。 */
-  const refreshIdentities = async (): Promise<void> => {
-    const paths = [...new Set(session.entries.map((entry) => entry.path))];
-    if (paths.length === 0) return;
-    try {
-      const dtos = await deps.probeIdentities(paths);
-      for (const [path, reading] of identityReadingsOf(dtos)) identityCache.set(path, reading);
-    } catch (err) {
-      // 读不到标识不是致命错误：probeFromCache 缺项一律按读取失败处理（保守重跑）
-      console.warn('读取原图信息失败（判定将按已变更保守处理）:', err);
-    }
-  };
-
-  /** 只读一张图的标识并写入缓存（换图后用：判定要按新文件的大小/修改时间算）。 */
-  const refreshOneIdentity = async (path: string): Promise<void> => {
-    try {
-      const dtos = await deps.probeIdentities([path]);
-      for (const [readPath, reading] of identityReadingsOf(dtos)) identityCache.set(readPath, reading);
-    } catch (err) {
-      console.warn('读取新原图信息失败（判定将按已变更保守处理）:', err);
-    }
-  };
+  /**
+   * 读一次全部条目的原图标识（新增/跑分前都读新；失败只警告，不影响判定保守重跑）。
+   * 缓存与主界面共用（src/image-queue-runtime.ts）：面板说「已跑分」时主界面的
+   * 「重跑改过的」也必须数出 0 张。
+   */
+  const refreshIdentities = (): Promise<void> =>
+    refreshQueueIdentities(deps, session.entries.map((entry) => entry.path));
 
   /**
    * 点列表某行 → 打开该条目的编辑弹窗（T4）。不是选中态：弹窗里有独立的图片区与
@@ -361,22 +250,15 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
     if (editorOpen || running || deps.isBusy()) return;
     editorOpen = true;
     // 弹窗关闭回调里重算列表与跑分按钮（票面：编辑后待跑数量同步变化）
-    void openImageEntryEditor(groupId, entry, {
-      loadImageCatalog: () => deps.loadImageCatalog(),
-      pickImage: () => deps.pickReplacementImage(),
-      clearCandidates: (groupIdOfCall, roundId) => deps.clearCandidates(groupIdOfCall, roundId),
-      describeRound: (roundId) => deps.describeRound(groupId, roundId),
-      refreshIdentity: (path) => refreshOneIdentity(path),
-      identityProbe: () => probeFromCache(identityCache),
-      onChanged: () => renderList(),
-      setStatus: deps.setStatus,
-    }).finally(() => {
-      editorOpen = false;
-      renderList();
-    }).catch((err: unknown) => {
-      // 弹窗自身的异常不该把整个面板带崩（会话态与列表保持原样，可重开）
-      deps.setStatus(`打开编辑窗口失败：${String(err)}`, true);
-    });
+    void openImageEntryEditor(groupId, entry, queueEditorDeps(groupId, deps, () => renderList()))
+      .finally(() => {
+        editorOpen = false;
+        renderList();
+      })
+      .catch((err: unknown) => {
+        // 弹窗自身的异常不该把整个面板带崩（会话态与列表保持原样，可重开）
+        deps.setStatus(`打开编辑窗口失败：${String(err)}`, true);
+      });
   };
 
   /** 渲染整张列表（跑完原地刷新也走这里，面板不关闭）。 */
@@ -392,7 +274,7 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
       return;
     }
     const duplicates = duplicateEntryIds(entries);
-    const verdicts = judgeEntries(entries, probeFromCache(identityCache));
+    const verdicts = judgeEntries(entries, queueIdentityProbe());
     entries.forEach((entry, index) => {
       const verdict = verdicts[index];
       const row = document.createElement('div');
@@ -463,86 +345,29 @@ export function openImageQueuePanel(groupId: string, deps: ImageQueueDeps): void
   addBtn.addEventListener('click', () => void addImages());
 
   /**
-   * 把面板依赖包成编排层的执行器：查轮存活 / 惰性建轮 / 设原图 / 单卡编码 / 纳产物 /
-   * 子集跑分。
-   * 所有 IPC 细节留在这里，src/image-queue-run.ts 只负责顺序与失败兜底（node 可测）。
-   */
-  const buildExecutor = (): QueueRunExecutor => ({
-    // 跑分前确认条目记着的轮还在工作区（被主界面删掉时编排层丢弃 id、惰性重建轮）
-    describeRound: (_entry, roundId) => deps.describeRound(groupId, roundId),
-    createRound: async (entry) => {
-      const created = await deps.createRound(groupId, entry.path);
-      return created.roundId;
-    },
-    setReference: (entry, roundId) => deps.setReference(groupId, roundId, entry.path),
-    encode: (entry, roundId, planned, conflicts) => {
-      deps.setStatus(`正在生成「${fileName(entry.path)}」的 ${planned.encoder.encoderId} 产物…`);
-      return deps.encode(groupId, roundId, entry.path, planned.encoder, conflicts);
-    },
-    addCandidates: (_entry, roundId, products) =>
-      deps.addCandidates(
-        groupId,
-        roundId,
-        products.map((product) => product.path),
-        products.map((product) => product.encodingParams),
-      ),
-    scoreCandidates: (_entry, roundId, paths) => deps.scoreRound(groupId, roundId, [...paths]),
-    deleteRound: (_entry, roundId) => deps.deleteRound(groupId, roundId),
-  });
-
-  /**
-   * 点「跑分 / 重跑」：按 planScore 只跑计划内的编码器条目。
+   * 点「跑分 / 重跑」：交给共享编排（src/image-queue-runtime.ts 的 runQueuePlanOnce）。
    *
-   * 无待跑条目时只弹提示卡片、不执行任何编码或跑分调用（runScorePlan 在计划为空时
-   * 不会碰执行器的任何方法）；有待跑时逐图执行、每张跑完原地刷新列表，最后弹汇总
-   * 卡片。面板全程不关闭。
+   * 与主界面「重跑改过的（N 张）」是同一个函数：读新原图标识 → 算计划 → 只跑计划内的
+   * 编码器条目 → 状态栏 + 提示 / 汇总卡片。计划为空时只弹提示卡片、零编码零跑分调用；
+   * 有待跑时每张跑完原地刷新列表。面板全程不关闭，忙标志由宿主的 withBusy 维护。
    */
   const runScoring = async (): Promise<void> => {
     if (running || deps.isBusy()) return;
-    if (session.entries.length === 0) {
-      deps.setStatus('还没有可跑分的图片：先添加图片（新条目自带一条 JPEG 有损配置）', true);
-      return;
-    }
     running = true;
     renderList();
     deps.rerender();
     try {
-      // 跑分前把标识读新：计划与快照比对必须基于当前文件大小/修改时间
-      await refreshIdentities();
-      const probe = probeFromCache(identityCache);
-      const report = await deps.withBusy(() =>
-        runScorePlan(session.entries, probe, buildExecutor(), {
+      await runQueuePlanOnce({
+        groupId,
+        entries: session.entries,
+        deps,
+        hooks: {
           onImageStart: ({ path, index, total }) => {
             deps.setStatus(`正在跑分 第 ${index + 1}/${total} 张（${fileName(path)}）…`);
           },
           onImageDone: () => renderList(),
-          askConflict: (name) => askFileConflict(name),
-        }),
-      );
-      if (!report.ran) {
-        // 无待跑：只弹提示卡片，runScorePlan 未执行任何编码/跑分调用。
-        // 原因按 skippedImages 分流——「没有编码器配置」不等于「已跑分且无变更」。
-        const notice = nothingToRunNotice(report.plan);
-        deps.setStatus(notice.lines.join('；'));
-        showQueueNotice(notice.lines, { title: notice.title });
-        return;
-      }
-      const failedCount = report.images.reduce((sum, image) => sum + image.failures.length, 0);
-      const systemErrors = report.images.filter((image) => image.error !== null).length;
-      if (failedCount === 0 && systemErrors === 0) {
-        deps.setStatus(`跑分完成：${report.plan.runImageCount} 张图片已更新`);
-      } else {
-        deps.setStatus(
-          `跑分完成：${report.plan.runImageCount} 张图片已更新；${failedCount} 条失败` +
-            (systemErrors > 0 ? `，${systemErrors} 张图出错` : '') +
-            '（详情见列表徽章）',
-          true,
-        );
-      }
-      // 汇总卡片：本次跑分 N 张，跳过 M 张 + 逐张跳过原因
-      showQueueNotice(summaryLines(report.plan), { title: '跑分汇总' });
-    } catch (err) {
-      deps.setStatus(`跑分失败：${String(err)}`, true);
+        },
+      });
     } finally {
       running = false;
       renderList();

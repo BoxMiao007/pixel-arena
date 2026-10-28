@@ -20,6 +20,7 @@ import {
   dropImageQueue,
   duplicateEntryIds,
   entryFailures,
+  entryForArtifact,
   identityChanged,
   imageIdentityFrom,
   imageQueueFor,
@@ -512,6 +513,67 @@ describe('失败永远不算已跑分', () => {
       okIdentity('/photos/a.png'),
     );
     expect(target.failures).toEqual([{ cardId: 'c2', reason: 'cwebp 崩溃' }]);
+  });
+});
+
+// ---------- 产物 → 条目反查（票 #82：主界面胶囊即参数入口） ----------
+
+describe('entryForArtifact：由跑分图路径反查产出它的条目', () => {
+  /** 跑过一次的条目：唯一一张卡产出 artifactPath（走真实结果回写，快照形状与运行期一致）。 */
+  function scoredWithArtifact(id: string, path: string, artifactPath: string): ImageEntry {
+    const target = entry({ id, path, encoders: [card({ id: `card-${id}` })] });
+    applyRunResults(
+      target,
+      [
+        {
+          kind: 'success',
+          cardId: `card-${id}`,
+          artifactPath,
+          fingerprint: paramFingerprint(card({ id: `card-${id}` })),
+        },
+      ],
+      okIdentity(path),
+    );
+    return target;
+  }
+
+  it('命中：返回产出该产物的那个条目，不是列表里的第一张', () => {
+    const a = scoredWithArtifact('img-a', '/photos/a.png', '/out/a.jpg');
+    const b = scoredWithArtifact('img-b', '/photos/b.png', '/out/b.jpg');
+
+    expect(entryForArtifact([a, b], '/out/a.jpg')?.id).toBe('img-a');
+    expect(entryForArtifact([a, b], '/out/b.jpg')?.id).toBe('img-b');
+  });
+
+  it('未命中：人工导入的跑分图不指向任何条目', () => {
+    const a = scoredWithArtifact('img-a', '/photos/a.png', '/out/a.jpg');
+
+    expect(entryForArtifact([a], '/imports/from-photoshop.jpg')).toBeNull();
+  });
+
+  it('没有快照（从未成功跑分）的条目不参与反查', () => {
+    const fresh = newImageEntry('/photos/c.png');
+
+    expect(entryForArtifact([fresh], '/out/c.jpg')).toBeNull();
+  });
+
+  it('换过图后快照已清：旧产物不再指向该条目', () => {
+    const a = scoredWithArtifact('img-a', '/photos/a.png', '/out/a.jpg');
+    replaceImagePath(a, '/photos/a2.png');
+
+    expect(entryForArtifact([a], '/out/a.jpg')).toBeNull();
+  });
+
+  it('多条命中取第一条（结果确定，不随列表顺序抖动）', () => {
+    const a = scoredWithArtifact('img-a', '/photos/a.png', '/out/same.jpg');
+    const b = scoredWithArtifact('img-b', '/photos/b.png', '/out/same.jpg');
+
+    expect(entryForArtifact([a, b], '/out/same.jpg')?.id).toBe('img-a');
+    expect(entryForArtifact([b, a], '/out/same.jpg')?.id).toBe('img-b');
+  });
+
+  it('空条目列表：返回 null（重启后条目清空，胶囊不该假装可配）', () => {
+    expect(entryForArtifact([], '/out/a.jpg')).toBeNull();
   });
 });
 
