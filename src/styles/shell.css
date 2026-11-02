@@ -33,8 +33,30 @@
   background: var(--surface-0);
 }
 
+/* 折叠只收成 36px 页签栏：坞不消失，点页签或头栏即可再展开（沉浸才整块隐藏）。 */
 .app.is-dock-collapsed .workspace {
-  grid-template-rows: var(--workbar-h) minmax(0, 1fr);
+  grid-template-rows: var(--workbar-h) minmax(0, 1fr) 36px;
+}
+
+.app.is-dock-collapsed .dock {
+  grid-template-rows: 36px;
+}
+
+.app.is-dock-collapsed .dock__content {
+  display: none;
+}
+
+.app.is-dock-collapsed .dock__head {
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.app.is-dock-collapsed .dock__head:hover {
+  background: var(--surface-2);
+}
+
+.app.is-dock-collapsed .dock__collapse svg {
+  transform: rotate(180deg);
 }
 
 .app.is-immersive .workspace {

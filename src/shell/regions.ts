@@ -167,17 +167,26 @@ export function mountInspector(host: HTMLElement): RegionHandle {
   return { update };
 }
 
+/** 折叠态仍留一条页签栏：这两个文案说明下一步是展开还是收起。 */
+const DOCK_EXPANDED_LABEL = '收起结果坞（Ctrl+J）';
+const DOCK_COLLAPSED_LABEL = '展开结果坞（Ctrl+J）';
+
 /** 结果坞：页签 + 可折叠，内容按「轮 × 页签」挂载。 */
 export function mountDock(host: HTMLElement): RegionHandle {
   let state: { key: string; tabId: string; handle: MountedView } | null = null;
 
   const tabsBar = el('div', { class: 'dock__tabs', attrs: { role: 'tablist', 'aria-label': '结果视图' } });
   const collapse = iconButton({
-    label: '收起结果坞（Ctrl+J）',
+    label: DOCK_EXPANDED_LABEL,
     icon: 'chevronDown',
     variant: 'quiet',
-    onClick: () => setPanelCollapsed('dock', true),
+    onClick: (event) => {
+      // 折叠条整条可点展开；这个按钮自己切换方向，别让冒泡把它又展开回来
+      event.stopPropagation();
+      setPanelCollapsed('dock', !shellState.dockCollapsed);
+    },
   });
+  collapse.classList.add('dock__collapse');
   const content = el('div', { class: 'dock__content' });
   const head = el(
     'div',
@@ -185,6 +194,12 @@ export function mountDock(host: HTMLElement): RegionHandle {
     tabsBar,
     el('div', { class: 'dock__actions' }, collapse),
   );
+  // 折叠态下头栏本身就是展开入口：点页签会顺带展开并切到那页
+  head.addEventListener('click', (event) => {
+    if (!shellState.dockCollapsed) return;
+    if ((event.target as HTMLElement).closest('.dock__collapse')) return;
+    setPanelCollapsed('dock', false);
+  });
   host.append(head, content);
 
   const destroy = (): void => {
@@ -228,7 +243,16 @@ export function mountDock(host: HTMLElement): RegionHandle {
 
   content.id = 'dock-content';
 
+  const syncCollapseControl = (): void => {
+    const collapsed = shellState.dockCollapsed;
+    const label = collapsed ? DOCK_COLLAPSED_LABEL : DOCK_EXPANDED_LABEL;
+    collapse.title = label;
+    collapse.setAttribute('aria-label', label);
+    collapse.setAttribute('aria-expanded', String(!collapsed));
+  };
+
   const update = (): void => {
+    syncCollapseControl();
     const session = activeRound(getState().workspace);
     if (!session) {
       destroy();

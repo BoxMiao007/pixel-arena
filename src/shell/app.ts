@@ -88,10 +88,11 @@ export function bootApp(root: HTMLElement): void {
   const inspector = mountInspector(inspectorHost);
   const dock = mountDock(dockHost);
 
+  // 折叠不等于消失：坞收成一条页签栏，点页签或头栏即可再展开，不必绕到工作栏图标。
+  // 只有沉浸模式才把坞整块隐藏（沉浸的语义就是「只看画面」）。
   const applyDockCollapse = (): void => {
-    const collapsed = shellState.dockCollapsed || shellState.immersive;
-    dockHost.hidden = collapsed;
-    dockResizer.hidden = collapsed;
+    dockHost.hidden = shellState.immersive;
+    dockResizer.hidden = shellState.dockCollapsed || shellState.immersive;
   };
 
   const render = (): void => {
