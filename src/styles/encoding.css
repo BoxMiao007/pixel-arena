@@ -355,13 +355,15 @@
   color: var(--text-subtle);
 }
 
-/* ---------- 编码器卡（共享渲染） ---------- */
+/* ---------- 编码器卡（共享渲染） ----------
+ * 一张卡 = 一条编码器配置。卡头可折叠：收起后只剩「第 N 项 + 编码器 + 参数摘要」，
+ * 参数区只放当前模式真正用得到的那一个主参数（质量或目标大小），不摆禁用控件。 */
 
 .enc-card {
   border: var(--hairline) solid var(--line);
   border-radius: var(--r-md);
   background: var(--surface-2);
-  padding: var(--s-2);
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3);
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
@@ -371,19 +373,76 @@
 .enc-card__head {
   display: flex;
   align-items: center;
-  gap: var(--s-1);
-  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.enc-card__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+.enc-card__toggle:hover {
+  color: var(--text);
+}
+
+.enc-card__chevron {
+  width: 12px;
+  height: 12px;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.enc-card__chevron.is-flipped {
+  transform: rotate(-90deg);
 }
 
 .enc-card__index {
-  font-size: var(--fs-meta);
   color: var(--text-subtle);
+  font-size: var(--fs-meta);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .enc-card__encoder {
-  flex: 1 1 8rem;
-  min-width: 6rem;
+  flex: 1 1 10rem;
+  min-width: 7rem;
+  max-width: 30rem;
+}
+
+.enc-card__summary {
+  flex: none;
+  max-width: 14rem;
+  color: var(--text-subtle);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.enc-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  /* 编码器下拉限宽后，把操作组推到卡头最右（摘要跟着它） */
+  margin-left: auto;
+}
+
+.enc-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
 }
 
 .enc-card__error {
@@ -398,10 +457,41 @@
   color: var(--text-subtle);
 }
 
-.enc-card__quick {
+/* 参数两列：标签列固定宽，控件列吃掉剩余宽度（同一张卡里各行标签左缘对齐） */
+.enc-card__params {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+
+.enc-card__param-label {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+}
+
+.enc-card__param-control {
+  display: flex;
+  align-items: center;
   gap: var(--s-2);
+  min-width: 0;
+}
+
+.enc-card__param-control .slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* 拉杆不必拉满整行：留一段空白比一根超长滑轨好读 */
+  max-width: 22rem;
+}
+
+.enc-card__value-text {
+  flex: none;
+  min-width: 2.2rem;
+  color: var(--text);
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .enc-card__size-row {
@@ -418,8 +508,8 @@
   width: 4.5rem;
 }
 
-.enc-card__advanced,
-.enc-card__preview {
+/* 折叠区（高级参数 / 命令行预览）：同一个开关样式，不再混用 details 的三角 */
+.enc-card__region {
   border-top: var(--hairline) solid var(--line);
   padding-top: var(--s-1);
 }
@@ -427,15 +517,18 @@
 .enc-card__region-btn {
   display: inline-flex;
   align-items: center;
-  gap: var(--s-1);
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
 }
 
-.enc-card__region-btn .enc-card__chevron {
-  transition: transform var(--dur-fast) var(--ease-out);
-}
-
-.enc-card__region-btn .enc-card__chevron.is-flipped {
-  transform: rotate(-90deg);
+.enc-card__region-btn:hover {
+  color: var(--text);
 }
 
 .enc-card__region-body {
@@ -480,12 +573,6 @@
   min-width: 4rem;
 }
 
-.enc-card__summary {
-  font-size: var(--fs-meta);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
 .enc-card__preview-row {
   display: flex;
   align-items: flex-start;
@@ -505,8 +592,6 @@
   word-break: break-all;
   white-space: pre-wrap;
 }
-
-/* ---------- 参数变体编辑区（候选分区就地 / 「高级选项」弹窗） ---------- */
 
 .enc-editor {
   display: flex;

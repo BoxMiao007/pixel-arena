@@ -3,8 +3,9 @@
 // 一行 = 一张跑分图（已生成的文件），或一个还没生成的参数变体：
 // - 普通图：文件名、大小、体积比、编码参数、状态（完成 / 跑分中 / 待跑分 / 失败）、移除；
 // - 参数变体：摘要（如「JPEG q75」）+ 四态徽章；已生成的由它产出的那一行代表，
-//   点名字就地展开编码器配置（与「高级选项」弹窗同一份实现），× 删除变体；
-// - 右键已跑分的图 →「高级选项」：复制一份带参数副本的新变体并打开调参弹窗。
+//   点名字就地展开编码器配置（与「从原图新建编码」弹窗同一份实现），× 删除变体；
+// - 调参入口只有分区顶部的「＋ 从原图新建编码」：变体永远从本轮原图出发，
+//   不再从某张已跑分 / 未跑分的图复制参数（复制来源本身是猜的）。
 //
 // 两类图不做分组隔离：排序、状态口径、移除交互一致；只有参数变体多一枚「高级」角标。
 
@@ -13,7 +14,6 @@ import { el } from '../../../ui/dom';
 import { formatRatio, formatSize } from '../../../core/format';
 import { fileName, truncateFileName } from '../../../core/util';
 import { isBusy, isPathRunning, touch } from '../../../core/store';
-import { openMenu } from '../../../ui/overlay';
 import type { CandidateImage } from '../../../core/model';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
 import {
@@ -28,7 +28,6 @@ import { candidatesStateFor } from '../session';
 import {
   addParamVariant,
   dropOnCandidates,
-  duplicateCandidateVariant,
   entryEditorDeps,
   pickCandidates,
   refreshRoundIdentity,
@@ -131,37 +130,6 @@ export const candidatesSection: PanelSection = {
       render();
     };
 
-    /** 右键已跑分的图：唯一菜单项「高级选项」（复制 + 调参）。 */
-    const openAdvancedMenu = (anchor: HTMLElement, candidate: CandidateImage): void => {
-      if (candidate.metrics === null || candidate.error !== null) return;
-      openMenu(
-        anchor,
-        [
-          {
-            label: '高级选项',
-            hint: '复制并调参',
-            disabled: isBusy(),
-            onSelect: () => {
-              void duplicateCandidateVariant(ctx, candidate).then((entry) => {
-                if (entry === null) return;
-                openEntryEditorModal(
-                  entry,
-                  entryEditorDeps(ctx.group.id, ctx.round.id, () => {
-                    state().version += 1;
-                    touch();
-                    render();
-                  }),
-                );
-                state().version += 1;
-                render();
-              });
-            },
-          },
-        ],
-        { label: `${fileName(candidate.path)} 的操作` },
-      );
-    };
-
     /** 标识自举只做一次：读完重绘，避免变体因「还没读到标识」被误报「将重跑」。 */
     let identityReady = false;
     const ensureIdentity = (referencePath: string): void => {
@@ -253,10 +221,8 @@ export const candidatesSection: PanelSection = {
           const metaItems: string[] = [formatSize(candidate.fileSize)];
           if (candidate.sizeRatio !== null) metaItems.push(formatRatio(candidate.sizeRatio));
           if (candidate.encodingParams) metaItems.push(candidate.encodingParams);
-          // 只有已跑分且未失败的图才有「高级选项」；行尾给一个键盘可达的入口，
-          // 右键菜单保留（鼠标用户顺手，但右键不是唯一路径）。
-          const canOpenAdvanced = candidate.metrics !== null && candidate.error === null;
-
+          // 这一行只保留身份与状态：调参入口统一收敛到分区顶部的「＋ 从原图新建编码」，
+          // 已跑分 / 未跑分的图都不再各自复制一份参数（复制来源本身就是猜的）。
           const row = el(
             'div',
             { class: 'cand__row' },
@@ -267,19 +233,9 @@ export const candidatesSection: PanelSection = {
               nameNode,
               owner === null
                 ? null
-                : badge('高级', 'neutral', '这张图由参数变体生成：右键「高级选项」可复制一份再调参'),
+                : badge('高级', 'neutral', '这张图由参数变体生成：点文件名可继续调参'),
               el('span', { class: 'cand__spacer' }),
               badge(label, kind, candidate.error ?? undefined),
-              canOpenAdvanced
-                ? iconButton({
-                    label: `高级选项：${fileName(candidate.path)}`,
-                    icon: 'more',
-                    variant: 'quiet',
-                    size: 'sm',
-                    title: '高级选项（复制一份并调参）',
-                    onClick: () => openAdvancedMenu(row, candidate),
-                  })
-                : null,
               iconButton({
                 label: `移除 ${fileName(candidate.path)}`,
                 icon: 'close',
@@ -296,14 +252,6 @@ export const candidatesSection: PanelSection = {
               ...metaItems.map((text) => el('span', { class: 'cand__meta', text })),
             ),
           );
-
-          if (canOpenAdvanced) {
-            row.addEventListener('contextmenu', (event) => {
-              event.preventDefault();
-              openAdvancedMenu(row, candidate);
-            });
-            row.title = '右键或点「更多」：高级选项（复制一份并调参）';
-          }
 
           list.append(
             el(
@@ -378,9 +326,9 @@ export const candidatesSection: PanelSection = {
               onClick: () => void pickCandidates(ctx),
             }),
             button({
-              label: '＋ 新建参数变体',
+              label: '＋ 从原图新建编码',
               variant: 'secondary',
-              title: '基于本轮原图新建一个带独立参数的变体（右键已跑分的图也能复制一份）',
+              title: '用本轮原图新建一套编码参数（可加多条），生成后就是本轮的跑分图',
               disabled: isBusy() || round.referencePath === null,
               onClick: () => {
                 void addParamVariant(ctx).then((entry) => {

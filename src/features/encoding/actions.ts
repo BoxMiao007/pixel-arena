@@ -26,19 +26,16 @@ import {
   removeCandidate,
   setRoundReference,
 } from '../../core/actions';
-import type { CandidateImage, Group, Round, Workspace } from '../../core/model';
+import type { Group, Round, Workspace } from '../../core/model';
 import type { ToolStatus } from '../../core/settings';
 import {
-  cardForArtifact,
   entryForArtifact,
   forgetArtifact,
   imageQueueFor,
   newVariant,
   planScore,
-  presetCardFor,
   removeImageEntry,
   syncEntryReference,
-  variantFromCard,
   variantSummary,
   type ImageEntry,
   type RoundSummary,
@@ -109,9 +106,6 @@ function findRound(workspace: Workspace | null, groupId: string, roundId: string
   );
 }
 
-function fileNameOf(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
-}
 
 // ---------- 来源：原图 ----------
 
@@ -351,7 +345,7 @@ export function variantRuntimeDeps(
   };
 }
 
-/** 参数编辑区的依赖（分区就地展开与「高级选项」弹窗共用一份接线）。 */
+/** 参数编辑区的依赖（分区就地展开与「从原图新建编码」弹窗共用一份接线）。 */
 export function entryEditorDeps(
   groupId: string,
   roundId: string,
@@ -361,7 +355,7 @@ export function entryEditorDeps(
 }
 
 /**
- * 新建一个参数变体（「跑分图」分区的「＋ 新建参数变体」与「高级」分区共用）。
+ * 新建一个参数变体（「跑分图」分区的「＋ 从原图新建编码」与「高级」分区共用）。
  *
  * 变体永远编码本轮原图：没有原图就先拒绝并给下一步（选择原图），
  * 不制造「看起来能跑其实没有基准」的假入口。
@@ -380,50 +374,6 @@ export async function addParamVariant(ctx: RoundCtx): Promise<ImageEntry | null>
   entries.push(entry);
   await refreshQueueIdentities(variantRuntimeDeps(live.group.id, live.round.id), [referencePath]);
   status(`已添加参数变体（${variantSummary(entry)}）：调完参数点「生成并跑分」，它就成了本轮的一张跑分图`);
-  return entry;
-}
-
-/**
- * 右键「高级选项」的落点：复制选中的跑分图，生成一个待调参的新变体。
- *
- * 参数口径（票面）：由变体产出的图复制**产出它的那张编码器卡**；人工导入 / 一站式
- * 生成的图没有参数可依，按同格式的**预设参数**起头（认不出格式时退回默认 JPEG）。
- * 原条目保持不变：复制体是独立的新图，改参数不会回头影响原图。
- */
-export async function duplicateCandidateVariant(
-  ctx: RoundCtx,
-  candidate: CandidateImage,
-): Promise<ImageEntry | null> {
-  if (isBusy()) return null;
-  const live = liveCtx(ctx);
-  const referencePath = live.round.referencePath;
-  if (!referencePath) {
-    status('先选择原图，再复制参数变体', true);
-    return null;
-  }
-  const entries = variantEntries(live.group.id, live.round.id);
-  syncEntryReference(entries, referencePath);
-  const owner = entryForArtifact(entries, candidate.path);
-  const card = owner === null ? null : cardForArtifact(owner, candidate.path);
-  let entry: ImageEntry;
-  if (card !== null) {
-    entry = variantFromCard(referencePath, card);
-  } else {
-    let specs: ImageSpec[] = [];
-    try {
-      specs = await ensureImageSpecs();
-    } catch (err) {
-      console.warn('加载编码器目录失败，复制体按默认 JPEG 预设起头:', err);
-    }
-    entry = newVariant(referencePath, [presetCardFor(candidate.path, specs)]);
-  }
-  entries.push(entry);
-  await refreshQueueIdentities(variantRuntimeDeps(live.group.id, live.round.id), [referencePath]);
-  status(
-    card !== null
-      ? `已复制「${fileNameOf(candidate.path)}」的参数：调完点「完成」，下次跑分生成新图`
-      : '已按预设参数新建参数变体：调完点「完成」，下次跑分生成新图',
-  );
   return entry;
 }
 

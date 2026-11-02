@@ -196,10 +196,10 @@ describe('runQueuePlanOnce：无待跑时零编码零跑分调用', () => {
     expect(notices).toHaveLength(0);
   });
 
-  it('空变体提示指向「高级选项」与「新建参数变体」，不再指向已取消的条目队列', () => {
-    expect(EMPTY_VARIANTS_MESSAGE).toContain('高级选项');
-    expect(EMPTY_VARIANTS_MESSAGE).toContain('新建参数变体');
-    expect(EMPTY_VARIANTS_MESSAGE).not.toContain('高级创建');
+  it('空变体提示只指向「从原图新建编码」（不再有右键复制候选参数的入口）', () => {
+    expect(EMPTY_VARIANTS_MESSAGE).toContain('从原图新建编码');
+    expect(EMPTY_VARIANTS_MESSAGE).not.toContain('高级选项');
+    expect(EMPTY_VARIANTS_MESSAGE).not.toContain('新建参数变体');
   });
 });
 
@@ -294,7 +294,7 @@ describe('runQueuePlanOnce：有待跑时走既有增量引擎', () => {
   });
 });
 
-// ---------- 参数编辑区的依赖（分区就地展开与「高级选项」弹窗共用） ----------
+// ---------- 参数编辑区的依赖（分区就地展开与「从原图新建编码」弹窗共用） ----------
 
 describe('queueEditorDeps：参数编辑区的接线只此一份', () => {
   it('identityProbe 读同一份标识缓存；读新后立即可判；onChanged 原样转发', async () => {

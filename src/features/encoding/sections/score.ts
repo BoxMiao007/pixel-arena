@@ -140,7 +140,7 @@ export const scoreSection: PanelSection = {
                   disabled: busy,
                   title: !hasReference
                     ? '选一张未压缩的原图作为本轮基准'
-                    : '把用其它工具压好的图加入本轮；也可以在「跑分图」分区新建参数变体',
+                    : '把用其它工具压好的图加入本轮；也可以在「跑分图」分区从原图新建编码',
                   onClick: () => void (hasReference ? pickCandidates(ctx) : pickReference(ctx)),
                 }),
               ),

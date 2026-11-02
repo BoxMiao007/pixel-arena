@@ -1,4 +1,4 @@
-// 参数变体编辑区（就地展开版）：跑分图列表里展开的一块，或「高级选项」弹窗的主体。
+// 参数变体编辑区（就地展开版）：跑分图列表里展开的一块，或「从原图新建编码」弹窗的主体。
 //
 // 与旧整屏弹窗的差别：只提供「内容视图」（renderEntryEditor 返回节点），由调用方决定
 // 放在检视器分区里还是模态里——同一份实现，两处不漂移。
@@ -62,6 +62,8 @@ function collectOpenRegions(root: ParentNode): Map<string, Map<string, boolean>>
     const id = card.dataset.entryId;
     if (id === undefined) continue;
     const openByRegion = new Map<string, boolean>();
+    // 整卡折叠也走同一份状态表（region 名固定为 'card'）
+    openByRegion.set('card', card.dataset.open !== 'false');
     for (const region of card.querySelectorAll<HTMLElement>('[data-adv-region]')) {
       if (region instanceof HTMLDetailsElement) {
         openByRegion.set(region.dataset.advRegion ?? '', region.open);
@@ -111,6 +113,8 @@ export function renderEntryEditor(entry: ImageEntry, deps: ImageEntryEditorDeps)
   );
 
   const cardsBox = el('div', { class: 'enc-editor__cards' });
+  /** 刚添加的卡片索引：重建后默认展开它，其余保持原样。 */
+  let freshCardIndex: number | null = null;
   const hintBox = el('p', { class: 'enc-editor__hint' });
   const node = el('div', { class: 'enc-editor' }, head, hintBox, cardsBox);
 
@@ -179,11 +183,16 @@ export function renderEntryEditor(entry: ImageEntry, deps: ImageEntryEditorDeps)
             },
             onCopy: (text) => copyText(text, () => deps.setStatus('已复制命令行')),
           },
-          { referencePath: entry.path },
+          {
+            referencePath: entry.path,
+            // 首条默认展开，其余默认收起；刚点「添加编码器」加出来的那条保持展开
+            open: previous.get(card.id)?.get('card') ?? (index === 0 || index === freshCardIndex),
+          },
         ),
       );
     });
     restoreOpenRegions(cardsBox, previous);
+    freshCardIndex = null;
     cardsBox.append(
       el(
         'div',
@@ -195,6 +204,7 @@ export function renderEntryEditor(entry: ImageEntry, deps: ImageEntryEditorDeps)
           title: '给这个变体再加一条编码器配置（同一编码器可以重复添加，各自参数独立）',
           onClick: () => {
             if (!addEncoderCard(entry, specs)) return;
+            freshCardIndex = entry.encoders.length - 1;
             renderCards();
             notifyChanged();
           },

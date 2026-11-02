@@ -7,13 +7,14 @@
 // 参数合并、冲突校验、命令行预览等纯逻辑仍在 features/encoding/logic/advanced.ts
 // （本模块只调用不重写；那边有单测）。这里只有布局与控件接线。
 //
-// 结构：卡头（序号 + 编码器选择 + 恢复默认 + ↑↓×）→ 快速参数（无损 / 质量 / 目标大小 /
-// 模式）→ 高级参数行（默认展开）→ 命令行预览（默认收起）。折叠区按
+// 结构：卡头（折叠开关 + 序号 + 编码器选择 + 收起时的参数摘要 + 恢复默认 / ↑↓×）→
+// 参数（模式 + 跟着模式切换的单一主参数；无损开关只对支持的编码器出现）→
+// 高级参数行（默认收起）→ 命令行预览（默认收起）。整卡与两个折叠区都按
 // data-entry-id × data-adv-region 双层键控，宿主整卡重建时照原样回写。
 
 import { el } from './dom';
 import { icon } from './icons';
-import { button, field, iconButton, segmented, sliderField } from './primitives';
+import { button, iconButton, segmented, switchField } from './primitives';
 import {
   previewImageCommand,
   previewVideoCommand,
@@ -52,6 +53,8 @@ export interface EncoderCardOptions {
   referencePath?: string | null;
   /** 该条目编码器不可用的中文原因（卡内红标）。 */
   unavailableError?: string | null;
+  /** 整卡是否展开（默认展开）。条目多时宿主只展开正在编辑的那一条。 */
+  open?: boolean;
 }
 
 /** 图片条目对应的规格（非图片卡或目录里没有该编码器时返回 null）。 */
@@ -201,55 +204,215 @@ export function renderEncoderCard(
     encoderSelect.value = entry.encoderId;
   }
 
+  // ---------- 卡头：折叠开关 + 编码器 + 收起时的一句话摘要 + 操作 ----------
+  const summary = el('span', { class: 'enc-card__summary' });
+  const collapseToggle = el(
+    'button',
+    { class: 'enc-card__toggle', attrs: { type: 'button' } },
+    icon('chevronDown', 'icon enc-card__chevron'),
+    el('span', { class: 'enc-card__index', text: `第 ${index + 1} 项` }),
+  );
+
   const head = el(
     'div',
     { class: 'enc-card__head' },
-    el('span', { class: 'enc-card__index', text: `第 ${index + 1} 项` }),
+    collapseToggle,
     encoderSelect,
-    button({
-      label: '恢复默认',
-      variant: 'quiet',
-      size: 'sm',
-      title: '把这条配置的质量、模式、目标大小、无损开关与全部参数行恢复到刚添加时的状态',
-      onClick: () => {
-        resetEntryToDefault(entry, spec);
-        callbacks.onReset();
-      },
-    }),
-    iconButton({
-      label: '上移（排序影响创建顺序）',
-      icon: 'chevronUp',
-      variant: 'quiet',
-      size: 'sm',
-      onClick: () => callbacks.onMove(-1),
-    }),
-    iconButton({
-      label: '下移',
-      icon: 'chevronDown',
-      variant: 'quiet',
-      size: 'sm',
-      onClick: () => callbacks.onMove(1),
-    }),
-    iconButton({
-      label: '删除该编码器配置',
-      icon: 'trash',
-      variant: 'quiet',
-      size: 'sm',
-      onClick: () => callbacks.onRemove(),
-    }),
+    summary,
+    el(
+      'div',
+      { class: 'enc-card__actions' },
+      button({
+        label: '恢复默认',
+        variant: 'quiet',
+        size: 'sm',
+        title: '把这条配置的质量、模式、目标大小、无损开关与全部参数行恢复到刚添加时的状态',
+        onClick: () => {
+          resetEntryToDefault(entry, spec);
+          callbacks.onReset();
+        },
+      }),
+      iconButton({
+        label: '上移（排序影响创建顺序）',
+        icon: 'chevronUp',
+        variant: 'quiet',
+        size: 'sm',
+        onClick: () => callbacks.onMove(-1),
+      }),
+      iconButton({
+        label: '下移',
+        icon: 'chevronDown',
+        variant: 'quiet',
+        size: 'sm',
+        onClick: () => callbacks.onMove(1),
+      }),
+      iconButton({
+        label: '删除该编码器配置',
+        icon: 'trash',
+        variant: 'quiet',
+        size: 'sm',
+        onClick: () => callbacks.onRemove(),
+      }),
+    ),
   );
   card.append(head);
 
+  const body = el('div', { class: 'enc-card__body' });
+  card.append(body);
+
   if (options.unavailableError) {
-    card.append(el('p', { class: 'enc-card__error', text: options.unavailableError }));
+    body.append(el('p', { class: 'enc-card__error', text: options.unavailableError }));
   }
 
-  // ---------- 命令行预览（默认收起） ----------
+  // ---------- 参数：模式 + 主参数（质量或目标大小，跟着模式切换） ----------
+  if (spec) {
+    const paramsGrid = el('div', { class: 'enc-card__params' });
+
+    // 无损时「模式 / 质量 / 目标大小」都不生效：整块不渲染，只留无损开关，
+    // 不摆一堆按了没反应的禁用控件，也不写解释这些控件为什么不能用。
+    if (!entry.lossless) {
+      const mode = segmented({
+        items: [
+          { id: 'quality', label: '质量优先', title: '按质量值直接编码' },
+          { id: 'size', label: '大小优先', title: '按目标大小自动搜索最接近的质量点' },
+        ],
+        value: entry.mode,
+        ariaLabel: '编码模式',
+        size: 'sm',
+        onChange: (id) => {
+          entry.mode = id === 'size' ? 'size' : 'quality';
+          callbacks.onChange();
+        },
+      });
+      paramsGrid.append(el('span', { class: 'enc-card__param-label', text: '模式' }), mode.node);
+
+      if (entry.mode === 'size') {
+        const sizeInput = el('input', {
+          class: 'input enc-card__size',
+          attrs: { type: 'number', min: '0', step: 'any', 'aria-label': '目标大小' },
+        }) as HTMLInputElement;
+        const unitBytes = entry.unit === 'KB' ? 1024 : 1024 * 1024;
+        const shown = entry.targetBytes / unitBytes;
+        sizeInput.value = Number.isInteger(shown) ? String(shown) : shown.toFixed(2);
+        sizeInput.addEventListener('change', () => {
+          const bytes = Math.round(Number(sizeInput.value) * unitBytes);
+          if (Number.isFinite(bytes) && bytes >= 1) entry.targetBytes = bytes;
+          // 非法输入不落状态（提交时由 validateEntry 汇总报错），回显当前真值
+          const current = entry.targetBytes / unitBytes;
+          sizeInput.value = Number.isInteger(current) ? String(current) : current.toFixed(2);
+        });
+        const unitSelect = el('select', {
+          class: 'select enc-card__unit',
+          attrs: { 'aria-label': '目标大小单位' },
+          on: {
+            change: () => {
+              entry.unit = unitSelect.value === 'MB' ? 'MB' : 'KB';
+              callbacks.onChange();
+            },
+          },
+        }) as HTMLSelectElement;
+        for (const unit of ['KB', 'MB'] as const) {
+          unitSelect.append(el('option', { text: unit, attrs: { value: unit } }));
+        }
+        unitSelect.value = entry.unit;
+        paramsGrid.append(
+          el('span', { class: 'enc-card__param-label', text: '目标大小' }),
+          el('div', { class: 'enc-card__param-control enc-card__size-row' }, sizeInput, unitSelect),
+        );
+      } else {
+        const qualityValue = el('span', {
+          class: 'enc-card__value-text',
+          text: String(entry.quality),
+        });
+        const qualityRange = el('input', {
+          class: 'slider enc-card__value',
+          attrs: {
+            type: 'range',
+            min: String(spec.qualityMin),
+            max: String(spec.qualityMax),
+            step: String(imageSpec?.qualityStep ?? 1),
+            value: String(entry.quality),
+            'aria-label': `质量（${spec.qualityFlag}）`,
+          },
+        }) as HTMLInputElement;
+        qualityRange.addEventListener('input', () => {
+          entry.quality = Number(qualityRange.value);
+          qualityValue.textContent = qualityRange.value;
+          onChangeLive();
+        });
+        paramsGrid.append(
+          el('span', { class: 'enc-card__param-label', text: `质量（${spec.qualityFlag}）` }),
+          el('div', { class: 'enc-card__param-control' }, qualityRange, qualityValue),
+        );
+      }
+    }
+    body.append(paramsGrid);
+
+    // 不支持无损的编码器（如 JPEG）不渲染开关：不摆了却按不下去，也不解释。
+    // 开关落进同一张参数网格，和上面的「模式 / 质量」左缘对齐。
+    if (spec.losslessSupported) {
+      const lossless = switchField({
+        label: '无损',
+        checked: entry.lossless,
+        onChange: (next) => {
+          entry.lossless = next;
+          callbacks.onChange();
+        },
+      });
+      lossless.button.title = spec.losslessNote;
+      lossless.button.setAttribute('aria-label', '无损（像素与原图逐位一致）');
+      paramsGrid.append(
+        el('span', { class: 'enc-card__param-label', text: '无损' }),
+        el('div', { class: 'enc-card__param-control' }, lossless.button),
+      );
+    }
+  } else {
+    body.append(
+      el('p', {
+        class: 'enc-card__hint',
+        text: '表外编码器（无推荐参数）：用下面的高级参数行自行配置，命令行预览可自查。',
+      }),
+    );
+  }
+
+  // ---------- 折叠区（高级参数行 / 命令行预览）：同一套开关，不用两种折叠样式 ----------
+  const makeRegion = (
+    name: string,
+    label: string,
+    openByDefault: boolean,
+  ): { root: HTMLDivElement; body: HTMLDivElement; labelEl: HTMLElement } => {
+    const labelEl = el('span', { class: 'enc-card__region-label', text: label });
+    const btn = el(
+      'button',
+      { class: 'enc-card__region-btn', attrs: { type: 'button' } },
+      icon('chevronDown', 'icon enc-card__chevron'),
+      labelEl,
+    );
+    const regionBody = el('div', { class: 'enc-card__region-body' });
+    const root = el(
+      'div',
+      {
+        class: 'enc-card__region',
+        dataset: { advRegion: name, open: String(openByDefault) },
+      },
+      btn,
+      regionBody,
+    );
+    const apply = (open: boolean): void => {
+      regionBody.hidden = !open;
+      root.dataset.open = String(open);
+      btn.setAttribute('aria-expanded', String(open));
+      btn.querySelector('.icon')?.classList.toggle('is-flipped', !open);
+    };
+    btn.addEventListener('click', () => apply(regionBody.hidden));
+    apply(openByDefault);
+    return { root, body: regionBody, labelEl };
+  };
+
+  // 命令行预览（默认收起）
   const cmdEl = el('code', { class: 'enc-card__cmd' });
-  const previewDetails = el(
-    'details',
-    { class: 'enc-card__preview', dataset: { advRegion: 'preview' } },
-    el('summary', { class: 'enc-card__summary', text: '命令行预览' }),
+  const preview = makeRegion('preview', '命令行预览', false);
+  preview.body.append(
     el(
       'div',
       { class: 'enc-card__preview-row' },
@@ -278,119 +441,8 @@ export function renderEncoderCard(
         : '输入为原图路径，产物写到原图旁的 Pixel Arena 文件夹';
   };
 
-  // ---------- 快速参数 ----------
-  if (spec) {
-    const quick = el('div', { class: 'enc-card__quick' });
-
-    // 无损（不支持时禁用并给出原因）
-    const losslessButton = button({
-      label: entry.lossless ? '无损：开' : '无损：关',
-      variant: entry.lossless ? 'primary' : 'secondary',
-      size: 'sm',
-      title: spec.losslessSupported ? spec.losslessNote || '无损：像素与原图逐位一致' : spec.losslessNote,
-      disabled: !spec.losslessSupported,
-      onClick: () => {
-        entry.lossless = !entry.lossless;
-        callbacks.onChange();
-      },
-    });
-    quick.append(
-      field({ label: '无损', control: losslessButton, hint: spec.losslessSupported ? undefined : spec.losslessNote }),
-    );
-
-    // 质量
-    const quality = sliderField({
-      label: `质量（${spec.qualityFlag}）`,
-      min: spec.qualityMin,
-      max: spec.qualityMax,
-      step: imageSpec?.qualityStep ?? 1,
-      value: entry.quality,
-      onInput: (value) => {
-        entry.quality = value;
-        onChangeLive();
-      },
-      format: (value) => String(value),
-    });
-    quality.input.disabled = entry.lossless;
-    quick.append(quality.node);
-
-    // 目标大小（KB / MB；真值一律字节）
-    const sizeInput = el('input', {
-      class: 'input enc-card__size',
-      attrs: { type: 'number', min: '0', step: 'any', 'aria-label': '目标大小' },
-    }) as HTMLInputElement;
-    const unitBytes = entry.unit === 'KB' ? 1024 : 1024 * 1024;
-    const shown = entry.targetBytes / unitBytes;
-    sizeInput.value = Number.isInteger(shown) ? String(shown) : shown.toFixed(2);
-    sizeInput.disabled = entry.lossless || entry.mode === 'quality';
-    sizeInput.addEventListener('change', () => {
-      const bytes = Math.round(Number(sizeInput.value) * unitBytes);
-      if (Number.isFinite(bytes) && bytes >= 1) entry.targetBytes = bytes;
-      // 非法输入不落状态（提交时由 validateEntry 汇总报错），回显当前真值
-      const current = entry.targetBytes / unitBytes;
-      sizeInput.value = Number.isInteger(current) ? String(current) : current.toFixed(2);
-    });
-    const unitSelect = el('select', {
-      class: 'select enc-card__unit',
-      attrs: { 'aria-label': '目标大小单位' },
-      on: {
-        change: () => {
-          entry.unit = unitSelect.value === 'MB' ? 'MB' : 'KB';
-          callbacks.onChange();
-        },
-      },
-    }) as HTMLSelectElement;
-    for (const unit of ['KB', 'MB'] as const) {
-      unitSelect.append(el('option', { text: unit, attrs: { value: unit } }));
-    }
-    unitSelect.value = entry.unit;
-    unitSelect.disabled = entry.lossless || entry.mode === 'quality';
-    quick.append(
-      field({
-        label: '目标大小',
-        // 输入框 + 单位下拉是两个 labelable 控件：用 div + labelledby，避免 label 把点击转发给输入框。
-        composite: true,
-        control: el('div', { class: 'enc-card__size-row' }, sizeInput, unitSelect),
-        hint: entry.mode === 'quality' ? '仅大小优先模式使用' : undefined,
-      }),
-    );
-
-    // 模式
-    const mode = segmented({
-      items: [
-        { id: 'quality', label: '质量优先', title: '按质量值直接编码' },
-        { id: 'size', label: '大小优先', title: '按目标大小自动搜索最接近的质量点' },
-      ],
-      value: entry.mode,
-      ariaLabel: '编码模式',
-      size: 'sm',
-      onChange: (id) => {
-        entry.mode = id === 'size' ? 'size' : 'quality';
-        callbacks.onChange();
-      },
-    });
-    // 模式是 radiogroup（两个按钮）：必须用 composite，否则点「模式」会误触第一个按钮。
-    quick.append(field({ label: '模式', composite: true, control: mode.node }));
-    card.append(quick);
-  } else {
-    card.append(
-      el('p', {
-        class: 'enc-card__hint',
-        text: '表外编码器（无推荐参数）：用下面的高级参数行自行配置，命令行预览可自查。',
-      }),
-    );
-  }
-
-  // ---------- 高级参数行（默认展开） ----------
-  const toggleAdvanced = el(
-    'button',
-    { class: 'btn btn--quiet btn--sm enc-card__region-btn', attrs: { type: 'button', 'aria-expanded': 'true' } },
-    icon('chevronDown', 'icon enc-card__chevron'),
-    el('span', { text: '' }),
-  );
-  const summaryText = toggleAdvanced.querySelector('span')!;
+  // 高级参数行（默认收起：条目一多，展开的参数行会把卡撑得很长）
   const rowsBox = el('div', { class: 'enc-card__rows' });
-
   const knownList = knownParamsOf(catalog, entry);
   const usedFlags = new Set(entry.rows.map((row) => row.flag.trim()));
   const available = knownList.filter((known) => !usedFlags.has(known.flag));
@@ -437,31 +489,14 @@ export function renderEncoderCard(
     addCustom,
   );
 
+  const advanced = makeRegion('advanced', '高级参数行', false);
+  advanced.body.append(addRow, rowsBox);
+
   const syncSummary = (): void => {
     const active = entry.rows.filter((row) => row.enabled).length;
-    summaryText.textContent = `高级参数行（${active} 项生效 / 共 ${entry.rows.length} 行）`;
+    advanced.labelEl.textContent = `高级参数（${active} 项生效 / 共 ${entry.rows.length} 行）`;
   };
   syncSummary();
-
-  const advancedBody = el(
-    'div',
-    { class: 'enc-card__region-body' },
-    addRow,
-    rowsBox,
-  );
-  toggleAdvanced.addEventListener('click', () => {
-    const open = advancedBody.hidden;
-    advancedBody.hidden = !open;
-    advancedDetails.dataset.open = String(open);
-    toggleAdvanced.setAttribute('aria-expanded', String(open));
-    toggleAdvanced.querySelector('.icon')?.classList.toggle('is-flipped', !open);
-  });
-  const advancedDetails = el(
-    'div',
-    { class: 'enc-card__advanced', dataset: { advRegion: 'advanced', open: 'true' } },
-    toggleAdvanced,
-    advancedBody,
-  );
 
   /** 参数行的值控件：布尔 = 开/关分段；下拉 = select；数值/文本 = input。 */
   const valueWidget = (row: AdvancedParamRow): HTMLElement => {
@@ -597,7 +632,31 @@ export function renderEncoderCard(
     rowsBox.append(rowEl);
   });
 
-  card.append(advancedDetails, previewDetails);
+  body.append(advanced.root, preview.root);
+
+  // ---------- 整卡折叠：收起后只留「第 N 项 + 编码器 + 参数摘要」 ----------
+  const summaryText = (): string => {
+    if (entry.lossless) return '无损';
+    if (entry.mode === 'size') {
+      const unitBytes = entry.unit === 'KB' ? 1024 : 1024 * 1024;
+      const shown = entry.targetBytes / unitBytes;
+      const text = Number.isInteger(shown) ? String(shown) : shown.toFixed(2);
+      return `目标 ${text} ${entry.unit}`;
+    }
+    return `质量 ${entry.quality}`;
+  };
+
+  const applyOpen = (next: boolean): void => {
+    body.hidden = !next;
+    summary.hidden = next;
+    card.dataset.open = String(next);
+    collapseToggle.setAttribute('aria-expanded', String(next));
+    collapseToggle.querySelector('.icon')?.classList.toggle('is-flipped', !next);
+  };
+  collapseToggle.addEventListener('click', () => applyOpen(body.hidden));
+  summary.textContent = summaryText();
+  applyOpen(options.open ?? true);
+
   liveCallbacks.push(() => {
     refreshPreview();
     syncSummary();

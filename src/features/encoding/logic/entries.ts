@@ -17,7 +17,7 @@
 // 3. **仅会话态**：变体、参数、快照全部活在模块级 Map 里（按组 → 轮两级键控），不写
 //    workspace.json，重启归零（决策 0031：条目 / 参数 / 快照不进工作区格式）。
 
-import { newEntry, newEntryId, type AdvancedEntry, type ImageSpec } from './advanced';
+import { newEntryId, type AdvancedEntry } from './advanced';
 
 /** 编码器卡片：直接复用高级创建的条目形状（字段语义见 advanced.ts），不另造一套模型。 */
 export type EncoderCard = AdvancedEntry;
@@ -236,61 +236,12 @@ export function defaultImageEncoders(): EncoderCard[] {
   return [defaultJpegCard()];
 }
 
-/** 图片扩展名 → 编码器 id（认不出按默认 JPEG）。 */
-const EXT_ENCODER: Record<string, string> = {
-  jpg: 'jpeg',
-  jpeg: 'jpeg',
-  webp: 'webp',
-  avif: 'avif',
-  jxl: 'jxl',
-  png: 'png',
-};
-
-/**
- * 人工导入 / 一站式产出的图对应的「预设参数卡」：右键复制它时的起头参数。
- *
- * 这张图的真实参数没有暴露给工具（外部工具压的，encodingParams 只是展示文本），所以按
- * 同格式规格的默认值取；认不出格式或目录里没有该规格时退回默认 JPEG 卡——宁可给一个
- * 保守的默认，也不假装知道原图的参数。
- */
-export function presetCardFor(imagePath: string, specs: readonly ImageSpec[]): EncoderCard {
-  const ext = imagePath.split('.').pop()?.toLowerCase() ?? '';
-  const encoderId = EXT_ENCODER[ext] ?? DEFAULT_IMAGE_ENCODER_ID;
-  const spec = specs.find((item) => item.id === encoderId);
-  return spec ? newEntry('image', spec.id, spec) : defaultJpegCard();
-}
-
 /** 新建一个参数变体（默认带一条 JPEG 有损配置，无快照、无失败记录）。 */
 export function newImageEntry(path: string): ImageEntry {
   return {
     id: newImageEntryId(),
     path,
     encoders: defaultImageEncoders(),
-    snapshot: null,
-    failures: [],
-    replaced: false,
-  };
-}
-
-/**
- * 深拷贝一张编码器卡：新卡片 id，参数行逐条复制（含候选选项）。
- *
- * 复制出来的变体必须与原变体完全解耦——共享行对象会让「复制后调参」悄悄改掉原图。
- */
-export function cloneCard(card: EncoderCard): EncoderCard {
-  return {
-    ...card,
-    id: newEntryId(),
-    rows: card.rows.map((row) => ({ ...row, options: [...row.options] })),
-  };
-}
-
-/** 由一张编码器卡派生参数变体（右键「高级选项」的复制落点）。 */
-export function variantFromCard(path: string, card: EncoderCard): ImageEntry {
-  return {
-    id: newImageEntryId(),
-    path,
-    encoders: [cloneCard(card)],
     snapshot: null,
     failures: [],
     replaced: false,
@@ -364,13 +315,6 @@ export function forgetArtifact(entry: ImageEntry, artifactPath: string): boolean
   if (kept.length === entry.snapshot.encoders.length) return false;
   entry.snapshot = kept.length > 0 ? { identity: entry.snapshot.identity, encoders: kept } : null;
   return true;
-}
-
-/** 由一张跑分图反查产生它的编码器卡（右键「高级选项」要复制这张卡的参数）。 */
-export function cardForArtifact(entry: ImageEntry, artifactPath: string): EncoderCard | null {
-  const record = entry.snapshot?.encoders.find((item) => item.artifactPath === artifactPath);
-  if (!record) return null;
-  return entry.encoders.find((card) => card.id === record.cardId) ?? null;
 }
 
 // ---------- 展示文案 ----------

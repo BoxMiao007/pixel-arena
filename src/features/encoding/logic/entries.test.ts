@@ -11,10 +11,8 @@ import {
   SKIP_REASON_LABELS,
   applyRunResults,
   badgeText,
-  cardForArtifact,
   cardSummary,
   clearImageQueues,
-  cloneCard,
   dropImageQueue,
   entryFailures,
   entryForArtifact,
@@ -29,14 +27,12 @@ import {
   paramFingerprint,
   planScore,
   planSummary,
-  presetCardFor,
   probeFromCache,
   removeImageEntry,
   replaceImagePath,
   skipReasonLine,
   summaryHeadline,
   syncEntryReference,
-  variantFromCard,
   variantSummary,
   type EncoderCard,
   type ImageEntry,
@@ -44,7 +40,7 @@ import {
   type ImageIdentityProbe,
   type ImageIdentityReading,
 } from './entries';
-import type { AdvancedParamRow, ImageSpec } from './advanced';
+import type { AdvancedParamRow } from './advanced';
 
 // ---------- 测试夹具 ----------
 
@@ -746,35 +742,6 @@ describe('变体摘要与预设参数', () => {
     expect(variantSummary(v)).toBe('JPEG q75 等 2 条');
     expect(variantSummary(entry({ encoders: [] }))).toBe('空配置');
   });
-
-  it('预设参数按扩展名取同格式规格的默认值（普通图复制时的起头参数）', () => {
-    const specs: ImageSpec[] = [
-      {
-        id: 'webp',
-        displayName: 'WebP',
-        baseArgs: [],
-        losslessSupported: true,
-        losslessNote: '',
-        losslessArgs: [],
-        qualityFlag: '-q',
-        qualityMin: 0,
-        qualityMax: 100,
-        toolKey: 'cwebp',
-        qualityDefault: 82,
-        qualityStep: 1,
-        inputPng: false,
-        outputExt: 'webp',
-        knownParams: [],
-      },
-    ];
-    const webp = presetCardFor('/photos/work.webp', specs);
-    expect(webp.encoderId).toBe('webp');
-    expect(webp.quality).toBe(82);
-    // 目录里没有该格式（或认不出扩展名）→ 默认 JPEG 预设
-    expect(presetCardFor('/photos/work.avif', specs).encoderId).toBe('jpeg');
-    expect(presetCardFor('/photos/work', specs).encoderId).toBe('jpeg');
-    expect(presetCardFor('/photos/work.png', []).encoderId).toBe('jpeg');
-  });
 });
 
 // ---------- 会话态与复制 ----------
@@ -795,28 +762,6 @@ describe('参数变体会话态与复制', () => {
     expect(target.failures).toEqual([]);
     expect(target.replaced).toBe(false);
     expect(judgeImageEntry(target, probeOf({})).state).toBe('unscored');
-  });
-
-  it('cloneCard 是深拷贝：新 id，参数行与候选选项不共享引用', () => {
-    const source = card({ id: 'src', rows: [row({ name: '色度', flag: '-s', value: '4', kind: 'choice', options: ['4', '4:4:4'] })] });
-    const copy = cloneCard(source);
-    expect(copy.id).not.toBe(source.id);
-    expect(copy.rows[0]).not.toBe(source.rows[0]);
-    copy.rows[0].value = '4:4:4';
-    copy.rows[0].options.push('新的');
-    expect(source.rows[0].value).toBe('4');
-    expect(source.rows[0].options).toEqual(['4', '4:4:4']);
-  });
-
-  it('variantFromCard：复制体独立，改复制体的参数不会影响原变体', () => {
-    const original = scoredEntry();
-    const copy = variantFromCard('/photos/a.png', original.encoders[0]);
-    expect(copy.snapshot).toBeNull();
-    expect(copy.encoders).toHaveLength(1);
-    expect(copy.encoders[0].id).not.toBe(original.encoders[0].id);
-    expect(paramFingerprint(copy.encoders[0])).toBe(paramFingerprint(original.encoders[0]));
-    copy.encoders[0].quality = 40;
-    expect(original.encoders[0].quality).toBe(75);
   });
 
   it('syncEntryReference：路径不同即整体作废（快照/失败清空、置为图片换了）；相同不动', () => {
@@ -843,24 +788,6 @@ describe('参数变体会话态与复制', () => {
     expect(judgeImageEntry(target, probeOf({})).state).toBe('unscored');
     // 没这条记录时什么也不做
     expect(forgetArtifact(target, '/out/a.jpg')).toBe(false);
-  });
-
-  it('cardForArtifact：由产物反查产出它的那张卡（右键复制参数的依据）', () => {
-    const first = card({ id: 'c1', quality: 60 });
-    const second = card({ id: 'c2', encoderId: 'avif', quality: 55 });
-    const target = entry({
-      encoders: [first, second],
-      snapshot: {
-        identity,
-        encoders: [
-          { cardId: 'c1', fingerprint: paramFingerprint(first), artifactPath: '/out/a60.jpg' },
-          { cardId: 'c2', fingerprint: paramFingerprint(second), artifactPath: '/out/a55.avif' },
-        ],
-      },
-    });
-    expect(cardForArtifact(target, '/out/a55.avif')?.id).toBe('c2');
-    expect(cardForArtifact(target, '/out/unknown.jpg')).toBeNull();
-    expect(cardForArtifact(entry(), '/out/a.jpg')).toBeNull();
   });
 
   it('removeImageEntry 按 id 删除并回传被删变体；找不到返回 null', () => {
