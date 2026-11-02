@@ -124,7 +124,9 @@ export function openModal(options: ModalOptions): ModalHandle {
     body,
     footer,
   );
-  if (options.width) dialog.style.setProperty('width', `${options.width}px`);
+  // 宽度只写 CSS 变量，不写死内联 width：样式表要在变量外面套 min() 做窄窗收敛
+  // （右侧抽屉 = min(600px, 100vw - 2 * 边距)），内联 width 会盖掉这层收敛。
+  if (options.width) dialog.style.setProperty('--modal-w', `${options.width}px`);
 
   const overlay = el(
     'div',
@@ -213,7 +215,9 @@ export function openMenu(
         class: `menu__item${item.danger ? ' menu__item--danger' : ''}`,
         attrs: {
           type: 'button',
-          role: 'menuitem',
+          // aria-checked 只对 menuitemcheckbox / menuitemradio 合法：
+          // 带 checked 的条目声明成 menuitemradio，纯动作条目保持 menuitem。
+          role: item.checked === undefined ? 'menuitem' : 'menuitemradio',
           'aria-disabled': item.disabled ? 'true' : null,
           disabled: item.disabled ?? false,
           'aria-checked': item.checked === undefined ? null : String(item.checked),

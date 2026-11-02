@@ -165,7 +165,8 @@ export function openSettings(): void {
     body: root,
     footer,
     placement: 'right',
-    // 600px：128px 导航 + 约 440px 内容。520 时「关于」的库清单三列会把
+    // 期望宽度交给浮层：样式表再用 min(600px, 100vw - 2 * 间距) 收敛，窄窗不顶满。
+    // 600px = 128px 导航 + 约 440px 内容；520 时「关于」的库清单三列会把
     // BSD-3-Clause 折成两行，编码器行的路径输入框也只剩 ~250px。
     width: 600,
     onClose: cleanup,

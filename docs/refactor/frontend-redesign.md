@@ -41,7 +41,7 @@
 - 工作栏 44px：轮次 chips（单击切换、双击改名、右键菜单删除并确认）+ 新建轮；右侧导出菜单。
 - 舞台：图片组为对比查看器（工具栏 + 画布）；视频组为视频对比（画面 + 时间轴）。无内容时是引导式空态（选原图 / 拖入文件）。支持沉浸模式（隐藏左栏、检视器与结果坞，工作栏保留以便切轮与导出；Esc 退出）。
 - 检视器 328px：可滚动分区，分区标题可折叠（折叠态按分区持久）。图片组分区：原图、跑分图、跑分、编码阶梯（参数变体的入口在「跑分图」分区：右键已跑分的图「高级选项」，或「＋ 新建参数变体」）。视频组分区：原视频、跑分视频、视频跑分。
-- 结果坞：默认高度 248px，可拖上边缘调整（140–560px，且不超过窗口高度的 72%），可折叠（折叠后保留 36px 页签栏，点页签或头栏即可再展开，只有沉浸模式才整块隐藏）；图片组页签为 评分表 / 效率对比，视频组为 评分表 / 视频指标。表格内部滚动，不推动外层。
+- 结果坞：默认高度 248px，可拖上边缘调整（140–560px，且不超过窗口高度的 72%），可折叠（折叠后保留 36px 页签栏，点页签或头栏即可再展开，只有沉浸模式才整块隐藏）；图片组页签为 评分表 / 效率对比，视频组为 评分表 / 视频指标。表格内部滚动，不推动外层。页签行右侧只放当前页签自己的操作（评分表的「选择显示的列」+ 折叠按钮），表格直接贴页签行——页签内容区里不再有一条只放按钮的工具栏空带。
 - 空工作区：舞台整块空态，给出「新建图片跑分组」「新建视频跑分组」两个入口与一句拖放提示。
 
 ## 3. 交互契约
@@ -86,14 +86,14 @@
 
 | 令牌 | 值 | 用途 |
 | --- | --- | --- |
-| `--surface-0` | `#141619` | 窗口底 |
+| `--surface-0` | `#111417` | 窗口底（比面板更深一档，让「栏」从底上浮起来） |
 | `--surface-1` | `#191c20` | 面板 / 栏 |
 | `--surface-2` | `#1f2328` | 输入框、卡片、表格行 |
 | `--surface-3` | `#272c32` | 悬停 |
 | `--surface-4` | `#31373f` | 选中 / 按下 |
 | `--line` | `rgba(255,255,255,.08)` | 发丝线 |
 | `--line-strong` | `rgba(255,255,255,.16)` | 浮层边界、分隔强调 |
-| `--text` / `--text-muted` / `--text-subtle` | `#e6e9ec` / `#9aa3ad` / `#6c7681` | 三档文字 |
+| `--text` / `--text-muted` / `--text-subtle` | `#e6e9ec` / `#9aa3ad` / `#808a95` | 三档文字（`--text-subtle` 在最深面板上仍 ≥4.5:1，见下方对比度门槛） |
 | `--accent` / `--accent-hover` / `--accent-soft` | `#e9a13b` / `#f4b25a` / `rgba(233,161,59,.14)` | 琥珀信号色 |
 | `--text-on-accent` | `#191205` | 琥珀底上的字 |
 | `--ok` / `--danger` / `--danger-soft` / `--info` | `#58bf8c` / `#e4695f` / `rgba(228,105,95,.14)` / `#6fa8d6` | 语义色 |
@@ -101,7 +101,9 @@
 | `--shadow-pop` / `--shadow-modal` | 见代码 | 仅浮层与模态 |
 | 焦点 | `:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }` | 键盘焦点（不用 box-shadow 环，避免被祖先裁切） |
 
-浅色（`data-theme="light"`）：底 `#f2f3f4`，面板 `#fafafa`，卡片 `#fff`，线 `rgba(20,22,25,.12)`（强调 `.22`），字 `#191c20` / `#545d67` / `#6b737d`，琥珀压深为 `#9a5c0d`（白字对比达标），画布 `#c9c9c9`。语义软底色与遮罩收起为 `--ok-soft` / `--info-soft` / `--scrim` / `--scrim-soft` 令牌；非令牌 CSS 只允许纯黑/纯白 rgba 叠层（由 design-guards 断言）。
+对比度门槛：正文与辅助信息在各自底色上不低于 4.5:1（WCAG AA）。`--text-subtle` 是最低档，取值按「在最深的面板底上仍过 4.5」定；想更淡要用透明度叠层，不要再往下调色值。
+
+浅色（`data-theme="light"`）：浅色不是深色反相——浅色里「更亮 = 更靠前」不成立，所以面板比窗口底亮、悬停与选中比面板暗，靠明度差与更实的发丝线分层：底 `#e9ecef`，面板 `#f7f8f9`，卡片 `#fff`，悬停 `#e8ebef`，选中 `#dce1e6`，线 `rgba(20,22,25,.16)`（强调 `.30`），字 `#191c20` / `#545d67` / `#636b74`，琥珀压深为 `#9a5c0d`（白字对比达标），画布 `#c9c9c9`。语义软底色与遮罩收起为 `--ok-soft` / `--info-soft` / `--scrim` / `--scrim-soft` 令牌；非令牌 CSS 只允许纯黑/纯白 rgba 叠层（由 design-guards 断言）。
 
 几何与字号：
 
@@ -128,6 +130,8 @@
   两处 skill 对此口径相反（frontend-animation-patterns 要求忽略系统设置，desktop-agent-ui 与 web-design-guidelines 要求尊重），这里取交集：功能反馈不砍，装饰动效砍。该取舍记入 `docs/decisions.md`。
 - 只动 `transform` / `opacity` / `background-color` / `border-color` / `width`（面板开合），时长 90–220ms，缓动 `cubic-bezier(.2,.8,.2,1)`；退出比进入快。
 - 面板开合、结果坞折叠 160ms；模态 160ms 透明度 + 2px 位移；toast 160ms；模式切换 120ms 透明度。
+- 结果坞展开/收起过渡 `grid-template-rows` 轨道高度（拖拽调整与沉浸模式关闭过渡，跟手优先）；展开时内容跟一帧淡入，不做分区依次入场。
+- 舞台画布右下有比例尺（`—— 100 px`），按缩放折算成整数像素，纯信息提示、不吃指针事件；右侧模式参数（不透明度/阈值/播放）内联在模式条旁，不浮在画布上。
 - 跑分进行中的进度是真实进度（IPC Channel），不做假动画；未知进度用不确定态（文案 + 循环条），完成即停。
 
 ## 6. 组件原语（`src/ui/`）
@@ -140,13 +144,13 @@ button({ label, icon?, variant?: 'primary'|'secondary'|'quiet'|'danger', size?: 
 iconButton({ icon, label, variant?, size?, disabled?, onClick? }): HTMLButtonElement   // label 必填，落到 aria-label
 chip({ label, active?, title?, onClick?, onRemove?, disabled? }): HTMLElement
 segmented({ items: {id,label,icon?}[], value, onChange, ariaLabel }): HTMLElement       // role=radiogroup，方向键切换
-field({ label, control, hint?, error? }): HTMLElement                                  // <label> 包控件
+field({ label, control, hint?, error?, composite? }): HTMLElement                       // 单个控件用 <label> 包；composite 时输出 div[role=group]+aria-labelledby
 switchField({ label, checked, onChange, hint? }): { node, button, setChecked }                          // role=switch
 sliderField({ label, min, max, step, value, onInput, format? }): { node, input, setValue }
 selectField({ label, value, choices, onChange }): HTMLElement
 textField({ label, value, placeholder?, onCommit, type?, mono?, hint? }): { node, input, setValue }
 section({ id?, title, collapsible?, open?, onToggle?, actions?, className? }, ...children): { node, body, setTitle }
-emptyState({ title, hint?, actions? }): HTMLElement
+emptyState({ title, hint?, icon?, actions? }): HTMLElement
 badge({ text, kind: 'neutral'|'accent'|'ok'|'danger'|'info', title? }): HTMLElement
 progressBar({ label? }): { node, set(value, max, label?), setIndeterminate(label) }
 toolbar(...children): HTMLElement
@@ -156,7 +160,7 @@ spinner(): HTMLElement
 ```ts
 // overlay.ts
 openModal({ title, body, footer?, width?, onClose? }): { close(), setBody(node), setFooter(node) }  // 焦点捕获、Esc、点遮罩关闭、焦点还原
-openMenu(anchor, items: { label, icon?, danger?, disabled?, onSelect }[], opts?): { close() }        // role=menu，方向键/Home/End/Esc
+openMenu(anchor, items: { label, icon?, danger?, disabled?, checked?, onSelect }[], opts?): { close() }  // role=menu，方向键/Home/End/Esc；带 checked 的项才是 menuitemradio
 confirm({ title, message, confirmLabel, cancelLabel?, danger? }): Promise<boolean>
 prompt({ title, label, value, placeholder?, confirmLabel }): Promise<string | null>
 openPopover(anchor, content, { align? }): { close() }

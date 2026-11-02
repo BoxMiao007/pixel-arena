@@ -3,11 +3,15 @@
  * 方向「暗房仪表台」：低彩度石墨底 + 琥珀信号色，图像判定区用中性灰；
  * 所有分隔走 0.5px 发丝线，圆角克制，阴影只给浮层。
  * 字号三档（12 / 13 / 15），禁止第四档与 12px 以下。
+ *
+ * 对比度门槛：正文与辅助信息在各自底色上不低于 4.5:1（WCAG AA）。
+ * --text-subtle 是最低档，只用于次要元信息，因此取值按「在最深的面板底上仍过 4.5」定；
+ * 想更淡就改用透明度叠层，不要往下调色值。
  */
 
 :root {
   /* ---- 表面：从窗口底到浮层逐级抬升 ---- */
-  --surface-0: #141619;
+  --surface-0: #111417;
   --surface-1: #191c20;
   --surface-2: #1f2328;
   --surface-3: #272c32;
@@ -20,7 +24,7 @@
   /* ---- 文字三档 ---- */
   --text: #e6e9ec;
   --text-muted: #9aa3ad;
-  --text-subtle: #6c7681;
+  --text-subtle: #808a95;
   --text-on-accent: #191205;
   --text-on-danger: #ffffff;
 
@@ -92,19 +96,22 @@
   color-scheme: dark;
 }
 
+/* 浅色不是深色反相：浅色里「更亮 = 更靠前」不再成立，
+ * 所以面板比窗口底亮、悬停与选中比面板暗，靠明度差 + 更实的发丝线分层。
+ * 旧的 #f2f3f4 / #fafafa 组合两层只差 1.03:1，选中项几乎看不见。 */
 :root[data-theme="light"] {
-  --surface-0: #f2f3f4;
-  --surface-1: #fafafa;
+  --surface-0: #e9ecef;
+  --surface-1: #f7f8f9;
   --surface-2: #ffffff;
-  --surface-3: #eef0f2;
-  --surface-4: #e2e5e8;
+  --surface-3: #e8ebef;
+  --surface-4: #dce1e6;
 
-  --line: rgba(20, 22, 25, 0.12);
-  --line-strong: rgba(20, 22, 25, 0.22);
+  --line: rgba(20, 22, 25, 0.16);
+  --line-strong: rgba(20, 22, 25, 0.3);
 
   --text: #191c20;
   --text-muted: #545d67;
-  --text-subtle: #6b737d;
+  --text-subtle: #636b74;
   --text-on-accent: #fffaf1;
   --text-on-danger: #ffffff;
 

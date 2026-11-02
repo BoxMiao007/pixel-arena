@@ -15,7 +15,6 @@ export function createAppearanceSection(ctx: SettingsCtx): SectionModule {
     label: '界面主题',
     value: ctx.settings().theme,
     choices: THEME_CHOICES,
-    hint: '跟随系统时，界面与图像判定区的底色随系统深浅色即时切换',
     onCommit: async (value, previous) => {
       const next = value as ThemePref;
       applyTheme(next); // 预览：主题改动立即生效

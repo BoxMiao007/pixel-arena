@@ -31,6 +31,15 @@
   min-width: 0;
   min-height: 0;
   background: var(--surface-0);
+  /* 结果坞展开 / 收起只过渡轨道高度：这是用户动作的直接结果，
+   * 让人看见「坞被拉起来了」，而不是瞬间跳位。
+   * 拖拽调高时（.is-resizing）与沉浸模式关掉过渡——跟手比动画重要。 */
+  transition: grid-template-rows var(--dur) var(--ease-out);
+}
+
+.app.is-resizing .workspace,
+.app.is-immersive .workspace {
+  transition: none;
 }
 
 /* 折叠只收成 36px 页签栏：坞不消失，点页签或头栏即可再展开（沉浸才整块隐藏）。 */
@@ -44,6 +53,22 @@
 
 .app.is-dock-collapsed .dock__content {
   display: none;
+}
+
+/* 展开时内容跟着轨道一起露出来：只一帧淡入，不做整段上浮入场，
+ * 免得每次切组都演一遍「分区依次入场」的模板感。 */
+.app:not(.is-dock-collapsed) .dock__content {
+  animation: dock-content-in var(--dur) var(--ease-out);
+}
+
+@keyframes dock-content-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .app.is-dock-collapsed .dock__head {
@@ -523,8 +548,24 @@
   min-height: 0;
 }
 
+/* 舞台空态：这是应用的第一屏，给主题图标与标题档字号，但不加插画、口号与副标题堆叠 */
 .stage__empty {
   align-self: center;
+  gap: var(--s-3);
+  padding: var(--s-8) var(--s-6);
+}
+
+.stage__empty .empty__icon {
+  color: var(--accent);
+}
+
+.stage__empty .empty__title {
+  font-size: var(--fs-title);
+}
+
+.stage__empty .empty__hint {
+  max-width: 46ch;
+  line-height: 1.6;
 }
 
 /* ============ 检视器 ============ */
@@ -618,6 +659,23 @@
   align-items: center;
   gap: 2px;
   flex: none;
+}
+
+/* 页签自带的头栏按钮（如评分表的「选择显示的列」）：空时不占位、不撑 gap；
+ * 折叠态整条隐藏——收成 36px 页签栏后只剩「展开」一个动作，按钮既不显示
+ * 也不留在 Tab 序里（display: none 同时移出焦点顺序）。 */
+.dock__tab-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.dock__tab-actions:empty {
+  display: none;
+}
+
+.app.is-dock-collapsed .dock__tab-actions {
+  display: none;
 }
 
 .dock__content {
@@ -798,5 +856,14 @@
   .dock__tab,
   .drop-indicator {
     transition: none;
+  }
+
+  /* 结果坞的展开过渡与内容淡入属于「说明状态变化」的装饰，降级时直接瞬时切换 */
+  .workspace {
+    transition: none;
+  }
+
+  .app:not(.is-dock-collapsed) .dock__content {
+    animation: none;
   }
 }

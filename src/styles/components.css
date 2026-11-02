@@ -264,6 +264,8 @@
 .segmented__item.is-active {
   background: var(--surface-4);
   color: var(--text);
+  /* 字重 + 填充一起做「选中」：只靠一档灰在浅色主题里太弱 */
+  font-weight: 500;
 }
 
 .segmented__label {
@@ -678,9 +680,18 @@
 }
 
 .overlay--drawer {
+  /* 遮罩盖满整窗（含标题栏）：压暗 = 不可点，视觉与交互语义才对得上；
+   * 面板本身从标题栏下沿开始，顶栏仍露在遮罩之上但整体变暗。
+   * 四周留 --s-4 间隙，让面板浮在遮罩上，四个角都能看到。 */
+  top: 0;
   place-items: stretch end;
-  padding: 0;
-  background: var(--scrim-soft);
+  padding: calc(var(--titlebar-h) + var(--s-4)) var(--s-4) var(--s-4);
+}
+
+.overlay--drawer .modal {
+  /* 抽屉浮在遮罩上：遮罩 + 发丝线边界已经说明层级，
+   * 这里的投影会被遮罩的 16px 内边距裁掉一角（clip-audit cut>0），所以不给投影。 */
+  box-shadow: none;
 }
 
 @keyframes overlay-in {
@@ -692,7 +703,8 @@
 .modal {
   display: flex;
   flex-direction: column;
-  width: min(560px, 100%);
+  /* 宽度由 --modal-w 提供（JS 只写变量），并与浮层可用宽度取小，窄窗不溢出 */
+  width: min(var(--modal-w, 560px), 100%);
   max-height: calc(100vh - 2 * var(--s-8));
   border: var(--hairline) solid var(--line-strong);
   border-radius: var(--r-lg);
@@ -708,15 +720,15 @@
   outline: none;
 }
 
+/* 右侧抽屉面板：四角沿用 .modal 的 --r-lg，不贴窗口边，所以四边都保留发丝线；
+ * 宽度取「设定宽度」与「视口减两侧间隙」的较小值，800px 窗口下仍露出背景。
+ * 面板内容贴内壁（间距 0），内层不再写第二套圆角，由 .modal 的 overflow: hidden
+ * 统一裁切，保证内外圆弧同心；将来若给面板加内边距 P，内层圆角取 max(0, --r-lg - P)。 */
 .modal--right {
-  width: 520px;
+  width: min(var(--modal-w, 600px), calc(100vw - 2 * var(--s-4)));
   max-width: 100%;
   height: 100%;
-  max-height: 100vh;
-  border-radius: 0;
-  border-top: none;
-  border-bottom: none;
-  border-right: none;
+  max-height: 100%;
   animation: drawer-in var(--dur) var(--ease-out);
 }
 
