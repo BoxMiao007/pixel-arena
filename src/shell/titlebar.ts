@@ -13,7 +13,7 @@ import { renameGroup, renameRound } from '../core/actions';
 import { openPopover } from '../ui/overlay';
 import { copyText } from '../core/util';
 import { toast } from '../ui/toast';
-import { shellState, toggleImmersive, togglePanel } from './controller';
+import { shellState, togglePanel } from './controller';
 import { runCommand } from './registry';
 
 export interface TitlebarHandle {
@@ -122,6 +122,8 @@ export function mountTitlebar(host: HTMLElement): TitlebarHandle {
   const alerts = el('div', { class: 'titlebar__alerts' });
   const saved = el('span', { class: 'titlebar__saved' });
 
+  // 顶栏只放「全局动作」（帮助、设置）。沉浸模式是「面板可见性」的一种，
+  // 归工作栏那组折叠按钮（Ctrl+B / Ctrl+I / Ctrl+J / F），不要在这里再放一个。
   const actions = el(
     'div',
     { class: 'titlebar__actions' },
@@ -137,12 +139,6 @@ export function mountTitlebar(host: HTMLElement): TitlebarHandle {
       icon: 'settings',
       variant: 'quiet',
       onClick: () => void runCommand('open-settings'),
-    }),
-    iconButton({
-      label: '沉浸模式（F）',
-      icon: 'expand',
-      variant: 'quiet',
-      onClick: () => toggleImmersive(),
     }),
   );
 

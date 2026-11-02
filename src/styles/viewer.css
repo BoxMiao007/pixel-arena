@@ -33,7 +33,9 @@
   height: var(--workbar-h);
   padding: 0 var(--s-3);
   border-bottom: var(--hairline) solid var(--line);
-  background: var(--surface-1);
+  /* 与判定区同底：模式条是「画面的一部分」而不是又一条面板。
+   * 顶栏 / 工作栏是 surface-1 的仪表带，到这里换成判定区的深底，层次才是两段而不是三条并列。 */
+  background: var(--surface-0);
   overflow: hidden;
 }
 
@@ -292,7 +294,9 @@
   display: flex;
   flex: 1;
   min-height: 0;
-  padding: var(--s-2);
+  /* 下边距扣掉分隔条那条命中带（--splitter-h），画面上下留白才一样宽；
+   * 坞折叠 / 沉浸模式下 --splitter-h 归零，这里自动回满 */
+  padding: var(--s-2) var(--s-2) calc(var(--s-2) - var(--splitter-h, 0px));
   background: var(--surface-0);
 }
 
@@ -305,13 +309,14 @@
   width: 100%;
 }
 
-/* 图像判定底：中性灰 + 16px 极弱棋盘格（透明/留白区域可辨，不干扰看图） */
+/* 图像判定底：中性灰 + 16px 极弱棋盘格（透明/留白区域可辨，不干扰看图）。
+ * 判定区做成直角：它是「取景框」，不是卡片，圆角会让人误以为是浮起的一层面板。 */
 .viewer__surface,
 .viewer__pane {
   position: relative;
   overflow: hidden;
   border: var(--hairline) solid var(--line);
-  border-radius: var(--r-md);
+  border-radius: 0;
   background-color: var(--canvas);
   background-image: conic-gradient(
     var(--canvas-checker) 25%,

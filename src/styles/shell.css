@@ -7,6 +7,12 @@
   height: 100%;
   --rail-w: 208px;
   --inspector-w: 328px;
+  /* 舞台与结果坞之间的命中带：视觉上算进舞台的下边距，所以舞台的 padding-bottom 要减掉它 */
+  --splitter-h: 5px;
+}
+
+.app.is-dock-collapsed {
+  --splitter-h: 0px;
 }
 
 .app.is-rail-collapsed {
@@ -27,7 +33,9 @@
 .workspace {
   grid-column: 2;
   display: grid;
-  grid-template-rows: var(--workbar-h) minmax(0, 1fr) 5px var(--dock-h);
+  /* 第三行是分隔条的命中带；它的高度做进变量，舞台据此把下边距补回来，
+   * 这样画面上下留白在「坞展开 / 折叠 / 沉浸」三种状态下都一致 */
+  grid-template-rows: var(--workbar-h) minmax(0, 1fr) var(--splitter-h) var(--dock-h);
   min-width: 0;
   min-height: 0;
   background: var(--surface-0);
@@ -86,6 +94,10 @@
 
 .app.is-immersive .workspace {
   grid-template-rows: var(--workbar-h) minmax(0, 1fr);
+}
+
+.app.is-immersive {
+  --splitter-h: 0px;
 }
 
 .app.is-immersive .stage {
@@ -540,6 +552,12 @@
   overflow: hidden;
 }
 
+/* 对比查看器自带内边距（模式条贴齐舞台边缘、画布再留 8px）：
+ * 外壳这一层不再重复留白，否则工具栏那条横线会比画布窄一圈，上下留白也对不上。 */
+.stage:has(.viewer-host) {
+  padding: 0;
+}
+
 .stage__view {
   display: flex;
   flex-direction: column;
@@ -685,7 +703,9 @@
 
 .dock__view {
   height: 100%;
-  overflow: auto;
+  /* 页签内容自己管滚动（表格有自己的横向滚动容器）：外层再滚一次
+   * 会在坞底部多出一条重复的横向滚动条，看起来像「多了一层」。 */
+  overflow: hidden;
 }
 
 /* 分隔条：视觉 5px，命中区就是这 5px */
