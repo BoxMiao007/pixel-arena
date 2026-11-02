@@ -2,7 +2,8 @@
 // 真实窗口 1233×745 CSS 扣掉左右栏后舞台只有约 670px，曾经因为「窄舞台隐藏模式文字」
 // 让六个模式退化成纯图标，分屏与滑动根本分不出来。这里守住两条硬约束：
 // 1) 模式条在任何舞台宽度都显示「图标 + 12px 文字」，任何规则都不许 display:none 掉标签；
-// 2) 让位顺序固定：模式条与缩放组不被隐藏，探针读数先收成图标，上下文文案后收。
+// 2) 让位顺序固定：模式条与缩放组不被隐藏，探针读数先收成图标，上下文文案后收
+//    （单槽模式下上下文按钮是唯一换图入口，只能收掉文字，不能整条隐藏）。
 
 import { describe, it, expect } from 'vitest';
 import css from '../../styles/viewer.css?raw';
@@ -47,8 +48,11 @@ describe('让位顺序：探针读数先收，上下文文案后收', () => {
     }
   });
 
-  it('上下文文案有隐藏规则（在探针之后让位）', () => {
-    expect(containerRules).toMatch(/\.viewer__context\s*\{\s*display:\s*none/);
+  it('窄舞台只收上下文文字，单槽模式的换图按钮保留（它是唯一入口）', () => {
+    expect(containerRules).toMatch(/\.viewer__context-text\s*\{\s*display:\s*none/);
+    expect(containerRules).toMatch(/\.viewer__context:disabled\s*\{\s*display:\s*none/);
+    // 可用的上下文按钮不能被整条隐藏，否则单槽模式没有换图入口
+    expect(containerRules).not.toMatch(/\.viewer__context\s*\{[^}]*display:\s*none/);
   });
 
   it('极窄舞台允许工具栏换行，而不是退回纯图标', () => {

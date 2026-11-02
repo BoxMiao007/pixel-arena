@@ -1,11 +1,11 @@
 // 查看器选图逻辑（纯函数，无 DOM）：
 // - 单槽模式（滑动/叠加/差异/闪烁）共用一个跑分图槽，按「轮 × 模式」隔离；
 // - 分屏每栏与网格每格共用同一套「显式选择 / 显式留空 / 失效回落 / 越界」语义；
-// - 胶片条点击落到哪个槽位，也在这里决定（mode / pane / cell）。
+// - 一次选图写到哪个槽位也在这里决定（mode / pane / cell）。
 //
 // 由 src/features/viewer/selection.test.ts 守护。
 
-import type { RoundLike, SingleSlotMode, ViewerMode } from './types';
+import type { RoundLike, SingleSlotMode } from './types';
 
 /** 单槽模式手动选中的跑分图（键缺省 = 该模式未手动选过，跟随当前候选顺序）。 */
 export type ModeCandidateChoices = Partial<Record<SingleSlotMode, string>>;
@@ -61,37 +61,11 @@ export function resolvePaneImage(
   return defaultPaneImage(index, round);
 }
 
-/** 胶片条一次点击写到哪里。 */
+/** 一次选图写到哪里。 */
 export type PickSlot =
   | { kind: 'mode' }
   | { kind: 'pane'; index: number }
   | { kind: 'cell'; index: number };
-
-function clampIndex(value: number, max: number): number {
-  if (max <= 0) return 0;
-  return Math.min(max, Math.max(0, Math.floor(value)));
-}
-
-/**
- * 胶片条点击的落点：
- * - 单槽四模式 → 该模式的隔离槽；
- * - 分屏 → 当前聚焦栏（无聚焦则第 1 栏：第 0 栏默认是原图）；
- * - 网格 → 当前聚焦格（无聚焦则第 1 格：第 0 格默认是原图）。
- * index 会钳制到合法范围：删图后聚焦索引越界不会写到不存在的栏/格。
- */
-export function pickSlot(
-  mode: ViewerMode,
-  focusIndex: number | null,
-  counts: { panes: number; cells: number },
-): PickSlot {
-  if (mode === 'slider' || mode === 'overlay' || mode === 'diff' || mode === 'blink') {
-    return { kind: 'mode' };
-  }
-  if (mode === 'split') {
-    return { kind: 'pane', index: clampIndex(focusIndex ?? 1, counts.panes - 1) };
-  }
-  return { kind: 'cell', index: clampIndex(focusIndex ?? 1, counts.cells - 1) };
-}
 
 /**
  * 一整排栏/格的默认布局：第 0 位原图，第 i 位第 i 张跑分图，越界为 null。
@@ -123,7 +97,7 @@ export function reconcileExplicitPaths(
 
 /**
  * 把一次选图写成新的状态切片（不改入参，返回要写回的字段）：
- * 空串表示显式留空（只对网格有意义），胶片条不提供该值。
+ * 空串表示显式留空（只有网格的下拉提供这个选项）。
  */
 export function applyPick(
   current: {

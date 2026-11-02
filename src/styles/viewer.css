@@ -1,4 +1,4 @@
-/* 对比查看器（viewer 域）：工具栏 / 画布区 / 胶片条 / 模式参数浮条 / 占位覆盖层。
+/* 对比查看器（viewer 域）：工具栏 / 画布区 / 模式参数浮条 / 占位覆盖层。
  *
  * 只引用 tokens.css 的变量；画布上的半透明遮罩用纯黑/纯白（设计契约允许的例外），
  * 因为它们要压在任何图片上都保持可读，不能跟随主题。
@@ -14,7 +14,7 @@
   height: 100%;
 }
 
-/* ============ 根：一行工具栏 + 画布 + 胶片条 ============ */
+/* ============ 根：一行工具栏 + 画布 ============ */
 .viewer {
   display: flex;
   flex-direction: column;
@@ -48,11 +48,37 @@
   padding: 0 8px;
 }
 
+/* 对比对象：单槽模式下点它就是换对比图（按钮）；分屏/网格只作说明（禁用） */
 .viewer__context {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
   max-width: 42%;
+  padding: 0;
   color: var(--text-muted);
   font-size: var(--fs-meta);
+}
+
+.viewer__context:not(:disabled):hover {
+  color: var(--text);
+}
+
+.viewer__context:disabled {
+  cursor: default;
+}
+
+.viewer__context-text {
+  min-width: 0;
+}
+
+.viewer__context-caret {
+  flex: none;
+  opacity: 0.7;
+}
+
+.viewer__context:disabled .viewer__context-caret {
+  display: none;
 }
 
 .viewer__spacer {
@@ -147,7 +173,7 @@
 /* 让位顺序（模式条与缩放组永远保留；模式条永远「图标 + 文字」，不退回纯图标）：
    1. 像素徽标：<940 收起（纯状态提示，最先让位）；
    2. 探针读数：<1120 只留一个图标按钮（读数在锁定后浮到画布左下角）；
-   3. 上下文文案：<800 收起（探针已是图标仍放不下时才收）；
+   3. 上下文文案：<800 收起文字，单槽模式只留换图箭头（它是唯一选图入口）；分屏/网格隐藏；
    4. 极窄 <620：工具栏换行成两行。 */
 @container (max-width: 940px) {
   .viewer__pixel-badge {
@@ -172,7 +198,17 @@
 }
 
 @container (max-width: 800px) {
+  /* 单槽模式的换图入口不能整个收掉（它是唯一入口）：只留箭头，点击仍能开菜单。
+     分屏/网格本身有每栏/每格下拉，说明文字直接隐藏。 */
   .viewer__context {
+    max-width: none;
+  }
+
+  .viewer__context-text {
+    display: none;
+  }
+
+  .viewer__context:disabled {
     display: none;
   }
 }
@@ -285,7 +321,7 @@
   min-height: 0;
 }
 
-/* 聚焦栏/格：胶片条选图落到这里（细内描边，不用粗边框） */
+/* 聚焦栏/格：当前选图目标（细内描边，不用粗边框） */
 .viewer__pane.is-focused {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
@@ -602,107 +638,6 @@
 }
 
 .viewer__cta-text {
-  color: var(--text-muted);
-}
-
-/* ============ 胶片条（图片池） ============ */
-.viewer__film {
-  display: flex;
-  align-items: stretch;
-  gap: var(--s-1);
-  flex: none;
-  height: 56px;
-  padding: 0 var(--s-2);
-  border-top: var(--hairline) solid var(--line);
-  background: var(--surface-1);
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-x: contain;
-}
-
-.viewer__film-item,
-.viewer__film-add {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
-  flex: none;
-  width: 86px;
-  padding: 2px;
-  align-self: center;
-  border: var(--hairline) solid transparent;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--text-muted);
-  text-align: left;
-}
-
-.viewer__film-item:hover:not(:disabled),
-.viewer__film-add:hover {
-  background: var(--surface-2);
-  border-color: var(--line);
-}
-
-.viewer__film-item.is-selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--text);
-}
-
-.viewer__film-item.is-static {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.viewer__thumb {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 34px;
-  overflow: hidden;
-  border-radius: var(--r-xs);
-  background: var(--surface-3);
-}
-
-.viewer__thumb.is-broken::after {
-  content: '!';
-  color: var(--text-subtle);
-  font-size: var(--fs-meta);
-}
-
-.viewer__thumb-img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-/* 已上屏（当前分屏/网格里正在显示）的图：右上角状态点，不抢选中描边 */
-.viewer__film-item.is-in-use .viewer__thumb::before {
-  content: '';
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--ok);
-}
-
-.viewer__film-name {
-  overflow: hidden;
-  font-size: var(--fs-meta);
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.viewer__film-add {
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border-style: dashed;
-  border-color: var(--line-strong);
   color: var(--text-muted);
 }
 

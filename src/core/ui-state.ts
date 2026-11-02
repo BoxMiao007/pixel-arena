@@ -86,11 +86,11 @@ export function dropRoundScoped(roundId: string): void {
   for (const byRound of scoped.values()) byRound.delete(roundId);
 }
 
-// ---------- 当前选中的跑分图（跨域联动：结果表行 / 胶片条 / 查看器） ----------
+// ---------- 当前选中的跑分图（跨域联动：结果表行 / 视频查看器） ----------
 
 const activeCandidates = new Map<string, string | null>();
 
-/** 本轮当前聚焦的跑分图（结果表行点击、胶片条点击都写这里）。 */
+/** 本轮当前聚焦的跑分图（结果表行点击写这里，视频舞台据此切段）。 */
 export function getActiveCandidate(roundId: string): string | null {
   return activeCandidates.get(roundId) ?? null;
 }

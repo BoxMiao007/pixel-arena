@@ -1,6 +1,6 @@
 // 对比查看器舞台：mount 一次、update 增量；切模式不重挂、不清视口。
 //
-// 结构（自上而下）：工具栏 / 画布区（分屏 / 单画布+分割线 / 网格）/ 胶片条。
+// 结构（自上而下）：工具栏 / 画布区（分屏 / 单画布+分割线 / 网格）。
 // 绘制走 canvas，一帧一次 rAF；模式切换只重建画布区结构，视口沿用（决策「切模式保留视口」）。
 //
 // 图片经 asset protocol（ui/canvas 的 loadImage）交给 WebView 原生解码，不经 IPC 传像素；
@@ -42,12 +42,10 @@ import {
   type ProbeReading,
   type Rgb,
 } from './probe';
-import { buildFilmstrip, type FilmstripHandle, type FilmstripItem } from './filmstrip';
 import { gridLayout, isPaneSizeSane, paneCount, sameBox } from './layout';
 import {
   applyPick,
   defaultLayout,
-  pickSlot,
   reconcileExplicitPaths,
   resolveModeCandidatePath,
   resolvePaneImage,
@@ -136,7 +134,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   let surface: ViewerSurface | null = null;
   let divider: HTMLDivElement | null = null;
   let observeSize: (() => void) | null = null;
-  let film: FilmstripHandle | null = null;
   let toolbar: ToolbarHandle | null = null;
   let openMenuHandle: { close: () => void } | null = null;
 
@@ -847,10 +844,10 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     syncChrome();
   }
 
-  /** 胶片条点击：写到当前模式对应的槽位。 */
-  function pickFromFilmstrip(path: string): void {
+  /** 单槽模式换对比图：写该模式的隔离槽（原图始终是基准，不参与选择）。 */
+  function pickCandidate(path: string): void {
+    if (!isSingleSlotMode(mode)) return;
     const info = layoutInfo();
-    const slot = pickSlot(mode, focusIndex, { panes: info.panes, cells: info.cells });
     const patch = applyPick(
       {
         candidateChoices: state.candidateChoices,
@@ -859,16 +856,27 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
         paneCount: info.panes,
         cellCount: info.cells,
       },
-      slot,
-      isSingleSlotMode(mode) ? mode : null,
+      { kind: 'mode' },
+      mode,
       path,
     );
     if (patch.candidateChoices) state.candidateChoices = patch.candidateChoices;
-    if (patch.panePaths) state.panePaths = patch.panePaths;
-    if (patch.cellPaths) state.cellPaths = patch.cellPaths;
     diffStatus = 'idle';
     schedule();
     syncChrome();
+  }
+
+  /** 工具栏上的「对比图」入口：单槽模式靠这个换图（分屏/网格用每栏/每格的下拉）。 */
+  function openCandidateMenu(anchor: HTMLElement): void {
+    const current = candidatePathOf();
+    const items = round.candidates.map((candidate) => ({
+      label: truncateFileName(candidate.name),
+      checked: current === candidate.path,
+      onSelect: () => pickCandidate(candidate.path),
+    }));
+    if (items.length === 0) return;
+    openMenuHandle?.close();
+    openMenuHandle = openMenu(anchor, items, { align: 'start', label: '选择对比图' });
   }
 
   // ---------- 模式切换 ----------
@@ -1309,7 +1317,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     );
   }
 
-  // ---------- 工具栏 / 胶片条同步 ----------
+  // ---------- 工具栏 / 选图入口同步 ----------
   function contextText(): string {
     const info = layoutInfo();
     if (mode === 'split') {
@@ -1328,55 +1336,12 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     const vp = state.viewport;
     toolbar.setZoomEnabled(vp !== null);
     if (vp) toolbar.setZoom(vp.zoom, isPixelZoom(vp.zoom));
-    toolbar.setContext(contextText());
+    // 单槽模式没有每栏/每格的下拉，上下文文字本身就是「换对比图」入口
+    toolbar.setContext(
+      contextText(),
+      isSingleSlotMode(mode) && round.candidates.length > 0,
+    );
     toolbar.syncProps(state.compare);
-  }
-
-  function filmstripItems(): FilmstripItem[] {
-    const items: FilmstripItem[] = [];
-    if (round.reference) {
-      items.push({
-        path: round.reference.path,
-        label: `原图：${truncateFileName(round.reference.name)}`,
-        thumbPath: round.reference.displayPath,
-        isReference: true,
-      });
-    }
-    for (const candidate of round.candidates) {
-      items.push({
-        path: candidate.path,
-        label: truncateFileName(candidate.name),
-        thumbPath: candidate.displayPath,
-        isReference: false,
-      });
-    }
-    return items;
-  }
-
-  function selectedFilmstripPath(): string | null {
-    if (isSingleSlotMode(mode)) return candidatePathOf();
-    const index = focusIndex ?? 1;
-    const count = surface?.canvases.length ?? 0;
-    if (index < 0 || index >= count) return null;
-    return resolveSlot(index);
-  }
-
-  function syncFilmstrip(): void {
-    if (!film) return;
-    const inUse = new Set<string>();
-    const count = surface?.canvases.length ?? 0;
-    for (let i = 0; i < count; i++) {
-      const path = resolveSlot(i);
-      if (path) inUse.add(path);
-    }
-    // 单画布模式的对比图始终是「原图 + 一张跑分图」，原图也标成上屏状态
-    if (isSingleSlotMode(mode) && round.reference) inUse.add(round.reference.path);
-    film.setItems(filmstripItems(), {
-      selectedPath: selectedFilmstripPath(),
-      inUse,
-      selectableReferences: mode === 'split' || mode === 'grid',
-      allowAdd: round.candidates.length === 0,
-    });
   }
 
   function syncPickers(): void {
@@ -1399,7 +1364,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   function syncChrome(): void {
     syncToolbar();
     syncPickers();
-    syncFilmstrip();
     surface?.setFocus(focusIndex);
   }
 
@@ -1411,6 +1375,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     onZoomOut: () => zoomBy(steppedZoom(1, -1)),
     onZoomFit: resetViewport,
     onProbeToggle: () => toggleProbeLock(),
+    onPickCandidate: (anchor) => openCandidateMenu(anchor),
     onZoomMenu: (anchor) => {
       const vp = state.viewport;
       const items = ZOOM_PRESETS.map((preset) => ({
@@ -1426,11 +1391,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       openMenuHandle = openMenu(anchor, items, { align: 'end', label: '缩放档位' });
     },
   });
-  film = buildFilmstrip({
-    onPick: (path) => pickFromFilmstrip(path),
-    onAdd: () => void chooseCandidates(groupId, roundId),
-  });
-  root.append(toolbar.node, stage, film.node);
+  root.append(toolbar.node, stage);
   stage.insertBefore(toolbar.props, overlay);
   host.replaceChildren(root);
   toolbar.buildProps(propsOptions());
@@ -1518,7 +1479,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       openMenuHandle = null;
       disposeSurface();
       toolbar?.destroy();
-      film?.destroy();
       root.remove();
       if (hostClassAdded) host.classList.remove('viewer-host');
       if (activeCommands === commands) activeCommands = null;

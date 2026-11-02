@@ -1,4 +1,4 @@
-// 选图逻辑单测：单槽模式的「轮×模式」隔离 + 分屏/网格共用的显式选择语义 + 胶片条落点。
+// 选图逻辑单测：单槽模式的「轮×模式」隔离 + 分屏/网格共用的显式选择语义。
 // 期望值来自票面验收标准与手工推演的字面量，不复用实现（防恒真断言）。
 
 import { describe, it, expect } from 'vitest';
@@ -6,7 +6,6 @@ import {
   applyPick,
   defaultLayout,
   defaultPaneImage,
-  pickSlot,
   reconcileExplicitPaths,
   resolveCandidatePath,
   resolveModeCandidatePath,
@@ -101,30 +100,6 @@ describe('defaultPaneImage / resolvePaneImage（分屏栏与网格格共用）',
     expect(resolvePaneImage(paths, 2, round)).toBe('/demo/b.webp');
     expect(resolvePaneImage(paths, 3, round)).toBe('/demo/c.avif');
     expect(resolvePaneImage(paths, 4, round)).toBeNull();
-  });
-});
-
-describe('pickSlot（胶片条点击落到哪个槽位）', () => {
-  it('单槽四模式写模式自己的隔离槽', () => {
-    for (const mode of ['slider', 'overlay', 'diff', 'blink'] as const) {
-      expect(pickSlot(mode, null, { panes: 4, cells: 4 })).toEqual({ kind: 'mode' });
-    }
-  });
-
-  it('分屏写当前聚焦栏；无聚焦时写第 1 栏（第 0 栏默认是原图）', () => {
-    expect(pickSlot('split', 2, { panes: 4, cells: 4 })).toEqual({ kind: 'pane', index: 2 });
-    expect(pickSlot('split', null, { panes: 4, cells: 4 })).toEqual({ kind: 'pane', index: 1 });
-  });
-
-  it('网格写当前聚焦格；无聚焦时写第 1 格', () => {
-    expect(pickSlot('grid', 3, { panes: 4, cells: 4 })).toEqual({ kind: 'cell', index: 3 });
-    expect(pickSlot('grid', null, { panes: 4, cells: 4 })).toEqual({ kind: 'cell', index: 1 });
-  });
-
-  it('聚焦索引越界（删图后）会被钳回合法范围，不写不存在的栏/格', () => {
-    expect(pickSlot('split', 9, { panes: 3, cells: 4 })).toEqual({ kind: 'pane', index: 2 });
-    expect(pickSlot('grid', 9, { panes: 4, cells: 2 })).toEqual({ kind: 'cell', index: 1 });
-    expect(pickSlot('split', -3, { panes: 2, cells: 2 })).toEqual({ kind: 'pane', index: 0 });
   });
 });
 

@@ -167,23 +167,24 @@ attachPanZoom(canvas, getViewport, setViewport, onChange, opts?): () => void  //
 
 ## 4. 新交互提案（≤5 条，按价值排序）
 
-### 4.1 舞台四件套：工具栏 + 画布 + 胶片条 + 模式分段
+### 4.1 舞台三件套：工具栏 + 画布 + 模式分段
 
 - **现状**：工具条/画布/选图控件分散，选图入口随模式漂移；空态消失；网格靠页面级「放大」拉高。
 - **新做法**：
-  1. 舞台固定三段：`toolbar()`（一行，不换行，超出用 `openMenu` 收）→ 画布区 `flex:1; min-height:0` → 胶片条（横向滚动，72×48 缩略图 + 12px 文件名）。
+  1. 舞台固定两段：`toolbar()`（一行，不换行，超出用 `openMenu` 收）→ 画布区 `flex:1; min-height:0`。
   2. 模式切换用 `segmented`（`role=radiogroup`，方向键可切），顺序按设计契约键盘映射：`1 分屏 / 2 滑动 / 3 叠加 / 4 差异 / 5 闪烁 / 6 网格`（**注意与现有 `MODES` 数组顺序不同**，id 不变）。
-  3. 胶片条是**唯一选图入口**，写入目标随模式：单槽四模式 → `candidateChoices[mode]`（契约不变）；分屏 → `panePaths[1]`（第 1 栏，契约不变）；网格 → 当前聚焦格，未聚焦时第一个空位（契约不变）。写目标做成纯函数 `filmstripTarget(mode, focusIndex)`，可单测。
-  4. 网格/分屏的每栏/每格保留就地小胶囊（`chip` + `openMenu`）作为「精调」，不再用覆盖在画面上的原生 `<select>`；胶片条与就地胶囊写同一份状态，任何一处改动两处同步高亮。
+  3. 选图入口随模式而定：单槽四模式（滑动/叠加/差异/闪烁）点工具栏上的「<模式>：<当前图>」打开候选菜单，写 `candidateChoices[mode]`；分屏写各栏 `panePaths[i]`、网格写各格 `cellPaths[i]`，入口是每栏/每格的下拉胶囊。选图落点由 `applyPick` 统一收口，可单测。
+  4. 网格/分屏的每栏/每格用就地小胶囊（`chip` + `openMenu`）选图，不再用覆盖在画面上的原生 `<select>`；胶囊与单槽模式的工具栏菜单写同一份状态，任何一处改动都会同步高亮。
   5. 网格行列仍用 `gridLayout`，行高 `minmax(120px, 1fr)`，容器满高、内部滚动；**退休「放大/还原」按钮与 `gridZoomed` 状态**（矮窗口问题由「舞台满高 + 网格内滚动」解决）。
 - **契约**：模式语义、N+1 栏、自动排布、按轮×模式隔离、视口共享全部不变；变化的是选图控件位置与网格放大机制。
-- **验收**：换对比图 = 胶片条 1 次点击；三种模式下同一动作在同一位置；窄窗口工具栏不换行；网格 16 张图在 950×525 下每格可读（≥120px 高）。
+- **验收**：单槽模式换对比图 = 工具条上下文 1 次点击 + 菜单 1 次点击；分屏/网格换图 = 那一栏/格的下拉 1 次点击；窄窗口工具栏不换行；网格 16 张图在 950×525 下每格可读（≥120px 高）。
+- **2026-11-02 调整**：底部胶片条已整体移除（决策 0037），舞台不再有缩略图栏；选图入口按上面第 3 条分工。
 
 ### 4.2 舞台挂载一次、切模式不重挂、保留视口
 
 - **现状**：切模式重挂整树 + `viewport=null`；数据变更整页重渲染打断拖拽。
 - **新做法**：
-  1. 按注册契约实现 `StageView.mount()` 一次，`update()` 只增量改：模式子容器切换用 `paint()` 结构键；胶片条只增删差量；工具栏只改文案/选中态。
+  1. 按注册契约实现 `StageView.mount()` 一次，`update()` 只增量改：模式子容器切换用 `paint()` 结构键；工具栏上下文与每栏/每格下拉只改文案/选中态。
   2. 模式切换只换画布子结构（分屏 N 栏 / 单画布 / 网格），**保留 `viewport`**。技术上成立：视口是图片坐标 + zoom，换窗格尺寸只是「同一位置、不同视野大小」，不会错位。仅在「首次进入/该轮没有视口/用户双击复位/窗口几何突变导致 zoom 越界」时 fit。
   3. `destroy()` 里 `ResizeObserver.disconnect()`、`cancelAnimationFrame`、清所有 `setTimeout`、`stopBlink()`、移除 window 级监听。
 - **契约变更（需 lead 拍板）**：决策 0025 明确「切模式重新 fit」是刻意保留的 T07 行为（`docs/decisions.md:139-141`）。本提案要求改为「保留视口」。**这是本轮唯一会改变既有可观察行为的项**，建议批准并记入 `docs/decisions.md`。
@@ -214,7 +215,7 @@ attachPanZoom(canvas, getViewport, setViewport, onChange, opts?): () => void  //
   - 加载中：`spinner()` + 「正在加载…」+ 文件名；超过 3s 补一行「大图或网络盘可能较慢」。
   - 失败：`emptyState` 变体，标题「无法显示这张图」，正文给出**实际尝试的路径**与三种可能（文件被移动 / 格式不支持 / AVIF·JXL 代片缺失），动作「重试」「复制路径」；重试调用新增的 `invalidateImage(path)` 清缓存后重现加载。
   - 尺寸不一致：保留原文案，加「改用叠加/滑动对比」的引导动作（切模式）。
-  - 空态：无原图 → 「选择原图」+ 拖放提示；有原图无候选 → 舞台照常存在，胶片条只显示原图 + 一个「添加跑分图」占位格（点击走 `Ctrl+O` 同一动作）。
+  - 空态：无原图 → 「选择原图」+ 拖放提示；有原图无候选 → 舞台照常存在，画面中央给「还没有跑分图」提示与「添加跑分图」按钮（点击走 `Ctrl+O` 同一动作）。
   - 文案与 `--text-muted` 同源，字号 12/13px，全部 `aria-live="polite"`（加载/失败变化时播报）。
 - **契约**：三种状态的**语义与文案要点**不变；新增「重试」「复制路径」「添加跑分图」三个动作（新增能力，需 lead 同意）。
 - **验收**：把一张图改名 → 舞台给出可点击的重试；改回文件名 → 点重试即可恢复，无需重启；无候选时舞台仍在并给出添加入口。
@@ -228,7 +229,7 @@ attachPanZoom(canvas, getViewport, setViewport, onChange, opts?): () => void  //
 | 3 | 网格「放大/还原」按钮与 `gridZoomed` 是否退休 | 退休，改舞台满高 + 网格内滚动 | 少一个控件与一份状态，需视频侧同步（视频网格共用 `buildGridZoomButton`） |
 | 4 | 新增动作：错误态「重试/复制路径」、空态「添加跑分图」、快捷键 `Shift+0` | 批准 | 只增不减 |
 | 5 | 是否提供 `ui/canvas.ts` 共享层（见 2.3） | 批准 | 视频侧可复用，避免第三份复制 |
-| 6 | `viewerPath()`（AVIF/JXL 代片映射）归属 | 提到 `core/model.ts` 为 `viewPath()`，大小写不敏感 | 查看器/检视器/缩略图共用同一口径 |
+| 6 | `viewerPath()`（AVIF/JXL 代片映射）归属 | 提到 `core/model.ts` 为 `viewPath()`，大小写不敏感 | 查看器/检视器共用同一口径 |
 
 ## 5. 风险与坑
 
@@ -243,10 +244,10 @@ attachPanZoom(canvas, getViewport, setViewport, onChange, opts?): () => void  //
 9. **同步缩放的数值精度**：`zoom` 连续累乘会漂移，`1.0000001` 会让 `zoom < 1` 的严格比较关掉最近邻 → 用 epsilon（如 `1e-6`）判定 100%；`visibleRegion` 的 `src` 是浮点，不同尺寸/DPR 的格子并排看边缘会出现半像素错位 → `src` 取整（floor/ceil 对齐）并保证 `dst` 与 `src` 同比例。
 10. **滚轮/指针冲突**：浮层/菜单打开时画布滚轮必须让位（`overscroll-behavior: contain`，别 `preventDefault` 全局滚轮）；原生 `<select>` 会吃掉滚轮并改值 → 换成 `openMenu` 后要确保菜单不穿透；沉浸模式锁页面滚动要配 `scrollbar-gutter: stable` 防页面横跳；HTML5 拖放（拖文件进舞台）与 pointer 拖拽共用左键，`pointercancel`/`dragstart` 必须收尾平移状态。
 11. **快捷键冲突**：`1`–`6`、空格、`F`、`0` 都是外壳级快捷键；空格在按钮聚焦时会触发点击。判定顺序必须「有浮层 → 让浮层；焦点在输入控件 → 让控件；否则才归舞台」。参考 `ui/dom.ts` 的 `isTypingTarget()`/`hasOverlay()`。
-12. **测试环境限制**：Vitest 默认 `environment: 'node'`（`vitest.config.ts` 只开了 `css: true`），**没有 DOM**。新逻辑要保持「纯函数可测」风格；要测 DOM 就得加 jsdom（违背「零新增依赖」口径，至少是 devDependency）。建议纯模块：`geometry.ts`（视口）、`selection.ts`（选图解析）、`diff.ts`（像素差）、`zoom.ts`（档位/百分比/epsilon）、`layout.ts`（行列与最小行高）、`filmstrip.ts`（写目标）。
+12. **测试环境限制**：Vitest 默认 `environment: 'node'`（`vitest.config.ts` 只开了 `css: true`），**没有 DOM**。新逻辑要保持「纯函数可测」风格；要测 DOM 就得加 jsdom（违背「零新增依赖」口径，至少是 devDependency）。建议纯模块：`geometry.ts`（视口）、`selection.ts`（选图解析与落点）、`diff.ts`（像素差）、`zoom.ts`（档位/百分比/epsilon）、`layout.ts`（行列与最小行高）。
 13. **与视频侧的 CSS 契约**：`video-compare.ts` 复用 9 个 `.viewer-*` 类名（见 2.2）。本轮两边都重写，正确做法是**各自拥有 CSS**（`viewer.css` / `video.css`），共享的只有 `viewport.ts`；切换类名必须与 video 负责人同一提交窗口完成，否则视频侧样式全丢（旧 `style.css` 里的 `.video-compare .viewer-area` 覆盖规则 `style.css:978-991` 会失效）。
 14. **主题令牌迁移**：设计契约的画布令牌是 `--canvas` / `--canvas-checker`，旧代码读的是 `--canvas-bg`（`theme.ts:29-31`）。若 `core/theme.ts` 不跟着改，新画布会拿不到值 → 落到兜底 `#2b2b2b`，浅色主题下出现深色孤岛。建议画布底色完全交给 CSS（容器背景 + canvas `clearRect`），删掉每帧 `getComputedStyle`。
-15. **大候选集**：分屏 N+1 栏在 10 张以上不可用；胶片条要横向滚动 + `loading="lazy"`；网格行高设下限并内部滚动；缩略图**不要**塞进大图解码缓存（避免尺寸信息互相污染），用独立 `<img>` 走浏览器缓存。
+15. **大候选集**：分屏 N+1 栏在 10 张以上不可用；网格行高设下限并内部滚动。单槽模式的候选菜单在几十张候选时要能滚动，不把菜单撑出窗口。
 16. **整页重渲染期的瞬时状态**：拖拽/长按/下拉展开都是 DOM 内瞬态，一旦 `update()` 重建对应节点就丢。`update()` 必须「结构键不变就不重建」，并把瞬态挂在节点之外（闭包）而不是每次重建重置。
 
 ## 6. Phase B 交接（文件与接口草案）
@@ -254,7 +255,7 @@ attachPanZoom(canvas, getViewport, setViewport, onChange, opts?): () => void  //
 ```
 src/features/viewer/
   index.ts         注册 StageView（id 建议 'compare'，kinds:['image']），mount 一次 + update()
-  stage.ts         舞台骨架：工具栏 / 画布区 / 胶片条 / 覆盖层
+  stage.ts         舞台骨架：工具栏 / 画布区 / 覆盖层
   modes/split.ts | slider.ts | grid.ts | overlay.ts | diff.ts | blink.ts   六个绘制器，各含 attach/detach
   geometry.ts      ← viewport.ts 原样（含测试）
   selection.ts     ← resolveCandidatePath / resolveModeCandidatePath / isSingleSlotMode / resolvePaneImage / defaultPaneImage
@@ -262,7 +263,6 @@ src/features/viewer/
   diff.ts          ← computeDiffData + 缓存策略（容量 1，带 key 与像素上限）
   decode.ts        ← 会话级图片缓存（LRU + invalidate + 就绪回调）
   zoom.ts          档位/百分比格式化/epsilon/键盘步进
-  filmstrip.ts     filmstripTarget(mode, focus) 纯函数
 src/styles/viewer.css   只含 .stage-* 与查看器私有类，不写别人目录的类
 ```
 

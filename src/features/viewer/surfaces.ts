@@ -23,7 +23,7 @@ export interface SurfaceOptions {
   cols?: number;
   /** 点击某栏/某格的选图按钮。 */
   onPick: (index: number) => void;
-  /** 某栏/某格获得焦点（胶片条选图落到这里）。 */
+  /** 某栏/某格获得焦点（切栏或换图后高亮那一格）。 */
   onFocus: (index: number) => void;
   /** 错误状态的「重试」「复制路径」。 */
   onRetry: (index: number, path: string) => void;

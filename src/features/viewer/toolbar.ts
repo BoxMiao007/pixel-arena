@@ -22,6 +22,8 @@ export interface ToolbarOptions {
   onZoomOut: () => void;
   onZoomFit: () => void;
   onZoomMenu: (anchor: HTMLElement) => void;
+  /** 单槽模式：点上下文文字打开「选择对比图」菜单。 */
+  onPickCandidate: (anchor: HTMLElement) => void;
   /** 点击像素读数：未锁定则锁定，已锁定则复制。 */
   onProbeToggle: () => void;
 }
@@ -45,7 +47,8 @@ export interface ToolbarHandle {
   /** 画布右上角的模式参数浮条（无参数的模式为空节点，CSS 会隐藏）。 */
   props: HTMLElement;
   setMode: (mode: ViewerMode) => void;
-  setContext: (text: string) => void;
+  /** pickable=true 时上下文文字变成换图入口（单槽模式）；分屏/网格只作说明。 */
+  setContext: (text: string, pickable?: boolean) => void;
   setZoom: (zoom: number, pixel: boolean) => void;
   setZoomEnabled: (enabled: boolean) => void;
   /** 像素探针读数；null 表示指针不在图片上（隐藏读数）。 */
@@ -82,7 +85,18 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
     button.setAttribute('aria-label', `${MODE_META[mode].label}（${index + 1}）`);
   }
 
-  const context = el('span', { class: 'viewer__context truncate', text: '' });
+  const contextText = el('span', { class: 'viewer__context-text truncate', text: '' });
+  const context = el(
+    'button',
+    {
+      class: 'viewer__context',
+      attrs: { type: 'button' },
+      on: { click: () => options.onPickCandidate(context) },
+    },
+    contextText,
+    icon('chevronDown', 'icon viewer__context-caret'),
+  );
+  context.disabled = true;
 
   const zoomOut = iconButton({ icon: 'zoomOut', label: '缩小', size: 'sm', onClick: options.onZoomOut });
   const zoomValue = el('button', {
@@ -149,9 +163,13 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
     setMode: (mode) => {
       seg.setValue(mode);
     },
-    setContext: (text) => {
-      context.textContent = text;
-      context.title = text;
+    setContext: (text, pickable = false) => {
+      contextText.textContent = text;
+      context.disabled = !pickable;
+      context.title = pickable ? `${text}（点击换对比图）` : text;
+      context.setAttribute('aria-label', pickable ? `${text}，点击选择对比图` : text);
+      if (pickable) context.setAttribute('aria-haspopup', 'menu');
+      else context.removeAttribute('aria-haspopup');
     },
     setZoom: (zoom, pixel) => {
       zoomValue.textContent = formatZoomPercent(zoom);
