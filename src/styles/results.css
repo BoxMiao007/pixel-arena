@@ -238,11 +238,14 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   max-width: 100%;
   /* 允许收窄：表头文案超宽时走 ellipsis（缩略号），不要在容器右缘切掉半个字形。 */
   min-width: 0;
   height: 100%;
-  padding: 0 16px 0 0;
+  /* 不给右内边距：表头文字的右缘必须和单元格里的数字右缘对齐（排序图标改成行内元素，
+   * 只在当前排序列出现，出现时把标签顶开一点点，而不是给所有列表头都留 16px 死空）。 */
+  padding: 0;
   border: 0;
   background: transparent;
   color: inherit;
@@ -263,11 +266,16 @@
 }
 
 .results-table__sort-icon {
-  position: absolute;
-  right: 0;
-  top: 50%;
+  /* 行内图标：和标签一起右对齐，不预留固定空位 */
+  position: static;
   display: inline-flex;
-  transform: translateY(-50%);
+  flex: none;
+  transform: none;
+}
+
+/* 未排序时图标位是空 span：让它彻底退出布局，否则 gap 会白留 4px，表头和数字就差几像素 */
+.results-table__sort-icon:empty {
+  display: none;
 }
 
 .results-table__sort-icon .icon {
