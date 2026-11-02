@@ -16,6 +16,7 @@ import type { DockTab, MountedView, ViewCtx } from '../../shell/registry';
 import { buildEfficiencyTable, dominatorText, type EfficiencyTable } from './efficiency';
 import { formatMetricFor } from './metrics';
 import { liveRound } from './round';
+import { createEdgeFade, type EdgeFade } from './scroll-edge';
 import {
   mountTable,
   type TableColumn,
@@ -26,9 +27,9 @@ import {
 
 function efficiencyColumns(table: EfficiencyTable): TableColumn[] {
   return [
-    { key: 'name', label: '跑分图', width: 190 },
-    { key: 'size', label: '体积', width: 92, align: 'end' },
-    { key: 'ratio', label: '体积比', width: 78, align: 'end' },
+    { key: 'name', label: '跑分图', width: 190, title: '文件名' },
+    { key: 'size', label: '体积', width: 92, align: 'end', title: '跑分图本身的大小' },
+    { key: 'ratio', label: '体积比', width: 78, align: 'end', title: '相对原图的体积；小于 100% 表示压小了' },
     {
       key: 'quality',
       label: table.metric.label,
@@ -115,6 +116,8 @@ function mountEfficiencyTab(host: HTMLElement, ctx: ViewCtx): MountedView {
   });
   const hint = el('p', { class: 'efficiency-tab__note' });
   const tableHost = el('div', { class: 'efficiency-tab__table' });
+  // 与评分表同一套右缘渐隐（列多时提示还能横向滚动），随页签销毁解除监听。
+  const edgeFade: EdgeFade = createEdgeFade(tableHost);
   const empty = el('p', {
     class: 'results-empty-note',
     text: '跑分后这里按体积排序列出每张图，并标出更划算的',
@@ -153,6 +156,7 @@ function mountEfficiencyTab(host: HTMLElement, ctx: ViewCtx): MountedView {
     if (!hasCandidates || view === null) {
       table?.destroy();
       table = null;
+      edgeFade.track(null);
       tableHost.hidden = true;
       return;
     }
@@ -161,6 +165,7 @@ function mountEfficiencyTab(host: HTMLElement, ctx: ViewCtx): MountedView {
     const spec = efficiencySpec(view, activePath, activate);
     if (table === null) table = mountTable(tableHost, spec);
     else table.update(spec);
+    edgeFade.track(tableHost.querySelector<HTMLElement>('.results-table-scroll'));
   }
 
   render();
@@ -168,6 +173,7 @@ function mountEfficiencyTab(host: HTMLElement, ctx: ViewCtx): MountedView {
   return {
     update: () => render(),
     destroy: () => {
+      edgeFade.destroy();
       table?.destroy();
       table = null;
       host.replaceChildren();

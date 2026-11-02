@@ -271,6 +271,25 @@ export function mountTable(host: HTMLElement, initial: TableSpec): TableHandle {
   scroll.appendChild(table);
   host.appendChild(scroll);
 
+  // 吸顶表头会盖住行内按钮的焦点环：Tab 进入被遮住的元素时把滚动位置往上补，
+  // 让焦点元素落在表头下沿之外。表头高度取实时布局（字号/主题变化也能跟上），
+  // 布局不可用时退化到 28px。不依赖样式表的能力，等 results.css 补上
+  // scroll-padding-top 后这里只是双保险。
+  const STICKY_HEAD_FALLBACK = 28;
+  const STICKY_HEAD_GAP = 2;
+  const revealFocusedRow = (event: FocusEvent): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !scroll.contains(target)) return;
+    // 表头内部的排序按钮本来就在吸顶层里，不参与补滚。
+    if (thead.contains(target)) return;
+    const headHeight = thead.getBoundingClientRect().height || STICKY_HEAD_FALLBACK;
+    const scrollRect = scroll.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const covered = targetRect.top - (scrollRect.top + headHeight + STICKY_HEAD_GAP);
+    if (covered < 0) scroll.scrollTop += covered;
+  };
+  scroll.addEventListener('focusin', revealFocusedRow);
+
   const applySort = (spec: TableSpec): void => {
     for (const [key, ref] of headRefs) {
       const column = spec.columns.find((item) => item.key === key);
@@ -377,6 +396,7 @@ export function mountTable(host: HTMLElement, initial: TableSpec): TableHandle {
   };
 
   const destroy = (): void => {
+    scroll.removeEventListener('focusin', revealFocusedRow);
     headRefs.clear();
     host.replaceChildren();
   };

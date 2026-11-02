@@ -38,6 +38,7 @@ function emptyStage(): HTMLElement {
     return emptyState({
       title: '还没有跑分组',
       hint: '一个跑分组是一间独立的评测室。新建一个，把原图和已压好的跑分图拖进来，或让工具自动压一套编码阶梯。',
+      icon: 'compare',
       actions: [
         button({ label: '新建图片跑分组', variant: 'primary', onClick: () => void createGroup('image') }),
         button({ label: '新建视频跑分组', onClick: () => void createGroup('video') }),
@@ -51,6 +52,7 @@ function emptyStage(): HTMLElement {
     return emptyState({
       title: `${group.name} 里还没有评测轮`,
       hint: '每个评测轮是一组独立的对比：一张原图对若干张跑分图。',
+      icon: 'plus',
       actions: [
         button({ label: '新建评测轮', variant: 'primary', onClick: () => void createRound(group) }),
       ],
@@ -171,11 +173,23 @@ export function mountInspector(host: HTMLElement): RegionHandle {
 const DOCK_EXPANDED_LABEL = '收起结果坞（Ctrl+J）';
 const DOCK_COLLAPSED_LABEL = '展开结果坞（Ctrl+J）';
 
+/**
+ * 页签可以往页签行右侧带自己的按钮（现在只有评分表用它放「选择显示的列」）。
+ * 这是挂载句柄上的可选扩展，不写进 registry 的必选契约：没实现的页签
+ * （如视频指标）就什么都不显示。按钮与页签同生命周期，切换/销毁一起收。
+ */
+interface DockActionsView extends MountedView {
+  mountDockActions?(host: HTMLElement): MountedView;
+}
+
 /** 结果坞：页签 + 可折叠，内容按「轮 × 页签」挂载。 */
 export function mountDock(host: HTMLElement): RegionHandle {
   let state: { key: string; tabId: string; handle: MountedView } | null = null;
+  let actions: MountedView | null = null;
 
   const tabsBar = el('div', { class: 'dock__tabs', attrs: { role: 'tablist', 'aria-label': '结果视图' } });
+  // 页签自己的头栏按钮落在这里（折叠按钮固定在它右边，位置不随页签变）。
+  const tabActions = el('div', { class: 'dock__tab-actions' });
   const collapse = iconButton({
     label: DOCK_EXPANDED_LABEL,
     icon: 'chevronDown',
@@ -192,7 +206,7 @@ export function mountDock(host: HTMLElement): RegionHandle {
     'div',
     { class: 'dock__head' },
     tabsBar,
-    el('div', { class: 'dock__actions' }, collapse),
+    el('div', { class: 'dock__actions' }, tabActions, collapse),
   );
   // 折叠态下头栏本身就是展开入口：点页签会顺带展开并切到那页
   head.addEventListener('click', (event) => {
@@ -200,11 +214,25 @@ export function mountDock(host: HTMLElement): RegionHandle {
     if ((event.target as HTMLElement).closest('.dock__collapse')) return;
     setPanelCollapsed('dock', false);
   });
+  // 同一个入口补键盘：只在折叠态生效，且只在头栏自己被聚焦时响应
+  // （页签、折叠按钮自己的 Enter/Space 不抢）。展开态头栏只是布局容器，
+  // 不带 role/tabindex，避免把含页签按钮的容器声明成 button。
+  head.addEventListener('keydown', (event) => {
+    if (!shellState.dockCollapsed) return;
+    if (event.target !== head) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    setPanelCollapsed('dock', false);
+  });
   host.append(head, content);
 
   const destroy = (): void => {
     state?.handle.destroy();
     state = null;
+    actions?.destroy();
+    actions = null;
+    // 兜底：页签的 destroy 应已清空，这里再收一次，避免残留一个点不动的按钮。
+    tabActions.replaceChildren();
   };
 
   const tabButton = (tab: DockTab, active: string, ctx: ViewCtx): HTMLElement => {
@@ -249,6 +277,17 @@ export function mountDock(host: HTMLElement): RegionHandle {
     collapse.title = label;
     collapse.setAttribute('aria-label', label);
     collapse.setAttribute('aria-expanded', String(!collapsed));
+    // 只有折叠态整条头栏才是「展开」按钮（CSS 也只在折叠态给它 pointer 光标）。
+    if (collapsed) {
+      head.setAttribute('role', 'button');
+      head.setAttribute('tabindex', '0');
+      head.setAttribute('aria-label', DOCK_COLLAPSED_LABEL);
+      head.setAttribute('aria-expanded', 'false');
+    } else {
+      for (const name of ['role', 'tabindex', 'aria-label', 'aria-expanded']) {
+        head.removeAttribute(name);
+      }
+    }
   };
 
   const update = (): void => {
@@ -293,7 +332,13 @@ export function mountDock(host: HTMLElement): RegionHandle {
       const tab = tabs.find((item) => item.id === active) ?? tabs[0];
       const mountHost = el('div', { class: 'dock__view' });
       content.appendChild(mountHost);
-      state = { key, tabId: tab.id, handle: tab.mount(mountHost, session) };
+      const handle = tab.mount(mountHost, session);
+      state = { key, tabId: tab.id, handle };
+      // 页签若自带页签行按钮，跟着这次挂载一起上；destroy() 会一并收掉。
+      const withActions = handle as DockActionsView;
+      if (typeof withActions.mountDockActions === 'function') {
+        actions = withActions.mountDockActions(tabActions);
+      }
     }
     safeUpdate(state.handle, `结果坞/${state.tabId}`);
   };

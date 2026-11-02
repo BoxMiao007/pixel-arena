@@ -19,7 +19,7 @@ import { copyText, fileName, truncateFileName } from '../../core/util';
 import { el } from '../../ui/dom';
 import { icon } from '../../ui/icons';
 import { openPopover } from '../../ui/overlay';
-import { button, iconButton, toolbar } from '../../ui/primitives';
+import { button, iconButton } from '../../ui/primitives';
 import { toast } from '../../ui/toast';
 import { requestRender } from '../../shell/controller';
 import type { DockTab, MountedView, ViewCtx } from '../../shell/registry';
@@ -33,6 +33,7 @@ import {
 } from './metrics';
 import { rowStatus, rowStatusText } from './status';
 import { liveRound } from './round';
+import { createEdgeFade, type EdgeFade } from './scroll-edge';
 import {
   mountTable,
   nextSortState,
@@ -73,7 +74,9 @@ const COLUMN_WIDTHS = {
   encodingParams: 150,
   status: 128,
   note: 168,
-  metric: 104,
+  // 指标表头最长的是 SSIMULACRA2 / Butteraugli：104px 会把 11 个字母的单词
+  // 在容器右缘切成半个字形，120px 留给「缩略号 + 排序箭头」刚刚够。
+  metric: 120,
 } as const;
 
 function collectMetricKeys(candidates: readonly CandidateImage[]): string[] {
@@ -359,7 +362,16 @@ export function emptyNoteText(kind: GroupKind): string {
   return kind === 'video' ? '旧工作区的图片跑分结果会显示在这里' : '跑分后这里出现指标表';
 }
 
-function mountResultsTab(host: HTMLElement, ctx: ViewCtx): MountedView {
+/**
+ * 评分表页签的挂载句柄。比通用 MountedView 多一个可选动作入口：外壳把
+ * 「列选择」这类页签自己的按钮挂到结果坞页签行右侧（shell/regions.ts 的 mountDock），
+ * 这样页签内容区顶部不再需要一条只有图标的 34px 工具条。
+ */
+export interface ResultsTabView extends MountedView {
+  mountDockActions(actionHost: HTMLElement): MountedView;
+}
+
+function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
   const roundId = ctx.round.id;
   const sortHolder = roundScoped<SortHolder>('results.sort', roundId, () => ({ value: null }));
   const expandedHolder = roundScoped<ExpandedHolder>('results.expanded', roundId, () => ({
@@ -367,26 +379,16 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): MountedView {
   }));
 
   host.classList.add('results-tab');
-  const columnsBtn = iconButton({
-    icon: 'layers',
-    label: '选择显示的列',
-    variant: 'quiet',
-    size: 'sm',
-    onClick: (event) => {
-      const anchor = event.currentTarget;
-      if (anchor instanceof HTMLElement) openColumnsMenu(anchor);
-    },
-  });
-  const bar = toolbar(columnsBtn);
-  bar.classList.add('results-tab__bar');
-
   const tableHost = el('div', { class: 'results-tab__table is-frozen-name' });
   const emptyHost = el('div', { class: 'results-tab__empty' });
   const statusLine = el('div', {
     class: 'results-tab__status',
     attrs: { 'aria-live': 'polite' },
   });
-  host.append(bar, tableHost, emptyHost, statusLine);
+  // 表格直接贴页签行：内容区不再留一条只放图标按钮的空带。
+  host.append(tableHost, emptyHost, statusLine);
+  // 横向溢出提示（右缘渐隐）的监听跟着表格走，随本句柄一起销毁。
+  const edgeFade: EdgeFade = createEdgeFade(tableHost);
 
   let table: TableHandle | null = null;
   let lastSignature = '';
@@ -445,8 +447,10 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): MountedView {
       (candidate) => candidate.path,
     );
 
-    const rows: TableRow[] = sorted.map((candidate) => ({
+    const rows: TableRow[] = sorted.map((candidate, index) => ({
       key: candidate.path,
+      // 名次列的第 1 名单独标出来（样式只改数字颜色，不做彩条卡片）。
+      className: index === 0 ? 'is-rank-one' : undefined,
       cells: columns.map((column) => {
         if (column.key === 'name') return nameCell(candidate);
         if (column.key === 'status') return statusCell(candidate, expanded.has(candidate.path));
@@ -642,6 +646,7 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): MountedView {
     if (round.candidates.length === 0) {
       if (table) table.destroy();
       table = null;
+      edgeFade.track(null);
       tableHost.hidden = true;
       emptyHost.hidden = false;
       emptyHost.replaceChildren(
@@ -663,6 +668,9 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): MountedView {
     const { spec, columns } = buildSpec(round);
     if (!table) table = mountTable(tableHost, spec);
     else table.update(spec);
+    // 列集合/行数变了之后重新量一次溢出：表格是 table-layout: fixed，列宽变了
+    // 容器宽度不变，ResizeObserver 不会触发，只能在这里同步。
+    edgeFade.track(tableHost.querySelector<HTMLElement>('.results-table-scroll'));
 
     const sort = sortHolder.value;
     let sortLabel = '按选入顺序';
@@ -673,10 +681,47 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): MountedView {
     statusLine.textContent = `${sortLabel}，共 ${round.candidates.length} 行`;
   }
 
+  /**
+   * 页签行右侧的「选择显示的列」按钮。外壳在页签挂载后调一次，页签销毁时调
+   * 返回句柄的 destroy()——按钮与页签同生命周期，切页签/切轮不会留下悬挂按钮。
+   * 幂等：重复调用只会把同一个按钮重新挂回（不叠加），折叠态由 CSS 隐藏。
+   */
+  let dockActionHost: HTMLElement | null = null;
+  let columnsButton: HTMLButtonElement | null = null;
+
+  function mountDockActions(actionHost: HTMLElement): MountedView {
+    if (columnsButton === null) {
+      columnsButton = iconButton({
+        icon: 'layers',
+        label: '选择显示的列',
+        variant: 'quiet',
+        size: 'sm',
+        onClick: (event) => {
+          const anchor = event.currentTarget;
+          if (anchor instanceof HTMLElement) openColumnsMenu(anchor);
+        },
+      });
+    }
+    const button = columnsButton;
+    dockActionHost = actionHost;
+    actionHost.replaceChildren(button);
+    return {
+      // 菜单每次打开时现读当前轮数据，按钮本身没有需要增量更新的状态。
+      update: () => {},
+      destroy: () => {
+        if (dockActionHost !== actionHost) return;
+        actionHost.replaceChildren();
+        dockActionHost = null;
+      },
+    };
+  }
+
   paint();
   return {
     update: paint,
+    mountDockActions,
     destroy: () => {
+      edgeFade.destroy();
       table?.destroy();
       table = null;
       host.replaceChildren();

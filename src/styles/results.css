@@ -9,17 +9,13 @@
 
 /* ---------- 页签骨架 ---------- */
 
+/* 内容区不再有工具条：唯一一个「选择显示的列」按钮挂在结果坞页签行右侧
+ * （shell/regions.ts 的 mountDock），表格直接贴页签行，省掉那条 34px 空带。 */
 .results-tab {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-}
-
-.results-tab__bar {
-  justify-content: flex-end;
-  padding: var(--s-2) var(--s-3) var(--s-1);
-  flex: none;
 }
 
 .results-tab__table {
@@ -54,10 +50,36 @@
 /* ---------- 表格骨架 ---------- */
 
 .results-table-host {
+  /* 右缘渐隐是本容器的伪元素，需要一个定位上下文。 */
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  /* 与 base.css 的 ::-webkit-scrollbar 宽度一致：渐隐层停在内容右缘，
+   * 不压住竖直滚动条（否则滚动条会被渐变擦成半透明）。 */
+  --results-scrollbar: 10px;
+  --results-edge-fade: 28px;
+}
+
+/* 还能往右滚时才对右缘做 28px 渐隐：滚到最右（或没有溢出）由 scroll-edge.ts
+ * 摘掉 has-more-right，渐隐随之消失；渐隐层在最右 10px（滚动条槽）之前结束。 */
+.results-table-host::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: var(--results-scrollbar);
+  width: var(--results-edge-fade);
+  z-index: 4;
+  background: linear-gradient(to right, transparent, var(--surface-1));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.results-table-host.has-more-right::after {
+  opacity: 1;
 }
 
 .results-table-scroll {
@@ -65,6 +87,10 @@
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
+  /* 竖直滚动条槽常驻：有无滚动条时表格右缘位置一致，渐隐不会随行数抖动。 */
+  scrollbar-gutter: stable;
+  /* Tab 到行内按钮时把整行滚进可视区：粘性表头 28px，不然焦点环被压在表头下。 */
+  scroll-padding-top: 28px;
 }
 
 .results-table {
@@ -124,6 +150,17 @@
   font-size: var(--fs-meta);
 }
 
+/* 名次列的第一名：琥珀数字，其余保持弱化灰。层级只靠颜色给，不加彩条、
+ * 不加背景块；基准行（原图）自己是单独一行，用 --text-muted 在更深的底上读得清。 */
+.results-table tbody tr.is-rank-one .results-table__rank {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.results-table tbody tr.results-table__reference .results-table__rank {
+  color: var(--text-muted);
+}
+
 /* 名称列冻结：横向滚动时始终看得到这行是谁（行身份比序号优先）。
  * 只对评分表生效（效率对比表不冻结），避免窄坞里把数值列钉住。 */
 .is-frozen-name .results-table thead th:nth-child(2),
@@ -158,6 +195,12 @@
   font-weight: 600;
 }
 
+/* 体积比列的最小值：数字转琥珀色，回答「哪张更划算」。只改颜色，不加进度条、
+ * 不加彩条；底色仍用上面 is-best 的 accent-soft。 */
+.results-table tbody td[data-col='sizeRatio'].is-best {
+  color: var(--accent);
+}
+
 /* 原图基准行：压一层更深的底，不参与 hover/选中。 */
 .results-table tbody tr.results-table__reference td {
   background-color: var(--surface-3);
@@ -188,6 +231,8 @@
   display: inline-flex;
   align-items: center;
   max-width: 100%;
+  /* 允许收窄：表头文案超宽时走 ellipsis（缩略号），不要在容器右缘切掉半个字形。 */
+  min-width: 0;
   height: 100%;
   padding: 0 16px 0 0;
   border: 0;
@@ -204,6 +249,7 @@
 
 .results-table__sort-label {
   overflow: hidden;
+  min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

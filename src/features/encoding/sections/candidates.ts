@@ -53,16 +53,18 @@ export function candidateStatus(
   }
   if (running) return { text: '跑分中', kind: 'info' };
   if (candidate.metrics === null) return { text: '待跑分', kind: 'neutral' };
-  return { text: '完成', kind: 'ok' };
+  // 「完成」是最常见的状态（一轮几十张图就是几十个），给语义绿色会把失败与
+  // 跑分中的信号淹没；完成态走中性色，颜色只留给需要动手看一眼的状态。
+  return { text: '完成', kind: 'neutral' };
 }
 
-/** 四态 → 徽标语义色（与参数编辑区同一套）。 */
+/** 四态 → 徽标语义色（与参数编辑区同一套）。scored 同「完成」，走中性。 */
 const STATE_BADGE_KIND: Record<
   'unscored' | 'scored' | 'stale' | 'failed',
   'neutral' | 'ok' | 'info' | 'danger'
 > = {
   unscored: 'neutral',
-  scored: 'ok',
+  scored: 'neutral',
   stale: 'info',
   failed: 'danger',
 };
@@ -251,6 +253,9 @@ export const candidatesSection: PanelSection = {
           const metaItems: string[] = [formatSize(candidate.fileSize)];
           if (candidate.sizeRatio !== null) metaItems.push(formatRatio(candidate.sizeRatio));
           if (candidate.encodingParams) metaItems.push(candidate.encodingParams);
+          // 只有已跑分且未失败的图才有「高级选项」；行尾给一个键盘可达的入口，
+          // 右键菜单保留（鼠标用户顺手，但右键不是唯一路径）。
+          const canOpenAdvanced = candidate.metrics !== null && candidate.error === null;
 
           const row = el(
             'div',
@@ -265,6 +270,16 @@ export const candidatesSection: PanelSection = {
                 : badge('高级', 'neutral', '这张图由参数变体生成：右键「高级选项」可复制一份再调参'),
               el('span', { class: 'cand__spacer' }),
               badge(label, kind, candidate.error ?? undefined),
+              canOpenAdvanced
+                ? iconButton({
+                    label: `高级选项：${fileName(candidate.path)}`,
+                    icon: 'more',
+                    variant: 'quiet',
+                    size: 'sm',
+                    title: '高级选项（复制一份并调参）',
+                    onClick: () => openAdvancedMenu(row, candidate),
+                  })
+                : null,
               iconButton({
                 label: `移除 ${fileName(candidate.path)}`,
                 icon: 'close',
@@ -282,12 +297,12 @@ export const candidatesSection: PanelSection = {
             ),
           );
 
-          if (candidate.metrics !== null && candidate.error === null) {
+          if (canOpenAdvanced) {
             row.addEventListener('contextmenu', (event) => {
               event.preventDefault();
               openAdvancedMenu(row, candidate);
             });
-            row.title = '右键：高级选项（复制一份并调参）';
+            row.title = '右键或点「更多」：高级选项（复制一份并调参）';
           }
 
           list.append(
