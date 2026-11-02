@@ -348,6 +348,8 @@ export function renderEncoderCard(
     quick.append(
       field({
         label: '目标大小',
+        // 输入框 + 单位下拉是两个 labelable 控件：用 div + labelledby，避免 label 把点击转发给输入框。
+        composite: true,
         control: el('div', { class: 'enc-card__size-row' }, sizeInput, unitSelect),
         hint: entry.mode === 'quality' ? '仅大小优先模式使用' : undefined,
       }),
@@ -367,7 +369,8 @@ export function renderEncoderCard(
         callbacks.onChange();
       },
     });
-    quick.append(field({ label: '模式', control: mode.node }));
+    // 模式是 radiogroup（两个按钮）：必须用 composite，否则点「模式」会误触第一个按钮。
+    quick.append(field({ label: '模式', composite: true, control: mode.node }));
     card.append(quick);
   } else {
     card.append(

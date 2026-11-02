@@ -48,7 +48,14 @@ function beginRename(item: HTMLElement, group: Group, round: Round): void {
   editingId = round.id;
   const input = el('input', {
     class: 'round-chip__rename input',
-    attrs: { type: 'text', maxlength: '60', 'aria-label': '评测轮名称' },
+    // 就地改名是临时输入，关掉自动补全与拼写检查。
+    attrs: {
+      type: 'text',
+      maxlength: '60',
+      'aria-label': '评测轮名称',
+      autocomplete: 'off',
+      spellcheck: 'false',
+    },
   }) as HTMLInputElement;
   input.value = round.name;
   nameNode.replaceWith(input);
@@ -102,7 +109,7 @@ function roundMenu(anchor: HTMLElement, group: Group, round: Round): void {
   );
 }
 
-function roundChip(group: Group, round: Round): HTMLElement {
+function roundChip(group: Group, round: Round, tabbable: boolean): HTMLElement {
   const active = group.activeRoundId === round.id;
   const chip = el('div', {
     class: `round-chip${active ? ' is-active' : ''}`,
@@ -114,6 +121,11 @@ function roundChip(group: Group, round: Round): HTMLElement {
       class: 'round-chip__main',
       attrs: {
         type: 'button',
+        // 容器是 tablist，每个轮次就是一张页签：补 role/aria-selected 与 roving tabindex，
+        // 整个 tablist 只保留一个 Tab 停靠点，组内用左右方向键漫游（与结果坞页签一致）。
+        role: 'tab',
+        'aria-selected': String(active),
+        tabindex: tabbable ? '0' : '-1',
         'aria-current': active ? 'true' : null,
         title: `${round.name}（双击改名，右键更多操作）`,
       },
@@ -131,7 +143,20 @@ function roundChip(group: Group, round: Round): HTMLElement {
           if (event.key === 'F2') {
             event.preventDefault();
             beginRename(chip, group, round);
+            return;
           }
+          if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+          event.preventDefault();
+          const tablist = chip.closest('.workbar__rounds');
+          if (!tablist) return;
+          const tabs = [...tablist.querySelectorAll<HTMLElement>('.round-chip__main')];
+          const index = tabs.indexOf(event.currentTarget as HTMLElement);
+          if (index < 0) return;
+          const delta = event.key === 'ArrowRight' ? 1 : -1;
+          const next = tabs[(index + delta + tabs.length) % tabs.length];
+          // 焦点先落到目标页签再激活：激活会触发重绘，update() 里会把焦点接回来。
+          next.focus();
+          next.click();
         },
       },
     },
@@ -214,12 +239,30 @@ export function mountWorkbar(host: HTMLElement): WorkbarHandle {
 
     if (key !== lastKey) {
       lastKey = key;
+      // 切换轮次会重建 chip：先记下焦点是否还在轮次栏内，重建后把焦点还给新的选中页签，
+      // 否则方向键漫游只生效一次（旧节点被替换，焦点掉回 body）。
+      const focusWasInside = roundsHost.contains(document.activeElement);
       if (!group || rounds.length === 0) {
         roundsHost.replaceChildren(
           el('span', { class: 'workbar__empty', text: group ? '还没有评测轮' : '' }),
         );
       } else {
-        roundsHost.replaceChildren(...rounds.map((round) => roundChip(group, round)));
+        // 没有激活轮次时也要留一个 Tab 停靠点，否则整个 tablist 键盘不可达。
+        const activeExists = rounds.some((round) => round.id === group.activeRoundId);
+        roundsHost.replaceChildren(
+          ...rounds.map((round, index) =>
+            roundChip(
+              group,
+              round,
+              round.id === group.activeRoundId || (!activeExists && index === 0),
+            ),
+          ),
+        );
+        if (focusWasInside && editingId === null) {
+          roundsHost
+            .querySelector<HTMLElement>('.round-chip.is-active .round-chip__main')
+            ?.focus();
+        }
       }
     }
 

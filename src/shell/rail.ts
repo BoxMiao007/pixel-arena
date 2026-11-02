@@ -44,7 +44,14 @@ function beginRename(item: HTMLElement, group: Group): void {
   editingId = group.id;
   const input = el('input', {
     class: 'rail__rename input',
-    attrs: { type: 'text', maxlength: '60', 'aria-label': '跑分组名称' },
+    // 就地改名是临时输入，关掉自动补全与拼写检查（避免浏览器弹历史/红波浪线）。
+    attrs: {
+      type: 'text',
+      maxlength: '60',
+      'aria-label': '跑分组名称',
+      autocomplete: 'off',
+      spellcheck: 'false',
+    },
   }) as HTMLInputElement;
   input.value = group.name;
   nameNode.replaceWith(input);
@@ -155,9 +162,10 @@ function groupItem(group: Group, activeId: string | null): HTMLElement {
 }
 
 export function mountRail(host: HTMLElement): RailHandle {
-  const list = el('div', {
+  // 用真正的 <nav> 表达导航地标，role 不再由 div 模拟。
+  const list = el('nav', {
     class: 'rail__list',
-    attrs: { role: 'navigation', 'aria-label': '跑分组' },
+    attrs: { 'aria-label': '跑分组' },
   });
   const count = el('span', { class: 'rail__count' });
 

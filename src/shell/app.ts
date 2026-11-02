@@ -67,9 +67,27 @@ export function bootApp(root: HTMLElement): void {
   const dockHost = el('section', { class: 'dock', attrs: { 'aria-label': '结果' } });
   const inspectorHost = el('aside', { class: 'inspector', attrs: { 'aria-label': '检视器' } });
 
+  // 全应用没有 h1：补一个视觉隐藏的应用标题，供读屏与文档大纲定位。
+  // 样式层归样式负责人维护，这里用内联隐藏样式，避免为了一个工具类跨文件协调。
+  const appTitle = el('h1', {
+    text: '像素竞技场',
+    style: {
+      position: 'absolute',
+      width: '1px',
+      height: '1px',
+      margin: '-1px',
+      padding: '0',
+      overflow: 'hidden',
+      'clip-path': 'inset(50%)',
+      'white-space': 'nowrap',
+      border: '0',
+    },
+  });
+
   const workspaceHost = el(
     'main',
     { class: 'workspace' },
+    appTitle,
     workbarHost,
     stageHost,
     dockResizer,

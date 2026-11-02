@@ -55,11 +55,16 @@ function buildStatusHost(): HTMLElement {
   return el('div', { class: 'viewer__pane-status', attrs: { hidden: true } });
 }
 
-/** 画布的可访问外壳：可聚焦 + 有名字，键盘方向键（stage 接线）才有落点。 */
+/**
+ * 画布的可访问外壳：可聚焦 + 有名字，键盘方向键（stage 接线）才有落点。
+ *
+ * 这里不是静态图片：滚轮缩放、拖拽平移、方向键移动都由 stage 接在 canvas 上，
+ * 所以用 role="group" 而不是 role="img"（img 会把「可操作」语义读没）。
+ */
 function decorateCanvas(canvas: HTMLCanvasElement, tabbable = true): HTMLCanvasElement {
-  canvas.setAttribute('role', 'img');
+  canvas.setAttribute('role', 'group');
   canvas.tabIndex = tabbable ? 0 : -1;
-  canvas.setAttribute('aria-label', '对比画布');
+  canvas.setAttribute('aria-label', '对比画布（滚轮缩放，拖拽平移，方向键移动，双击复位）');
   return canvas;
 }
 

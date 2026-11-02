@@ -372,7 +372,9 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       class: 'video-pane__canvas',
       attrs: {
         tabindex: '0',
-        role: 'img',
+        // 可聚焦、可缩放平移的画布不是静态图片：用 group + 操作说明，
+        // 让读屏知道这里能交互，而不是把它当纯装饰图跳过。
+        role: 'group',
         'aria-label': path
           ? `视频画面：${truncateFileName(fileName(path))}（滚轮缩放，拖拽平移，双击复位）`
           : `视频画面：${label}`,

@@ -79,7 +79,13 @@ export function openShortcutsHelp(): void {
             'span',
             { class: 'shortcuts__keys' },
             ...row.keys.flatMap((key, index) => [
-              index > 0 ? el('span', { class: 'shortcuts__plus', text: '+' }) : null,
+              index > 0
+                ? el('span', {
+                    class: 'shortcuts__plus',
+                    text: '+',
+                    attrs: { 'aria-hidden': 'true' },
+                  })
+                : null,
               el('kbd', { class: 'kbd', text: key }),
             ]),
           ),

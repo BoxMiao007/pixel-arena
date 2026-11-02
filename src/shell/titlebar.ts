@@ -106,11 +106,19 @@ export function mountTitlebar(host: HTMLElement): TitlebarHandle {
     });
 
   const groupLabel = crumb('group', 'titlebar__doc-group');
-  const docSep = el('span', { class: 'titlebar__doc-sep', text: '/' });
+  const docSep = el('span', {
+    class: 'titlebar__doc-sep',
+    text: '/',
+    attrs: { 'aria-hidden': 'true' },
+  });
   const roundLabel = crumb('round', 'titlebar__doc-round');
   const docTitle = el('div', { class: 'titlebar__doc' }, groupLabel, docSep, roundLabel);
 
-  const status = el('div', { class: 'titlebar__status' });
+  // 应用唯一的主错误/状态通道：补 live region，异步失败才会被读屏播报。
+  const status = el('div', {
+    class: 'titlebar__status',
+    attrs: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' },
+  });
   const alerts = el('div', { class: 'titlebar__alerts' });
   const saved = el('span', { class: 'titlebar__saved' });
 

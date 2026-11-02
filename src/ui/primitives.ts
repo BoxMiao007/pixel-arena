@@ -7,6 +7,13 @@
 import { el, type Child } from './dom';
 import { icon, type IconName } from './icons';
 
+/** 页面内唯一 id：字段壳/进度条可能同时出现多份，用自增序号避免 id 撞车。 */
+let idSeq = 0;
+function nextDomId(prefix: string): string {
+  idSeq += 1;
+  return `${prefix}-${idSeq}`;
+}
+
 export type ButtonVariant = 'primary' | 'secondary' | 'quiet' | 'danger';
 
 export interface ButtonOptions {
@@ -210,13 +217,32 @@ export function segmented(options: {
   return { node, setValue: apply };
 }
 
-/** 字段外壳：<label> 包住说明与控件（控件自带 id 时也可用 for 关联）。 */
+/**
+ * 字段外壳：<label> 包住说明与控件（控件自带 id 时也可用 for 关联）。
+ *
+ * 只能用于**单个** labelable 控件。label 会把点击转发给内部第一个可标签控件，
+ * 复合控件（如两个按钮的 radiogroup、input + select）必须传 composite: true，
+ * 否则点标签文字会误触发第一个按钮（例如点「模式」直接切了编码模式）。
+ */
 export function field(options: {
   label: string;
   control: HTMLElement;
   hint?: string;
   error?: string;
+  /** 复合控件：改用 div + role=group + aria-labelledby，视觉类名与结构层级不变。 */
+  composite?: boolean;
 }): HTMLElement {
+  if (options.composite) {
+    const labelId = nextDomId('field-label');
+    return el(
+      'div',
+      { class: 'field', attrs: { role: 'group', 'aria-labelledby': labelId } },
+      el('span', { class: 'field__label', text: options.label, attrs: { id: labelId } }),
+      options.control,
+      options.hint ? el('span', { class: 'field__hint', text: options.hint }) : null,
+      options.error ? el('span', { class: 'field__error', text: options.error }) : null,
+    );
+  }
   return el(
     'label',
     { class: 'field' },
@@ -298,6 +324,8 @@ export function sliderField(options: {
   format?: (value: number) => string;
 }): SliderFieldHandle {
   const output = el('span', { class: 'field__value', text: (options.format ?? String)(options.value) });
+  // 可见标签用 <label for> 关联拉杆：点文字聚焦/拖动控件，比只读的 span 更符合直觉。
+  const inputId = nextDomId('slider');
   const input = el('input', {
     class: 'slider',
     attrs: {
@@ -306,7 +334,7 @@ export function sliderField(options: {
       max: String(options.max),
       step: String(options.step ?? 1),
       value: String(options.value),
-      'aria-label': options.label,
+      id: inputId,
     },
   }) as HTMLInputElement;
   const sync = (): void => {
@@ -323,7 +351,7 @@ export function sliderField(options: {
       el(
         'span',
         { class: 'field__row' },
-        el('span', { class: 'field__label', text: options.label }),
+        el('label', { class: 'field__label', text: options.label, attrs: { for: inputId } }),
         output,
       ),
       input,
@@ -342,13 +370,14 @@ export interface SwitchHandle {
   setChecked: (checked: boolean) => void;
 }
 
-/** 开关（role=switch），用于布尔设置。 */
+/** 开关（role=switch），用于布尔设置。可见文字是 <label for>，点文字同样能切换。 */
 export function switchField(options: {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   hint?: string;
 }): SwitchHandle {
+  const buttonId = nextDomId('switch');
   const button = el(
     'button',
     {
@@ -356,8 +385,8 @@ export function switchField(options: {
       attrs: {
         type: 'button',
         role: 'switch',
+        id: buttonId,
         'aria-checked': String(options.checked),
-        'aria-label': options.label,
       },
       on: {
         click: () => {
@@ -381,7 +410,7 @@ export function switchField(options: {
       el(
         'div',
         { class: 'field__row field__row--switch' },
-        el('span', { class: 'field__label', text: options.label }),
+        el('label', { class: 'field__label', text: options.label, attrs: { for: buttonId } }),
         button,
       ),
       options.hint ? el('span', { class: 'field__hint', text: options.hint }) : null,
@@ -435,30 +464,40 @@ export function section(options: {
   className?: string;
 }, ...children: Child[]): SectionHandle {
   const body = el('div', { class: 'section__body' }, ...children);
-  const titleNode = el('h3', { class: 'section__title', text: options.title });
   const chevron = icon('chevronDown', 'icon section__chevron');
   const head = el('div', { class: 'section__head' });
+  // <button> 只允许 phrasing content，标题不能是它的子节点：
+  // 折叠分区改成 <h3 class="section__heading"><button class="section__toggle">…</button></h3>，
+  // 标题文本落到 button 内的 span.section__title。原有类名逐个保留、盒模型一一对应，
+  // 所以视觉与之前一致（section__heading 的 flex 规则来自原有的展开态容器）。
+  const titleText = options.collapsible
+    ? el('span', { class: 'section__title', text: options.title })
+    : el('h3', { class: 'section__title', text: options.title });
   const toggle = options.collapsible
     ? el(
-        'button',
-        {
-          class: 'section__toggle',
-          attrs: {
-            type: 'button',
-            'aria-expanded': String(options.open ?? true),
-          },
-          on: {
-            click: () => {
-              const open = !body.hidden ? false : true;
-              applyOpen(open);
-              options.onToggle?.(open);
+        'h3',
+        { class: 'section__heading' },
+        el(
+          'button',
+          {
+            class: 'section__toggle',
+            attrs: {
+              type: 'button',
+              'aria-expanded': String(options.open ?? true),
+            },
+            on: {
+              click: () => {
+                const open = !body.hidden ? false : true;
+                applyOpen(open);
+                options.onToggle?.(open);
+              },
             },
           },
-        },
-        chevron,
-        titleNode,
+          chevron,
+          titleText,
+        ),
       )
-    : el('div', { class: 'section__heading' }, titleNode);
+    : el('div', { class: 'section__heading' }, titleText);
 
   const applyOpen = (open: boolean): void => {
     body.hidden = !open;
@@ -479,7 +518,7 @@ export function section(options: {
   );
   applyOpen(options.collapsible ? (options.open ?? true) : true);
 
-  return { node, body, setTitle: (title) => (titleNode.textContent = title) };
+  return { node, body, setTitle: (title) => (titleText.textContent = title) };
 }
 
 /** 空态：一句说明 + 最多两个动作，不写营销文案。 */
@@ -518,11 +557,23 @@ export interface ProgressHandle {
 
 /** 进度条：真实进度，带文本值（不伪造百分比）。 */
 export function progressBar(options: { label?: string } = {}): ProgressHandle {
-  const text = el('span', { class: 'progress__label', text: options.label ?? '' });
+  // 进度条必须有可访问名：文本标签加 id，track 用 aria-labelledby 关联。
+  // 文本会随 set() 变成「当前值/总量」，读屏因此能同时听到进度口径与数值。
+  const labelId = nextDomId('progress-label');
+  const text = el('span', {
+    class: 'progress__label',
+    text: options.label ?? '',
+    attrs: { id: labelId },
+  });
   const fill = el('span', { class: 'progress__fill' });
   const track = el('div', {
     class: 'progress__track',
-    attrs: { role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100' },
+    attrs: {
+      role: 'progressbar',
+      'aria-labelledby': labelId,
+      'aria-valuemin': '0',
+      'aria-valuemax': '100',
+    },
   }, fill);
   const node = el('div', { class: 'progress' }, text, track);
   return {
