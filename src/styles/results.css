@@ -175,6 +175,14 @@
   z-index: 3;
 }
 
+/* 横向滚起来以后，冻结列是「盖在数据上的浮层」：换更实的底 + 右侧软投影。
+ * 不给这一档时，冻结列和普通单元格同底，中间几列看起来像数据串位、对不上文件。 */
+.is-frozen-name.has-scrolled-x .results-table thead th:nth-child(2),
+.is-frozen-name.has-scrolled-x .results-table tbody tr[data-row-key] > td:nth-child(2) {
+  background-color: var(--surface-2);
+  box-shadow: inset -0.5px 0 var(--line-strong), 12px 0 18px -12px rgba(0, 0, 0, 0.6);
+}
+
 .results-table tbody td {
   background-color: var(--surface-1);
 }

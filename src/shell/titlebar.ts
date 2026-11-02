@@ -13,7 +13,6 @@ import { renameGroup, renameRound } from '../core/actions';
 import { openPopover } from '../ui/overlay';
 import { copyText } from '../core/util';
 import { toast } from '../ui/toast';
-import { shellState, togglePanel } from './controller';
 import { runCommand } from './registry';
 
 export interface TitlebarHandle {
@@ -64,13 +63,6 @@ function statusNode(): HTMLElement {
 }
 
 export function mountTitlebar(host: HTMLElement): TitlebarHandle {
-  const railToggle = iconButton({
-    label: '折叠或展开跑分组栏（Ctrl+B）',
-    icon: 'panelLeft',
-    variant: 'quiet',
-    onClick: () => togglePanel('rail'),
-  });
-
   /** 面包屑改名：双击或聚焦后 F2，弹命名框（与左栏/轮次栏同一套动作）。 */
   const renameWithPrompt = async (kind: 'group' | 'round'): Promise<void> => {
     const session = activeRound(getState().workspace);
@@ -149,7 +141,6 @@ export function mountTitlebar(host: HTMLElement): TitlebarHandle {
       el(
         'div',
         { class: 'titlebar__brand' },
-        railToggle,
         el('span', { class: 'brand-mark', attrs: { 'aria-hidden': 'true' } }),
         el('span', { class: 'titlebar__name', text: '像素竞技场' }),
       ),
@@ -162,7 +153,6 @@ export function mountTitlebar(host: HTMLElement): TitlebarHandle {
 
   const update = (): void => {
     const state = getState();
-    railToggle.setAttribute('aria-pressed', String(!shellState.railCollapsed));
 
     const session = activeRound(state.workspace);
     groupLabel.textContent = session?.group.name ?? '没有打开的跑分组';

@@ -272,6 +272,12 @@
   white-space: nowrap;
 }
 
+/* 分段控件的标签是「选项」，不是可选正文：拖动滑杆时被一起框选会像误触复制 */
+.segmented {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* ============ 表单 ============ */
 .field {
   display: flex;
@@ -366,6 +372,10 @@
   accent-color: var(--accent);
   background: transparent;
   cursor: pointer;
+  /* 长按拖动拉杆时浏览器会把旁边的文字一起框选，看上去像误触了「选择复制」。
+   * 拉杆本身禁掉文本选择（数值另由 aria-valuetext / 相邻 label 提供）。 */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* ============ 开关 ============ */

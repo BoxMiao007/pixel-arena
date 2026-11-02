@@ -23,6 +23,15 @@ export function hasMoreRight(state: EdgeState): boolean {
   return state === 'start' || state === 'middle';
 }
 
+/**
+ * 已经横向滚过去了（冻结的名称列开始盖住别的列）。
+ * 这时冻结列是覆盖在数据上的浮层，需要比普通单元格更实的底与右侧投影，
+ * 否则看起来像「中间那一列的数据对不上」。
+ */
+export function isScrolledX(state: EdgeState): boolean {
+  return state === 'middle' || state === 'end';
+}
+
 export interface EdgeFade {
   /** 绑定（或换绑）真正的横向滚动容器；传 null 解除。 */
   track(scroll: HTMLElement | null): void;
@@ -33,10 +42,13 @@ export interface EdgeFade {
 }
 
 const MORE_RIGHT_CLASS = 'has-more-right';
+const SCROLLED_X_CLASS = 'has-scrolled-x';
 
 /**
- * 在宿主上维护 has-more-right 类。宿主是带 position: relative 的表格容器，
- * 渐隐层是它的伪元素，所以只需要切这一个类。
+ * 在宿主上维护两个类：
+ * - has-more-right：右缘还有内容 → 画右侧渐隐；
+ * - has-scrolled-x：已经横向滚过去了 → 冻结的名称列换成「浮层」外观。
+ * 宿主是带 position: relative 的表格容器，样式全在 results.css。
  */
 export function createEdgeFade(host: HTMLElement): EdgeFade {
   let scroll: HTMLElement | null = null;
@@ -45,10 +57,12 @@ export function createEdgeFade(host: HTMLElement): EdgeFade {
   const apply = (): void => {
     if (scroll === null) {
       host.classList.remove(MORE_RIGHT_CLASS);
+      host.classList.remove(SCROLLED_X_CLASS);
       return;
     }
     const state = edgeState(scroll.scrollLeft, scroll.scrollWidth, scroll.clientWidth);
     host.classList.toggle(MORE_RIGHT_CLASS, hasMoreRight(state));
+    host.classList.toggle(SCROLLED_X_CLASS, isScrolledX(state));
   };
 
   const onScroll = (): void => apply();

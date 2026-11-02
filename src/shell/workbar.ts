@@ -1,6 +1,9 @@
-// 工作栏：当前分组的评测轮切换、新建轮、导出与三栏开关。
+// 工作栏：当前分组的评测轮切换、新建轮、导出与面板开关。
 //
 // 轮次 chip 单击切换、双击就地改名、右键菜单（重命名 / 删除，删除有内容时会确认）。
+//
+// 面板开关（左栏 / 检视器 / 结果坞 / 沉浸）集中在这一组：它们的排列顺序跟着窗口
+// 空间走（左 → 右 → 下 → 全屏），顶栏只留「全局动作」（帮助、设置），不重复放。
 
 import { getState, isBusy, setStatus } from '../core/store';
 import {
@@ -193,6 +196,12 @@ export function mountWorkbar(host: HTMLElement): WorkbarHandle {
   });
   // 键盘入口（Ctrl+E）没有事件锚点：给结果域一个稳定的首选锚点
   exportBtn.dataset.exportAnchor = '';
+  const railToggle = iconButton({
+    label: '折叠或展开跑分组栏（Ctrl+B）',
+    icon: 'panelLeft',
+    variant: 'quiet',
+    onClick: () => togglePanel('rail'),
+  });
   const inspectorToggle = iconButton({
     label: '折叠或展开检视器（Ctrl+I）',
     icon: 'panelRight',
@@ -217,6 +226,7 @@ export function mountWorkbar(host: HTMLElement): WorkbarHandle {
     { class: 'workbar__right' },
     exportBtn,
     el('span', { class: 'workbar__divider', attrs: { 'aria-hidden': 'true' } }),
+    railToggle,
     inspectorToggle,
     dockToggle,
     immersive,
@@ -274,6 +284,7 @@ export function mountWorkbar(host: HTMLElement): WorkbarHandle {
       : '导出本轮报告（Ctrl+E）';
     newRound.disabled = !hasGroup || busy;
     newRound.title = busy ? '有任务正在进行，结束后再新建' : '新建评测轮（Ctrl+N）';
+    railToggle.setAttribute('aria-pressed', String(!isPanelCollapsed('rail')));
     inspectorToggle.setAttribute('aria-pressed', String(!isPanelCollapsed('inspector')));
     dockToggle.setAttribute('aria-pressed', String(!isPanelCollapsed('dock')));
     immersive.setAttribute('aria-pressed', String(shellState.immersive));
