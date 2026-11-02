@@ -1,8 +1,8 @@
-// 查看器工具栏与模式参数浮条。
+// 查看器工具栏与模式参数。
 //
-// 工具栏一行：模式分段控制 + 当前对比对象 + 缩放控件 + 像素徽标；
-// 模式专属参数（不透明度/阈值/播放）放在画布右上角的浮动条里，
-// 避免六个模式的分段控制 + 上下文 + 缩放挤爆一行（舞台在 1200px 窗口下约 660px 宽）。
+// 工具栏一行：模式分段控制 + 模式专属参数 + 当前对比对象 + 缩放控件 + 像素徽标。
+// 模式参数（不透明度 / 阈值 / 播放）以前浮在画布右上角，会盖住图像主体（窄窗尤甚）；
+// 现在紧邻模式条内联，既是就近原则，也让画布整块留给图像。
 
 import { el } from '../../ui/dom';
 import { icon } from '../../ui/icons';
@@ -44,7 +44,7 @@ export interface PropsOptions {
 
 export interface ToolbarHandle {
   node: HTMLElement;
-  /** 画布右上角的模式参数浮条（无参数的模式为空节点，CSS 会隐藏）。 */
+  /** 模式参数组（内联在模式条右侧；无参数的模式为空节点，CSS 会隐藏）。 */
   props: HTMLElement;
   setMode: (mode: ViewerMode) => void;
   /** pickable=true 时上下文文字变成换图入口（单槽模式）；分屏/网格只作说明。 */
@@ -128,10 +128,15 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
   });
   pixelBadge.hidden = true;
 
+  // 模式参数（不透明度 / 阈值 / 播放）跟着模式条走：它们是「当前模式」的参数，
+  // 放在工具栏里紧邻分段控制，既是就近原则，也不再压住画布上的图像。
+  const props = el('div', { class: 'viewer__props', attrs: { 'data-empty': 'true' } });
+
   const node = el(
     'div',
     { class: 'viewer__toolbar' },
     seg.node,
+    props,
     context,
     el('span', { class: 'viewer__spacer' }),
     probe,
@@ -139,7 +144,6 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
     el('div', { class: 'viewer__zoom' }, zoomOut, zoomValue, zoomIn, fit),
   );
 
-  const props = el('div', { class: 'viewer__props', attrs: { 'data-empty': 'true' } });
   let opacityHandle: { setValue: (value: number) => void; input: HTMLInputElement } | null = null;
   let thresholdHandle: { setValue: (value: number) => void; input: HTMLInputElement } | null = null;
   let playButton: HTMLButtonElement | null = null;

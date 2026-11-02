@@ -14,7 +14,7 @@ import { getPref, roundScoped, setPref } from '../../core/ui-state';
 import type { MountedView, ViewCtx } from '../../shell/registry';
 import { el } from '../../ui/dom';
 import { icon } from '../../ui/icons';
-import { openMenu } from '../../ui/overlay';
+import { openMenu, type MenuItem } from '../../ui/overlay';
 import { button, emptyState, spinner } from '../../ui/primitives';
 import { toast } from '../../ui/toast';
 import {
@@ -66,7 +66,7 @@ import {
   type ViewerState,
   defaultViewerState,
 } from './types';
-import { steppedZoom, ZOOM_PRESETS } from './zoom';
+import { formatZoomPercent, steppedZoom, ZOOM_PRESETS } from './zoom';
 
 /** 查看器对外的命令面（键位注册用）。 */
 export interface ViewerCommands {
@@ -181,11 +181,22 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     on: { click: () => toggleProbeLock() },
   });
   probeHud.hidden = true;
+  // 画布右下的比例尺：把当前缩放换成「屏幕上这一段等于多少原始像素」。
+  // 像素级比对时不必心算 43.4% 到底对应多少图片像素；纯信息提示，读屏交给工具栏的缩放档位。
+  const scaleTrack = el('span', { class: 'viewer__scale-bar' });
+  const scaleText = el('span', { class: 'viewer__scale-text' });
+  const scaleBar = el(
+    'div',
+    { class: 'viewer__scale', attrs: { 'aria-hidden': 'true' } },
+    scaleTrack,
+    scaleText,
+  );
+  scaleBar.hidden = true;
   const overlay = el('div', {
     class: 'viewer__overlay',
     attrs: { 'aria-live': 'polite', 'aria-atomic': 'false' },
   });
-  stage.append(probeHud, overlay);
+  stage.append(probeHud, scaleBar, overlay);
 
   // ---------- 图片条目 ----------
   let imagesByPath = new Map<string, ViewerImage>();
@@ -531,9 +542,9 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     surface?.destroy();
     surface = null;
     divider = null;
-    // 旧结构的节点整体移除（overlay 与模式参数浮条是常驻节点，不参与重建）
+    // 旧结构的节点整体移除（overlay、比例尺与模式参数组是常驻节点，不参与重建）
     for (const child of [...stage.children]) {
-      if (child === overlay || child === toolbar?.props || child === probeHud) continue;
+      if (child === overlay || child === scaleBar || child === probeHud) continue;
       child.remove();
     }
   }
@@ -612,7 +623,10 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     if (kind === 'single') {
       const canvas = surface.canvases[0];
       if (canvas) {
-        canvas.setAttribute('aria-label', `对比画布：${MODE_META[mode].label}。滚轮缩放，拖拽平移，双击复位`);
+        canvas.setAttribute(
+          'aria-label',
+          `对比画布：${MODE_META[mode].label}。滚轮缩放，拖拽平移，方向键移动，双击复位`,
+        );
         if (mode === 'blink') attachLongPress(canvas);
       }
       if (mode === 'slider') {
@@ -1336,12 +1350,41 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     const vp = state.viewport;
     toolbar.setZoomEnabled(vp !== null);
     if (vp) toolbar.setZoom(vp.zoom, isPixelZoom(vp.zoom));
+    syncScale(vp);
     // 单槽模式没有每栏/每格的下拉，上下文文字本身就是「换对比图」入口
     toolbar.setContext(
       contextText(),
       isSingleSlotMode(mode) && round.candidates.length > 0,
     );
     toolbar.syncProps(state.compare);
+  }
+
+  /**
+   * 比例尺：在 1 / 2 / 5 × 10ⁿ 里挑一条显示宽度最接近 72px 的整数像素长度。
+   * 这样任意缩放下刻度都是整数像素，不会出现 137 px 这种没法用的读数。
+   */
+  function syncScale(vp: ViewportState | null): void {
+    const entry = referenceEntry();
+    if (!vp || !entry || entry.status !== 'ok' || vp.zoom <= 0) {
+      scaleBar.hidden = true;
+      return;
+    }
+    const idealPx = 72 / vp.zoom;
+    const magnitude = 10 ** Math.floor(Math.log10(Math.max(idealPx, 1)));
+    let best = magnitude;
+    let bestGap = Number.POSITIVE_INFINITY;
+    for (const multiplier of [1, 2, 5, 10]) {
+      const candidate = multiplier * magnitude;
+      const gap = Math.abs(candidate * vp.zoom - 72);
+      if (gap < bestGap) {
+        best = candidate;
+        bestGap = gap;
+      }
+    }
+    scaleTrack.style.width = `${Math.round(best * vp.zoom)}px`;
+    scaleText.textContent = `${Math.round(best)} px`;
+    scaleBar.title = `原图 ${entry.width} × ${entry.height}，当前 ${formatZoomPercent(vp.zoom)}`;
+    scaleBar.hidden = false;
   }
 
   function syncPickers(): void {
@@ -1378,13 +1421,14 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     onPickCandidate: (anchor) => openCandidateMenu(anchor),
     onZoomMenu: (anchor) => {
       const vp = state.viewport;
-      const items = ZOOM_PRESETS.map((preset) => ({
+      // 缩放档位是单选（checked → menuitemradio）；「适应窗口」是动作，不带 checked。
+      const items: MenuItem[] = ZOOM_PRESETS.map((preset) => ({
         label: preset === 1 ? '100%（1:1）' : `${Math.round(preset * 100)}%`,
         checked: vp !== null && Math.abs(vp.zoom - preset) < 0.001,
         onSelect: () => zoomTo(preset),
       }));
       items.push(
-        { label: '适应窗口', checked: false, onSelect: () => resetViewport() },
+        { label: '适应窗口', onSelect: () => resetViewport() },
         { label: '1:1', checked: vp !== null && isPixelZoom(vp.zoom), onSelect: () => zoomTo(1) },
       );
       openMenuHandle?.close();
@@ -1392,7 +1436,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     },
   });
   root.append(toolbar.node, stage);
-  stage.insertBefore(toolbar.props, overlay);
   host.replaceChildren(root);
   toolbar.buildProps(propsOptions());
   toolbar.setMode(mode);

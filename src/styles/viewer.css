@@ -170,11 +170,13 @@
   flex: none;
 }
 
-/* 让位顺序（模式条与缩放组永远保留；模式条永远「图标 + 文字」，不退回纯图标）：
+/* 让位顺序（模式条与缩放组永远保留；模式条在真正挤不下时才退回纯图标）：
    1. 像素徽标：<940 收起（纯状态提示，最先让位）；
    2. 探针读数：<1120 只留一个图标按钮（读数在锁定后浮到画布左下角）；
-   3. 上下文文案：<800 收起文字，单槽模式只留换图箭头（它是唯一选图入口）；分屏/网格隐藏；
-   4. 极窄 <620：工具栏换行成两行。 */
+   3. 收紧：<900 模式条内边距与滑杆一起收窄，先省装饰性留白再收内容；
+   4. 上下文文案：<860 收起文字，单槽模式只留一个换图图标按钮（它是唯一选图入口）；
+   5. 模式条文字：<780 退回纯图标（每个图标都有 aria-label 与 title，语义不丢）；
+   6. 极窄 <620：工具栏换行成两行，任何控件都不裁切。 */
 @container (max-width: 940px) {
   .viewer__pixel-badge {
     display: none;
@@ -197,9 +199,26 @@
   }
 }
 
-@container (max-width: 800px) {
+@container (max-width: 900px) {
+  /* 这一段仍保留模式文字：先把内边距与滑杆收窄，别急着丢信息 */
+  .viewer__modes .segmented__item {
+    gap: 4px;
+    padding: 0 6px;
+  }
+
+  .viewer__props {
+    gap: 4px;
+    padding-left: 6px;
+  }
+
+  .viewer__props .slider {
+    width: 64px;
+  }
+}
+
+@container (max-width: 860px) {
   /* 单槽模式的换图入口不能整个收掉（它是唯一入口）：只留箭头，点击仍能开菜单。
-     分屏/网格本身有每栏/每格下拉，说明文字直接隐藏。 */
+     但光秃秃一个箭头看不出是按钮，窄舞台下给它一个图标按钮的壳。 */
   .viewer__context {
     max-width: none;
   }
@@ -210,6 +229,40 @@
 
   .viewer__context:disabled {
     display: none;
+  }
+
+  .viewer__context:not(:disabled) {
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
+    justify-content: center;
+    border: var(--hairline) solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+  }
+
+  .viewer__context:not(:disabled):hover {
+    border-color: var(--line-strong);
+    background: var(--surface-3);
+    color: var(--text);
+  }
+}
+
+@container (min-width: 701px) and (max-width: 820px) {
+  /* 这一档空间最紧：先省参数的文字标签（语义由紧邻的模式条给出），
+   * 把位置留给六个模式的文字——模式名比参数名更常被读。 */
+  .viewer__props .field__label {
+    display: none;
+  }
+}
+
+@container (max-width: 700px) {
+  .viewer__modes .segmented__label {
+    display: none;
+  }
+
+  .viewer__modes .segmented__item {
+    gap: 0;
+    padding: 0 7px;
   }
 }
 
@@ -226,6 +279,10 @@
   /* 换行时不留弹性空白，两行都从左边排（否则第二行只剩缩放组、看起来像错位） */
   .viewer__spacer {
     display: none;
+  }
+
+  .viewer__props {
+    max-width: none;
   }
 }
 
@@ -489,20 +546,18 @@
   right: 10px;
 }
 
-/* ============ 模式参数浮条（画布右上角） ============ */
+/* ============ 模式参数（内联在模式条右侧） ============
+ * 不透明度 / 阈值 / 播放是「当前模式」的参数，所以跟着模式条走，不再浮在画布上盖住图像。
+ * 与模式条之间用一条 0.5px 竖线分组：读起来是「模式 → 该模式的参数」，不是又一个按钮组。 */
 .viewer__props {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 4;
   display: flex;
   align-items: center;
-  gap: var(--s-2);
-  padding: 4px var(--s-2);
-  border: var(--hairline) solid var(--line-strong);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
-  pointer-events: auto;
+  gap: 6px;
+  flex: none;
+  max-width: 240px;
+  margin-left: 2px;
+  padding-left: var(--s-2);
+  border-left: var(--hairline) solid var(--line);
 }
 
 .viewer__props[data-empty='true'] {
@@ -511,16 +566,17 @@
 
 .viewer__props .field--inline {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 132px;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .viewer__props .field__row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--s-2);
+  gap: 6px;
+  flex: none;
 }
 
 .viewer__props .field__label,
@@ -528,8 +584,14 @@
   font-size: var(--fs-meta);
 }
 
+.viewer__props .field__label {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .viewer__props .slider {
-  width: 100%;
+  width: 88px;
+  flex: none;
 }
 
 .viewer__props .field__value {
@@ -537,6 +599,50 @@
   text-align: right;
   color: var(--text);
   font-variant-numeric: tabular-nums;
+}
+
+/* 画布右下的比例尺：屏幕上这一段等于多少原始像素。
+ * 纯信息提示（读屏由工具栏的缩放档位负责），所以不吃指针事件，也不抢焦点。 */
+.viewer__scale {
+  position: absolute;
+  right: var(--s-2);
+  bottom: var(--s-2);
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 var(--s-2);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* 刻度本身：两侧竖线与底边组成一个「⌊ ⌋」托架，读起来就是一把尺 */
+.viewer__scale-bar {
+  display: block;
+  height: 8px;
+  min-width: 10px;
+  border: none;
+  border-left: var(--hairline) solid currentColor;
+  border-right: var(--hairline) solid currentColor;
+  border-bottom: var(--hairline) solid currentColor;
+  opacity: 0.85;
+}
+
+.viewer__scale-text {
+  white-space: nowrap;
+}
+
+/* 极窄舞台：比例尺让位给画面本身（探针读数在左侧，别两头都是角标） */
+@container (max-width: 560px) {
+  .viewer__scale {
+    display: none;
+  }
 }
 
 /* 锁定后的读数浮在画布左下角：窄舞台塞不进工具栏时仍能看到像素值 */
@@ -643,11 +749,6 @@
 
 /* ============ 窄舞台降级（容器查询，按舞台宽度而非窗口宽度） ============ */
 @container (max-width: 520px) {
-  .viewer__props {
-    right: 6px;
-    top: 6px;
-  }
-
   .viewer__zoom-value {
     min-width: 46px;
   }
