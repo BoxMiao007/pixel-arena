@@ -249,6 +249,16 @@
   color: var(--danger);
 }
 
+/* 本轮已有：已跑分（将跳过）用虚线边；缺指标/失败（将补跑分）用信息色。 */
+.ladder__cell--existing {
+  border-style: dashed;
+}
+
+.ladder__cell--rescore {
+  border-color: var(--info);
+  background: var(--info-soft);
+}
+
 .ladder__cell-q {
   white-space: nowrap;
 }

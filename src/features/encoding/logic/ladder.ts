@@ -149,6 +149,26 @@ export function losslessLadder(selection: OnestopSelection): LadderItem[] {
 
 // ---------- 阶梯矩阵（预览与生成共用的唯一数据源） ----------
 
+/** 本轮已有跑分图的轻量快照：用于判断「同档位是否已存在」。 */
+export interface ExistingLadderCandidate {
+  path: string;
+  /** 编码参数文本（与 LadderItem.label 同源）。外部导入为 null。 */
+  encodingParams: string | null;
+  /** 已跑分且无错误（metrics 非空、error 为空）。 */
+  scored: boolean;
+}
+
+/** 一个生成项相对本轮已有候选的状态。 */
+export type LadderItemStatus = 'new' | 'scored' | 'unscored';
+
+/** 生成清单里的一项：要生成的新档位，或要补跑分的已有档位。 */
+export interface LadderPlanEntry {
+  item: LadderItem;
+  status: LadderItemStatus;
+  /** status 非 new 时的已有产物路径。 */
+  existingPath: string | null;
+}
+
 /** 矩阵里的一个档位格子（只读展示；生成清单由 plan 给出）。 */
 export interface LadderCell {
   /** 同格式内唯一：`jpeg:75` / `png:lossless` */
@@ -161,6 +181,8 @@ export interface LadderCell {
   bytes: number | null;
   /** 目标大小方式的命中点 */
   hit: boolean;
+  /** 本轮已有的同档位：scored = 将跳过，unscored = 将补跑分；无则 null。 */
+  existing: Exclude<LadderItemStatus, 'new'> | null;
 }
 
 /** 矩阵里的一行：一个编码格式。 */
@@ -183,14 +205,19 @@ export interface LadderRow {
 export interface LadderPreview {
   /** 全部格式（含未勾选），用于矩阵稳定展示 */
   rows: LadderRow[];
-  /** 真正要生成的清单（按格式顺序；与界面项数一致） */
+  /** 本次勾选对应的全部档位（含已有项；用于项数与状态展示） */
   plan: LadderItem[];
+  /** 每个档位的生成状态：new / scored（跳过）/ unscored（补跑分）。 */
+  entries: LadderPlanEntry[];
   count: number;
+  newCount: number;
+  skipCount: number;
+  rescoreCount: number;
   /** 目标大小方式：已勾选但还没探测的格式 */
   pendingFormats: string[];
   /** 目标大小方式：探测失败的格式 */
   failedFormats: string[];
-  /** plan 里本轮已有相同编码参数的项数（仅提示，不阻止生成） */
+  /** plan 里本轮已有相同编码参数的项数（与是否重新生成无关，只用于提示） */
   existingCount: number;
 }
 
@@ -201,8 +228,10 @@ export interface LadderPreviewInput {
   ladder: readonly LadderItem[] | null;
   sizeOutcomes: Readonly<Record<string, SizeSearchOutcome>>;
   sizeErrors: Readonly<Record<string, string>>;
-  /** 本轮已有跑分图的编码参数文本（用于提示重复档位） */
-  existingParams?: readonly string[];
+  /** 本轮已有跑分图（用于判定同档位是否已存在）。 */
+  existingCandidates?: readonly ExistingLadderCandidate[];
+  /** 用户显式要求重新生成已有档位：所有档位都按 new 处理。 */
+  regenerateExisting?: boolean;
 }
 
 /**
@@ -211,12 +240,32 @@ export interface LadderPreviewInput {
  * 关键约束：`plan` 只由这里产出，界面渲染与生成入参都用它，因此「预览项数」与
  * 「实际生成项数」不可能漂移。未勾选的格式仍出现在 rows 里（灰显），避免取消后
  * 整行消失、再也勾不回来。
+ *
+ * 去重口径（决策 0042 已知边界 P1）：按 `encodingParams` 文本与本轮候选比对；
+ * 已跑分且无错的标 scored（生成跳过），未跑分/跑分失败的标 unscored（补跑分，
+ * 不重新生成文件）。用户打开「重新生成已有档位」时全部按 new 处理。
  */
 export function buildLadderPreview(input: LadderPreviewInput): LadderPreview {
   const rows: LadderRow[] = [];
   const pendingFormats: string[] = [];
   const failedFormats: string[] = [];
   const lossyPlan: LadderItem[] = [];
+
+  const byLabel = new Map<string, ExistingLadderCandidate>();
+  for (const candidate of input.existingCandidates ?? []) {
+    const label = candidate.encodingParams;
+    if (!label) continue;
+    const current = byLabel.get(label);
+    // 同一参数文本可能有多行（历史重复）：优先保留已跑分的那行
+    if (!current || (!current.scored && candidate.scored)) byLabel.set(label, candidate);
+  }
+  const existingOf = (label: string): ExistingLadderCandidate | undefined =>
+    input.regenerateExisting ? undefined : byLabel.get(label);
+  const markerOf = (label: string): LadderCell['existing'] => {
+    const existing = existingOf(label);
+    if (!existing) return null;
+    return existing.scored ? 'scored' : 'unscored';
+  };
 
   for (const format of LOSSY_FORMATS) {
     const selected = input.selection.lossyFormats.includes(format.format);
@@ -233,6 +282,7 @@ export function buildLadderPreview(input: LadderPreviewInput): LadderPreview {
             }`,
             bytes: point.bytes,
             hit: point.quality === outcome.hitQuality,
+            existing: markerOf(`${format.label} q${point.quality}`),
           }))
         : [];
       if (selected) {
@@ -267,6 +317,7 @@ export function buildLadderPreview(input: LadderPreviewInput): LadderPreview {
         title: item.label,
         bytes: null,
         hit: false,
+        existing: markerOf(item.label),
       })),
       pending: selected && input.ladder === null,
       error: null,
@@ -288,6 +339,7 @@ export function buildLadderPreview(input: LadderPreviewInput): LadderPreview {
           title: `${format.label}：无损对照（像素与原图逐位一致）`,
           bytes: null,
           hit: false,
+          existing: markerOf(format.label),
         },
       ],
       pending: false,
@@ -300,15 +352,44 @@ export function buildLadderPreview(input: LadderPreviewInput): LadderPreview {
     input.mode === 'size'
       ? [...lossyPlan, ...losslessLadder(input.selection)]
       : filterLadder(input.ladder ?? [], input.selection);
-  const existing = new Set(input.existingParams ?? []);
+  const entries: LadderPlanEntry[] = plan.map((item) => {
+    const existing = existingOf(item.label);
+    return {
+      item,
+      status: existing === undefined ? 'new' : existing.scored ? 'scored' : 'unscored',
+      existingPath: existing?.path ?? null,
+    };
+  });
   return {
     rows,
     plan,
+    entries,
     count: plan.length,
+    newCount: entries.filter((entry) => entry.status === 'new').length,
+    skipCount: entries.filter((entry) => entry.status === 'scored').length,
+    rescoreCount: entries.filter((entry) => entry.status === 'unscored').length,
     pendingFormats,
     failedFormats,
-    existingCount: plan.filter((item) => existing.has(item.label)).length,
+    existingCount: plan.filter((item) => byLabel.has(item.label)).length,
   };
+}
+
+/** 把预览拆成「要生成的新档位」与「只补跑分的已有产物路径」。 */
+export function ladderRunSplit(preview: LadderPreview): {
+  items: LadderItem[];
+  rescorePaths: string[];
+} {
+  const items = preview.entries
+    .filter((entry) => entry.status === 'new')
+    .map((entry) => entry.item);
+  const rescorePaths = [
+    ...new Set(
+      preview.entries
+        .filter((entry) => entry.status === 'unscored' && entry.existingPath !== null)
+        .map((entry) => entry.existingPath as string),
+    ),
+  ];
+  return { items, rescorePaths };
 }
 
 /** 阶梯项的唯一键（同一格式内质量唯一；无损用稳定后缀）。 */

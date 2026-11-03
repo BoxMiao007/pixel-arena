@@ -42,6 +42,8 @@ export interface LadderUiState {
   selection: OnestopSelection;
   /** 用户是否动过勾选：目录晚到时只补默认全选，不覆盖用户的选择 */
   selectionTouched: boolean;
+  /** 显式要求重新生成已有档位（默认跳过同档位的已跑分项） */
+  regenerateExisting: boolean;
   /** 单点/阶梯的完整阶梯（未按格式过滤）；null = 还没取到 */
   ladder: LadderItem[] | null;
   /** 上面那份阶梯对应的质量轴键 */
@@ -80,6 +82,7 @@ function defaultLadderState(): LadderUiState {
     unit: 'KB',
     selection: defaultSelection(),
     selectionTouched: false,
+    regenerateExisting: false,
     ladder: null,
     ladderKey: '',
     ladderLoading: false,
@@ -219,6 +222,14 @@ export function toggleSelectionFormat(
   state.encoderIssue = null;
 }
 
+/** 是否重新生成已有档位：默认跳过同档位的已跑分项，打开后全部重新生成。 */
+export function setRegenerateExisting(state: LadderUiState, value: boolean): void {
+  if (state.regenerateExisting === value) return;
+  state.regenerateExisting = value;
+  state.failures = [];
+  state.encoderIssue = null;
+}
+
 /** 当前参数下的矩阵与生成清单（界面与动作共用的唯一出口）。 */
 export function previewOf(
   state: LadderUiState,
@@ -230,9 +241,12 @@ export function previewOf(
     ladder: state.ladder,
     sizeOutcomes: state.sizeOutcomes,
     sizeErrors: state.sizeErrors,
-    existingParams: candidates
-      .map((candidate) => candidate.encodingParams ?? '')
-      .filter((params) => params.length > 0),
+    existingCandidates: candidates.map((candidate) => ({
+      path: candidate.path,
+      encodingParams: candidate.encodingParams ?? null,
+      scored: candidate.metrics !== null && candidate.error === null,
+    })),
+    regenerateExisting: state.regenerateExisting,
   });
 }
 

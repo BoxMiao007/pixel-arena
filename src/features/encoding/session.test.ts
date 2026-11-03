@@ -18,6 +18,7 @@ import {
   qualityKeyOf,
   setBaseline,
   setLadderMode,
+  setRegenerateExisting,
   setTargetBytes,
   sizeKeyOf,
   syncQualityKey,
@@ -103,6 +104,7 @@ describe('默认状态（决策 0042）', () => {
     expect(state.selection.lossyFormats).toEqual(['jpeg', 'webp', 'avif', 'jxl']);
     expect(state.selection.losslessFormats).toEqual([]);
     expect(state.selectionTouched).toBe(false);
+    expect(state.regenerateExisting).toBe(false);
   });
 
   it('目录晚到时只补一次默认勾选；用户动过勾选后不再覆盖', () => {
@@ -202,6 +204,13 @@ describe('previewOf：界面与生成共用的清单', () => {
     const preview = previewOf(state, [candidate('JPEG q75'), candidate('WebP q75')]);
     expect(preview.count).toBe(5);
     expect(preview.existingCount).toBe(2);
+    // candidate() 的 metrics 为 null：已有但缺指标，应进入补跑分集合而不是跳过
+    expect(preview.newCount).toBe(3);
+    expect(preview.skipCount).toBe(0);
+    expect(preview.rescoreCount).toBe(2);
+    expect(preview.entries.find((entry) => entry.item.label === 'JPEG q75')?.status).toBe(
+      'unscored',
+    );
     expect(preview.plan.map((item) => item.label)).toEqual([
       'JPEG q75',
       'WebP q75',
@@ -238,5 +247,21 @@ describe('setLadderMode / setTargetBytes 的提示清理', () => {
     expect(state.targetBytes).toBe(300 * 1024);
     expect(state.failures).toEqual([]);
     expect(state.encoderIssue).toBeNull();
+  });
+});
+
+describe('setRegenerateExisting', () => {
+  it('打开后已有档位全部按新项处理，但仍统计「本轮已有」用于提示', () => {
+    const state = ladderStateFor('round-regenerate');
+    state.ladder = ladder;
+    state.ladderKey = 'single:75';
+    const candidates = [candidate('JPEG q75')];
+    expect(previewOf(state, candidates).existingCount).toBe(1);
+    setRegenerateExisting(state, true);
+    const preview = previewOf(state, candidates);
+    expect(preview.newCount).toBe(preview.count);
+    expect(preview.skipCount).toBe(0);
+    expect(preview.rescoreCount).toBe(0);
+    expect(preview.existingCount).toBe(1);
   });
 });

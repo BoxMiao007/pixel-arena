@@ -57,6 +57,7 @@ import {
   fetchQualityLadder,
   initOnestopCatalog,
   fetchSinglePointLadder,
+  ladderRunSplit,
   runLadder,
   searchSizeFormat,
   type LadderItem,
@@ -785,65 +786,87 @@ export async function generateLadder(ctx: RoundCtx, state: LadderUiState): Promi
     status(`有 ${preview.failedFormats.length} 个格式探测失败：可重试或取消勾选`, true);
     return;
   }
-  const items = preview.plan;
-  if (items.length === 0) {
-    status('请先勾选至少一个编码格式或无损组', true);
+  const { items, rescorePaths } = ladderRunSplit(preview);
+  if (items.length === 0 && rescorePaths.length === 0) {
+    status('没有需要生成或补跑分的档位（本轮已有全部档位且都已跑分）');
     return;
   }
-  const issue = await precheckLadder(items);
-  state.encoderIssue = issue?.message ?? null;
-  if (issue) {
-    status(issue.message.split('\n')[0], true, issue.message);
-    return;
+
+  if (items.length > 0) {
+    const issue = await precheckLadder(items);
+    state.encoderIssue = issue?.message ?? null;
+    if (issue) {
+      status(issue.message.split('\n')[0], true, issue.message);
+      return;
+    }
+  } else {
+    // 只补跑分：不需要编码器预检，清掉上一次的编码器问题卡
+    state.encoderIssue = null;
   }
 
   const id = busyIdOf('ladder', ctx.round.id);
   state.failures = [];
-  beginBusy(id, '正在生成编码阶梯', items.map((item) => item.label));
+  beginBusy(
+    id,
+    items.length > 0 ? '正在生成编码阶梯' : '正在补跑分',
+    items.length > 0 ? items.map((item) => item.label) : rescorePaths,
+  );
   try {
-    const result = await runLadder({
-      ladder: items,
-      encode: (item, overwrite) =>
-        ipc.onestopEncode({
-          groupId: ctx.group.id,
-          roundId: ctx.round.id,
-          referencePath,
-          format: item.format,
-          quality: item.quality,
-          overwrite,
-        }),
-      addCandidates: async (products) => {
-        setWorkspace(
-          await coreIpc.roundAddCandidates(
-            ctx.group.id,
-            ctx.round.id,
-            products.map((product) => product.path),
-            products.map((product) => product.encodingParams),
-          ),
-        );
-      },
-      onProgress: (text, completed) => {
-        updateBusy(id, { completed, total: items.length, detail: text });
-        setStatus(`${text}（${Math.min(completed + 1, items.length)}/${items.length}）`);
-      },
-      onConflict: askConflictDialog,
-    });
+    let generatedPaths: string[] = [];
+    if (items.length > 0) {
+      const result = await runLadder({
+        ladder: items,
+        encode: (item, overwrite) =>
+          ipc.onestopEncode({
+            groupId: ctx.group.id,
+            roundId: ctx.round.id,
+            referencePath,
+            format: item.format,
+            quality: item.quality,
+            overwrite,
+          }),
+        addCandidates: async (products) => {
+          setWorkspace(
+            await coreIpc.roundAddCandidates(
+              ctx.group.id,
+              ctx.round.id,
+              products.map((product) => product.path),
+              products.map((product) => product.encodingParams),
+            ),
+          );
+        },
+        onProgress: (text, completed) => {
+          updateBusy(id, { completed, total: items.length, detail: text });
+          setStatus(`${text}（${Math.min(completed + 1, items.length)}/${items.length}）`);
+        },
+        onConflict: askConflictDialog,
+      });
 
-    if (state.mode === 'size') {
-      await applySizeNotes(ctx, state, result.products);
+      if (state.mode === 'size') {
+        await applySizeNotes(ctx, state, result.products);
+      }
+      state.failures = result.failures;
+      if (result.generated === 0) {
+        status(`生成全部失败：${result.failures.join('；') || '未知原因'}`, true);
+        return;
+      }
+      generatedPaths = result.products.map((product) => product.path);
+      updateBusy(id, {
+        completed: items.length,
+        total: items.length,
+        detail: '生成完成，准备跑分',
+      });
     }
-    state.failures = result.failures;
-    if (result.generated === 0) {
-      status(`生成全部失败：${result.failures.join('；') || '未知原因'}`, true);
+
+    const paths = [...new Set([...generatedPaths, ...rescorePaths])];
+    if (paths.length === 0) {
+      status('没有需要跑分的档位');
       return;
     }
-
-    updateBusy(id, { completed: items.length, total: items.length, detail: '生成完成，准备跑分' });
-    const paths = result.products.map((product) => product.path);
     updateBusy(id, {
       completed: 0,
       total: paths.length,
-      detail: '正在跑分新产物',
+      detail: items.length > 0 ? '正在跑分新产物' : '正在补跑分',
       running: paths,
     });
     try {
@@ -856,25 +879,32 @@ export async function generateLadder(ctx: RoundCtx, state: LadderUiState): Promi
             updateBusy(id, {
               completed: progress.completed,
               total: progress.total,
-              detail: '正在跑分新产物',
+              detail: items.length > 0 ? '正在跑分新产物' : '正在补跑分',
             });
             setStatus(`跑分中 ${progress.completed}/${progress.total}`);
           },
         }),
       );
     } catch (err) {
-      status(`已生成 ${result.generated} 项，但跑分失败：${errorText(err)}`, true);
+      status(
+        items.length > 0
+          ? `已生成 ${generatedPaths.length} 项，但跑分失败：${errorText(err)}`
+          : `补跑分失败：${errorText(err)}`,
+        true,
+      );
       return;
     }
 
-    if (result.failures.length > 0) {
+    if (items.length === 0) {
+      status(`已补跑分 ${paths.length} 项`);
+    } else if (state.failures.length > 0) {
       status(
-        `已生成 ${result.generated} 项并跑分；${result.failures.length} 项生成失败（清单见编码阶梯分区）`,
+        `已生成 ${generatedPaths.length} 项并跑分；${state.failures.length} 项生成失败（清单见编码阶梯分区）`,
         true,
-        result.failures.join('\n'),
+        state.failures.join('\n'),
       );
     } else {
-      status(`已生成 ${result.generated} 项并跑分`);
+      status(`已生成 ${generatedPaths.length} 项并跑分`);
     }
   } catch (err) {
     status(`生成编码阶梯失败：${errorText(err)}`, true);

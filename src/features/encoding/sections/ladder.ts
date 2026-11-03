@@ -9,7 +9,7 @@
 // - 目标大小先「探测」再「生成」，探测结果显示实测字节与命中点；不再隐式探测。
 // - 生成后只跑本次新产物，整轮重算留在「跑分」分区。
 
-import { button, chip, emptyState, progressBar, segmented, sliderField } from '../../../ui/primitives';
+import { button, chip, emptyState, progressBar, segmented, sliderField, switchField } from '../../../ui/primitives';
 import { el } from '../../../ui/dom';
 import { formatSize } from '../../../core/format';
 import { errorText, copyText } from '../../../core/util';
@@ -42,6 +42,7 @@ import {
   previewOf,
   setBaseline,
   setLadderMode,
+  setRegenerateExisting,
   setTargetBytes,
   syncQualityKey,
   syncReference,
@@ -207,20 +208,33 @@ export const ladderSection: PanelSection = {
       ]);
     };
 
-    const cellNode = (cell: LadderCell): HTMLElement =>
-      el(
+    const cellNode = (cell: LadderCell): HTMLElement => {
+      const existingClass =
+        cell.existing === 'scored'
+          ? ' ladder__cell--existing'
+          : cell.existing === 'unscored'
+            ? ' ladder__cell--rescore'
+            : '';
+      const existingNote =
+        cell.existing === 'scored'
+          ? '；本轮已有，将跳过'
+          : cell.existing === 'unscored'
+            ? '；本轮已有，将补跑分'
+            : '';
+      return el(
         'span',
         {
           class: `ladder__cell${cell.hit ? ' ladder__cell--hit' : ''}${
             cell.bytes === null ? '' : ' ladder__cell--sized'
-          }`,
-          title: cell.title,
+          }${existingClass}`,
+          title: `${cell.title}${existingNote}`,
         },
         el('span', { class: 'ladder__cell-q', text: cell.text }),
         cell.bytes === null
           ? null
           : el('span', { class: 'ladder__cell-bytes', text: formatSize(cell.bytes) }),
       );
+    };
 
     /** 阶梯矩阵：7 行常驻，行首胶囊是唯一勾选控件。 */
     const buildMatrix = (preview: LadderPreview, busy: boolean): HTMLElement => {
@@ -322,9 +336,17 @@ export const ladderSection: PanelSection = {
         }
       }
       if (preview.count === 0) return '先勾选至少一个格式';
-      const extra =
-        preview.existingCount > 0 ? `（${preview.existingCount} 项本轮已有）` : '';
-      return `将生成 ${preview.count} 项${extra}`;
+      if (state.regenerateExisting) return `将重新生成 ${preview.count} 项`;
+      if (preview.newCount === 0 && preview.rescoreCount > 0) {
+        return `${preview.existingCount} 项本轮已有；其中 ${preview.rescoreCount} 项将补跑分`;
+      }
+      if (preview.newCount === 0 && preview.existingCount > 0) {
+        return `${preview.existingCount} 项本轮已有，无需再生成`;
+      }
+      const parts = [`将生成 ${preview.newCount} 项`];
+      if (preview.skipCount > 0) parts.push(`${preview.skipCount} 项已有跳过`);
+      if (preview.rescoreCount > 0) parts.push(`${preview.rescoreCount} 项补跑分`);
+      return parts.join('；');
     };
 
     const actionsView = (round: Round, preview: LadderPreview, busy: boolean): HTMLElement => {
@@ -332,11 +354,12 @@ export const ladderSection: PanelSection = {
       const needProbe =
         state.mode === 'size' &&
         (preview.pendingFormats.length > 0 || preview.failedFormats.length > 0);
+      const hasWork = preview.newCount > 0 || preview.rescoreCount > 0;
       const probeDisabled = busy || round.referencePath === null || selectedLossy === 0;
       const generateDisabled =
         busy ||
         round.referencePath === null ||
-        preview.count === 0 ||
+        !hasWork ||
         preview.pendingFormats.length > 0 ||
         preview.failedFormats.length > 0 ||
         state.ladderError !== null;
@@ -354,9 +377,17 @@ export const ladderSection: PanelSection = {
             ? '先探测目标大小'
             : preview.failedFormats.length > 0
               ? '先重试探测或取消失败格式'
-              : preview.count === 0
-                ? '先勾选至少一个格式'
-                : `生成 ${preview.count} 项并跑分`;
+              : !hasWork
+                ? '本轮已有全部档位且都已跑分；要重新压一遍请打开「重新生成已有档位」'
+                : preview.newCount === 0
+                  ? `补跑分 ${preview.rescoreCount} 项（复用已有产物）`
+                  : preview.rescoreCount > 0
+                    ? `生成 ${preview.newCount} 项并跑分，另有 ${preview.rescoreCount} 项补跑分`
+                    : `生成 ${preview.newCount} 项并跑分`;
+      const generateLabel =
+        preview.newCount === 0 && preview.rescoreCount > 0
+          ? `补跑分 ${preview.rescoreCount} 项`
+          : '生成并跑分';
 
       const primary = needProbe
         ? button({
@@ -367,7 +398,7 @@ export const ladderSection: PanelSection = {
             onClick: () => void probeSize(ctx, state).then(repaint),
           })
         : button({
-            label: '生成并跑分',
+            label: generateLabel,
             variant: 'primary',
             disabled: generateDisabled,
             title: generateHint,
@@ -493,9 +524,13 @@ export const ladderSection: PanelSection = {
         sizeSig,
         sizeErrSig,
         preview.count,
+        preview.newCount,
+        preview.skipCount,
+        preview.rescoreCount,
         preview.pendingFormats.join(','),
         preview.failedFormats.join(','),
         preview.existingCount,
+        state.regenerateExisting ? 'regen' : '',
         busySig,
         state.failures.join('|'),
         state.encoderIssue ?? '',
@@ -534,6 +569,15 @@ export const ladderSection: PanelSection = {
         });
 
         const matrix = buildMatrix(preview, busy);
+        const regenerateSwitch = switchField({
+          label: '重新生成已有档位',
+          checked: state.regenerateExisting,
+          hint: '默认跳过本轮已跑分的同档位',
+          onChange: (checked) => {
+            setRegenerateExisting(state, checked);
+            repaint();
+          },
+        });
 
         return el('div', { class: 'ladder' }, [
           el(
@@ -544,6 +588,7 @@ export const ladderSection: PanelSection = {
               state.mode === 'size' ? sizeParam() : qualityParam(),
             ]),
             matrix,
+            regenerateSwitch.node,
           ),
           el('p', { class: 'ladder__hint', text: hintOf(round, preview) }),
           actionsView(round, preview, busy),
@@ -554,8 +599,8 @@ export const ladderSection: PanelSection = {
             ? el('p', {
                 class: 'ladder__note',
                 text:
-                  preview.existingCount > 0
-                    ? '产物写进原图旁的 Pixel Arena 文件夹并纳入本轮；只跑本次新生成的产物。已存在的档位会按冲突策略新增一份。'
+                  preview.existingCount > 0 && !state.regenerateExisting
+                    ? '产物写进原图旁的 Pixel Arena 文件夹并纳入本轮；只跑本次新生成的产物。已存在的档位默认跳过，要重新生成请打开「重新生成已有档位」。'
                     : '产物写进原图旁的 Pixel Arena 文件夹并纳入本轮；只跑本次新生成的产物',
               })
             : null,

@@ -18,6 +18,7 @@ import {
   buildLadderPreview,
   bytesFromSlider,
   initOnestopCatalog,
+  ladderRunSplit,
   sliderFromBytes,
   type LadderItem,
   type OnestopSelection,
@@ -161,17 +162,71 @@ describe('buildLadderPreview：单点与阶梯', () => {
     expect(preview.rows[1].selected).toBe(false);
   });
 
-  it('已有相同编码参数时只提示，不改变清单', () => {
+  it('已有同档位：已跑分标跳过、缺指标标补跑分；重新生成时全部按新项', () => {
+    const base = {
+      mode: 'ladder' as const,
+      selection: lossyAll,
+      ladder: fullLadder,
+      sizeOutcomes: {},
+      sizeErrors: {},
+    };
+    const scored = buildLadderPreview({
+      ...base,
+      existingCandidates: [
+        { path: '/out/j75.jpg', encodingParams: 'JPEG q75', scored: true },
+        { path: '/out/w60.webp', encodingParams: 'WebP q60', scored: true },
+      ],
+    });
+    expect(scored.count).toBe(12);
+    expect(scored.existingCount).toBe(2);
+    expect(scored.skipCount).toBe(2);
+    expect(scored.rescoreCount).toBe(0);
+    expect(scored.newCount).toBe(10);
+    expect(scored.entries.find((entry) => entry.item.label === 'JPEG q75')?.status).toBe('scored');
+    expect(scored.rows[0].cells.find((cell) => cell.text === 'q75')?.existing).toBe('scored');
+
+    const unscored = buildLadderPreview({
+      ...base,
+      existingCandidates: [{ path: '/out/j75.jpg', encodingParams: 'JPEG q75', scored: false }],
+    });
+    expect(unscored.rescoreCount).toBe(1);
+    expect(unscored.skipCount).toBe(0);
+    expect(unscored.entries.find((entry) => entry.item.label === 'JPEG q75')?.existingPath).toBe(
+      '/out/j75.jpg',
+    );
+
+    const forced = buildLadderPreview({
+      ...base,
+      existingCandidates: [
+        { path: '/out/j75.jpg', encodingParams: 'JPEG q75', scored: true },
+        { path: '/out/w60.webp', encodingParams: 'WebP q60', scored: true },
+      ],
+      regenerateExisting: true,
+    });
+    expect(forced.newCount).toBe(12);
+    expect(forced.skipCount).toBe(0);
+    expect(forced.rescoreCount).toBe(0);
+    expect(forced.existingCount).toBe(2);
+    expect(forced.rows[0].cells.find((cell) => cell.text === 'q75')?.existing).toBeNull();
+  });
+
+  it('ladderRunSplit：拆出要生成的新档位与只补跑分的已有路径', () => {
     const preview = buildLadderPreview({
       mode: 'ladder',
       selection: lossyAll,
       ladder: fullLadder,
       sizeOutcomes: {},
       sizeErrors: {},
-      existingParams: ['JPEG q75', 'WebP q60'],
+      existingCandidates: [
+        { path: '/out/j75.jpg', encodingParams: 'JPEG q75', scored: true },
+        { path: '/out/w60.webp', encodingParams: 'WebP q60', scored: false },
+      ],
     });
-    expect(preview.existingCount).toBe(2);
-    expect(preview.count).toBe(12);
+    const split = ladderRunSplit(preview);
+    expect(split.items).toHaveLength(10);
+    expect(split.items.some((item) => item.label === 'JPEG q75')).toBe(false);
+    expect(split.items.some((item) => item.label === 'WebP q60')).toBe(false);
+    expect(split.rescorePaths).toEqual(['/out/w60.webp']);
   });
 });
 
