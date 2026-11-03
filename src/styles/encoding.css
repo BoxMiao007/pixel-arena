@@ -196,12 +196,23 @@
   color: var(--text-subtle);
 }
 
+/* 两列：左列格式胶囊等宽，右列档位/状态从同一 x 起排——不同长度的格式名
+   （JPEG / WebP / AVIF / JPEG XL、无损 WebP…）不再把右列挤得参差。 */
 .ladder__row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
   align-items: center;
-  flex-wrap: wrap;
   gap: var(--s-1) var(--s-2);
   min-width: 0;
+}
+
+.ladder__row > .chip {
+  width: 100%;
+}
+
+.ladder__row > .chip > .chip__body {
+  flex: 1;
+  justify-content: center;
 }
 
 /* 未勾选的行灰显但不消失：行首胶囊仍是可点控件，格子只是预览。 */
