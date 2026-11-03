@@ -1381,8 +1381,14 @@ fn image_reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> 
 /// 源文件本身——覆盖已有文件是用户在对话框里已经确认过的选择，不再二次询问。
 #[tauri::command]
 fn image_save_as(source: String, target: String) -> Result<String, String> {
-    let from = Path::new(&source);
-    let to = Path::new(&target);
+    copy_image_file(&source, &target)
+}
+
+/// 「另存为」的实现体：抽成独立函数是为了不经 Tauri 运行时即可端到端测试
+/// （tests/image_actions.rs，沿 export_round_file 的先例）。
+pub fn copy_image_file(source: &str, target: &str) -> Result<String, String> {
+    let from = Path::new(source);
+    let to = Path::new(target);
     if !from.is_file() {
         return Err(format!("源文件不存在或不是文件：{source}"));
     }
@@ -1390,7 +1396,7 @@ fn image_save_as(source: String, target: String) -> Result<String, String> {
         return Err("目标路径与源文件相同，无需另存".to_string());
     }
     std::fs::copy(from, to).map_err(|err| format!("另存 {target} 失败：{err}"))?;
-    Ok(target)
+    Ok(target.to_string())
 }
 
 /// 评测轮报告导出的实现体（T13）：定位组与轮 → 核心库序列化 → 写文件。
