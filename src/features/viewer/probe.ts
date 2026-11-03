@@ -47,6 +47,26 @@ export function pixelAt(
   return { x, y };
 }
 
+/**
+ * 像素坐标按比例映射到另一张图（逐窗归一后的探针口径）：
+ * 两张图尺寸不同时，「同一屏幕位置」在这两张图里对应的是同一相对位置，而不是同一像素
+ * 坐标——直接把原坐标拿去另一张图取样会读到完全无关的内容。
+ * 尺寸相同直接返回原点（不改变原有 1:1 行为）；结果钳进目标像素范围，供 getImageData 取样。
+ */
+export function mapPixelPoint(
+  point: { x: number; y: number },
+  from: Size,
+  to: Size,
+): { x: number; y: number } {
+  if (from.width <= 0 || from.height <= 0 || to.width <= 0 || to.height <= 0) return point;
+  const x = from.width === to.width ? point.x : Math.floor((point.x * to.width) / from.width);
+  const y = from.height === to.height ? point.y : Math.floor((point.y * to.height) / from.height);
+  return {
+    x: Math.min(to.width - 1, Math.max(0, x)),
+    y: Math.min(to.height - 1, Math.max(0, y)),
+  };
+}
+
 /** 相对亮度（与差异图同一口径）。 */
 export function luminance(rgb: Rgb): number {
   return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;

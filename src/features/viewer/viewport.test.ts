@@ -1,18 +1,22 @@
 // 视口几何单测：只测公共 API 的外部行为（纯几何，无 DOM）。
 // 期望值来自独立演算的字面量，不复用实现里的公式（防恒真断言）。
-// 迁移自 src/viewport.test.ts，并补上共享画布层新增的两条契约：
+// 迁移自 src/viewport.test.ts，并补上共享画布层新增的契约：
 // - 源矩形向外取整到整像素（异尺寸窗格并排不出现半像素错位）；
-// - 100% 附近用 epsilon 判等（滚轮连乘不会把「像素级」判丢）。
+// - 100% 附近用 epsilon 判等（滚轮连乘不会把「像素级」判丢）；
+// - 多窗格逐窗归一：共享视口按锚图绝对口径存储，各图按自己的适配倍数显示
+//   （相对Viewport 与其逆运算，分屏 / 网格 / 单画布 / 视频逐帧共用）。
 
 import { describe, it, expect } from 'vitest';
 import {
   MAX_ZOOM,
   MIN_ZOOM,
+  absoluteViewportFromRelative,
   clampZoom,
   fitViewport,
   imageToScreen,
   isPixelZoom,
   panBy,
+  relativeViewport,
   screenToImage,
   visibleRegion,
   withZoom,
@@ -195,5 +199,154 @@ describe('visibleRegion（可见区域换算，供 drawImage 裁剪绘制）', (
   it('视口完全移出图片：返回 null，调用方无需绘制', () => {
     const vp = { centerX: 5000, centerY: 0, zoom: 1 };
     expect(visibleRegion(vp, pane, { width: 2000, height: 1500 })).toBeNull();
+  });
+});
+
+// 多窗格逐窗归一：共享视口以「锚图」绝对口径存储，各图按自己的尺寸适配窗格，
+// 共享缩放只作为「相对适应的倍数」。期望值全部用独立演算的字面量。
+describe('relativeViewport（共享视口 → 某张图在窗格里的视口）', () => {
+  const PANE = { width: 800, height: 600 };
+  const ANCHOR = { width: 1600, height: 1200 };
+  /** 锚图按 800×600 适配出来的默认共享视口：zoom = 800/1600 = 0.5。 */
+  const SHARED_FIT = { centerX: 800, centerY: 600, zoom: 0.5 };
+
+  it('默认（相对 1）时每张图按自己的尺寸填满窗格', () => {
+    // 400×300 在 800×600 里适配两倍；中心仍是图片中心。
+    expect(relativeViewport(SHARED_FIT, ANCHOR, { width: 400, height: 300 }, PANE)).toEqual({
+      centerX: 200,
+      centerY: 150,
+      zoom: 2,
+    });
+  });
+
+  it('共享缩放翻倍时该图倍数同步翻倍，中心不动', () => {
+    const shared = { centerX: 800, centerY: 600, zoom: 1 };
+    expect(relativeViewport(shared, ANCHOR, { width: 400, height: 300 }, PANE)).toEqual({
+      centerX: 200,
+      centerY: 150,
+      zoom: 4,
+    });
+  });
+
+  it('非居中位置按图片内相对位置映射（25% 处仍是 25%）', () => {
+    const shared = { centerX: 400, centerY: 300, zoom: 0.5 };
+    expect(relativeViewport(shared, ANCHOR, { width: 400, height: 300 }, PANE)).toEqual({
+      centerX: 100,
+      centerY: 75,
+      zoom: 2,
+    });
+  });
+
+  it('小图与大图在同一窗格里的显示尺寸一致（分屏/网格等尺寸的核心验收）', () => {
+    const big = relativeViewport(SHARED_FIT, ANCHOR, { width: 400, height: 300 }, PANE);
+    const small = relativeViewport(SHARED_FIT, ANCHOR, { width: 200, height: 150 }, PANE);
+    // 屏幕尺寸 = 图片像素 × 该图 zoom：两者都是 800×600。
+    expect(400 * big.zoom).toBe(800);
+    expect(300 * big.zoom).toBe(600);
+    expect(200 * small.zoom).toBe(800);
+    expect(150 * small.zoom).toBe(600);
+  });
+
+  it('长宽比不同时按各自的短边适配，不出现拉伸', () => {
+    // 200×400 在 800×600 里受高度限制：600/400 = 1.5。
+    expect(relativeViewport(SHARED_FIT, ANCHOR, { width: 200, height: 400 }, PANE)).toEqual({
+      centerX: 100,
+      centerY: 200,
+      zoom: 1.5,
+    });
+  });
+
+  it('锚图尺寸不同时倍数口径跟着锚图走（同一共享视口不能混用两种锚图）', () => {
+    // 锚图换成 3200×2400：在 800×600 里 anchorFit = 0.25（原来 0.5），
+    // 400×300 的图 fit = 2，相对倍数 = 2 × 0.5 / 0.25 = 4。
+    const wideAnchor = { width: 3200, height: 2400 };
+    const shared = { centerX: 1600, centerY: 1200, zoom: 0.5 };
+    expect(relativeViewport(shared, wideAnchor, { width: 400, height: 300 }, PANE)).toEqual({
+      centerX: 200,
+      centerY: 150,
+      zoom: 4,
+    });
+  });
+
+  it('窗格尺寸不同时按该窗格自身口径换算（自洽优先，同一相对倍数）', () => {
+    // 窗格减半为 400×300：锚图 fit = min(0.25, 0.25) = 0.25，
+    // 共享视口也按该窗格适配为 (800, 600, 0.25)，400×300 的图 fit = 1 → 相对 1 倍。
+    const halfPane = { width: 400, height: 300 };
+    const shared = { centerX: 800, centerY: 600, zoom: 0.25 };
+    expect(relativeViewport(shared, ANCHOR, { width: 400, height: 300 }, halfPane)).toEqual({
+      centerX: 200,
+      centerY: 150,
+      zoom: 1,
+    });
+  });
+
+  it('倍数超出上限/下限时钳制到与画布同一口径（不会算出无限大或 0）', () => {
+    const huge = { centerX: 800, centerY: 600, zoom: 100 };
+    expect(relativeViewport(huge, ANCHOR, { width: 400, height: 300 }, PANE).zoom).toBe(MAX_ZOOM);
+    const tiny = { centerX: 800, centerY: 600, zoom: 1e-9 };
+    expect(relativeViewport(tiny, ANCHOR, { width: 400, height: 300 }, PANE).zoom).toBe(MIN_ZOOM);
+  });
+
+  it('尺寸不可用时退回共享视口（不产生 NaN）', () => {
+    expect(relativeViewport(SHARED_FIT, ANCHOR, { width: 0, height: 300 }, PANE)).toEqual(SHARED_FIT);
+  });
+});
+
+describe('absoluteViewportFromRelative（该图视口 → 共享视口）', () => {
+  const PANE = { width: 800, height: 600 };
+  const ANCHOR = { width: 1600, height: 1200 };
+
+  it('是 relativeViewport 的逆运算（滚轮/拖拽写回不漂移）', () => {
+    const image = { width: 400, height: 300 };
+    expect(absoluteViewportFromRelative({ centerX: 125, centerY: 90, zoom: 3 }, ANCHOR, image, PANE)).toEqual({
+      // 独立演算：中心回到锚图 (125/400×1600, 90/300×1200) = (500, 360)，
+      // 倍数回到共享口径 (3/2×0.5) = 0.75。
+      centerX: 500,
+      centerY: 360,
+      zoom: 0.75,
+    });
+    const shared = absoluteViewportFromRelative({ centerX: 125, centerY: 90, zoom: 3 }, ANCHOR, image, PANE);
+    const back = relativeViewport(shared, ANCHOR, image, PANE);
+    expect(back.centerX).toBeCloseTo(125, 6);
+    expect(back.centerY).toBeCloseTo(90, 6);
+    expect(back.zoom).toBeCloseTo(3, 6);
+  });
+
+  it('默认适配位置写回后仍是锚图适配口径', () => {
+    const image = { width: 400, height: 300 };
+    const fit = { centerX: 800, centerY: 600, zoom: 0.5 };
+    const cell = relativeViewport(fit, ANCHOR, image, PANE);
+    const shared = absoluteViewportFromRelative(cell, ANCHOR, image, PANE);
+    expect(shared.zoom).toBeCloseTo(0.5, 6);
+    expect(shared.centerX).toBeCloseTo(800, 6);
+    expect(shared.centerY).toBeCloseTo(600, 6);
+  });
+
+  it('往返在锚图尺寸不同、窗格尺寸不同时同样成立', () => {
+    const anchor = { width: 3200, height: 2400 };
+    const image = { width: 500, height: 375 };
+    const pane = { width: 300, height: 200 };
+    const shared = { centerX: 1234.5, centerY: 987.5, zoom: 0.37 };
+    const relative = relativeViewport(shared, anchor, image, pane);
+    const back = absoluteViewportFromRelative(relative, anchor, image, pane);
+    expect(back.centerX).toBeCloseTo(shared.centerX, 6);
+    expect(back.centerY).toBeCloseTo(shared.centerY, 6);
+    expect(back.zoom).toBeCloseTo(shared.zoom, 6);
+  });
+
+  it('反向写入同样受缩放上下限钳制', () => {
+    const image = { width: 400, height: 300 };
+    expect(
+      absoluteViewportFromRelative({ centerX: 0, centerY: 0, zoom: MAX_ZOOM * 100 }, ANCHOR, image, PANE).zoom,
+    ).toBe(MAX_ZOOM);
+    // 0.001 / 2 × 0.5 = 0.00025，低于下限，钳到 MIN_ZOOM。
+    expect(
+      absoluteViewportFromRelative({ centerX: 0, centerY: 0, zoom: 0.001 }, ANCHOR, image, PANE).zoom,
+    ).toBe(MIN_ZOOM);
+  });
+
+  it('尺寸不可用时原样返回（不产生 NaN）', () => {
+    const cell = { centerX: 10, centerY: 20, zoom: 1 };
+    expect(absoluteViewportFromRelative(cell, ANCHOR, { width: 400, height: 0 }, PANE)).toEqual(cell);
   });
 });

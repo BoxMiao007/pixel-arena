@@ -111,8 +111,9 @@ export interface ViewerState {
   /**
    * 全窗格共享视口，中心与倍数都按「锚图」（原图，没有时第一张候选）的图片像素
    * 绝对口径记录；null = 待适配（图片就绪后按窗格尺寸 fit）。
-   * 网格模式不直接套这份绝对倍数：每格按自己的图片尺寸适配，共享倍数只作为
-   * 「相对适应的倍数」使用（换算见 grid-view.ts），这样各格图像看起来一样大。
+   * 多窗格（分屏 / 多视图）不直接套这份绝对倍数：每栏/格按自己的图片尺寸适配，
+   * 共享倍数只作为「相对适应的倍数」使用（换算见 ui/canvas 的 relativeViewport），
+   * 这样各图看起来一样大。
    */
   viewport: { centerX: number; centerY: number; zoom: number } | null;
   /**

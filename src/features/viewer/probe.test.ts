@@ -1,4 +1,4 @@
-// 像素探针纯逻辑单测：坐标换算、亮度、差值、读数文案、采样缓存键。
+// 像素探针纯逻辑单测：坐标换算、尺寸映射、亮度、差值、读数文案、采样缓存键。
 // 采样本身（getImageData）依赖 canvas，不做 DOM 单测；这里只守住会算错的部分。
 
 import { describe, it, expect } from 'vitest';
@@ -7,6 +7,7 @@ import {
   formatProbe,
   formatProbeDetail,
   luminance,
+  mapPixelPoint,
   pixelAt,
   probeKey,
   type ProbeReading,
@@ -42,6 +43,44 @@ describe('pixelAt（屏幕坐标 → 图片整像素）', () => {
   it('非法输入（0 缩放/0 尺寸图片）返回 null，不产生 NaN 坐标', () => {
     expect(pixelAt({ centerX: 10, centerY: 10, zoom: 0 }, pane, 10, 10, { width: 100, height: 100 })).toBeNull();
     expect(pixelAt({ centerX: 10, centerY: 10, zoom: 1 }, pane, 10, 10, { width: 0, height: 0 })).toBeNull();
+  });
+});
+
+describe('mapPixelPoint（尺寸不同时按相对位置映射取样点）', () => {
+  it('尺寸相同直接原样返回（保持 1:1 取样口径）', () => {
+    const size = { width: 800, height: 600 };
+    expect(mapPixelPoint({ x: 123, y: 456 }, size, size)).toEqual({ x: 123, y: 456 });
+  });
+
+  it('大图 → 小图按比例缩小并向下取整（同一相对位置）', () => {
+    // 2000×1000 的中心 (1000,500) → 500×250 的中心 (250,125)；
+    // 右下最后一个像素 (1999,999) → floor(1999×500/2000)=499、floor(999×250/1000)=249。
+    const big = { width: 2000, height: 1000 };
+    const small = { width: 500, height: 250 };
+    expect(mapPixelPoint({ x: 1000, y: 500 }, big, small)).toEqual({ x: 250, y: 125 });
+    expect(mapPixelPoint({ x: 1999, y: 999 }, big, small)).toEqual({ x: 499, y: 249 });
+  });
+
+  it('小图 → 大图按比例放大，结果钳在目标像素范围内', () => {
+    const small = { width: 500, height: 250 };
+    const big = { width: 2000, height: 1000 };
+    expect(mapPixelPoint({ x: 250, y: 125 }, small, big)).toEqual({ x: 1000, y: 500 });
+    // 越界输入也不会跑到目标图外面
+    expect(mapPixelPoint({ x: 9999, y: 9999 }, small, big)).toEqual({ x: 1999, y: 999 });
+  });
+
+  it('只有一边尺寸不同时，另一轴保持原坐标', () => {
+    expect(mapPixelPoint({ x: 10, y: 20 }, { width: 100, height: 50 }, { width: 400, height: 50 })).toEqual({
+      x: 40,
+      y: 20,
+    });
+  });
+
+  it('非法尺寸原样返回（不产生 NaN）', () => {
+    expect(mapPixelPoint({ x: 7, y: 8 }, { width: 0, height: 10 }, { width: 100, height: 100 })).toEqual({
+      x: 7,
+      y: 8,
+    });
   });
 });
 

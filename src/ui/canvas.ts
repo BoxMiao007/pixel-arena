@@ -58,6 +58,90 @@ export function fitViewport(image: Size, pane: Size): ViewportState {
   return { centerX: image.width / 2, centerY: image.height / 2, zoom: clampZoom(zoom) };
 }
 
+// ---------- 相对视口（多窗格逐窗归一：图片查看器与视频逐帧对比共用） ----------
+//
+// 多窗格并排时只存一份「共享视口」：中心按锚图（原图，没有时第一张候选）的图片像素、
+// 倍数按锚图在首个窗格里的绝对倍数记录。若把这份绝对倍数直接套给每个窗格，分辨率小的
+// 跑分图（例如 500px 宽的缩略产物）只会占窗格一角，同屏里各图差好几倍。
+//
+// 口径：先按每张图自己的尺寸适配所在窗格，共享缩放退化为「相对适应的倍数」——
+// 相对 1 = 这张图正好填满窗格。中心按图片内的相对位置映射，所以默认居中时每张图都
+// 精确居中；滚轮放大时各窗格按同一比例放大，视觉尺寸始终一致。
+//
+// 换算（anchor = 锚图，image = 该窗格图，pane = 该窗格画布）：
+//   anchorFit     = fit(anchor, pane)
+//   relative.zoom = fit(image, pane) × shared.zoom / anchorFit
+//   relative.centerX = shared.centerX / anchor.width × image.width（Y 同理）
+// 反向（滚轮/拖拽/键盘把某窗格视口写回共享状态）就是上面两式的逆运算。
+//
+// 各窗格同尺寸时 anchorFit 相同；万一尺寸不同（网格行高不同、分屏最后一栏被滚动裁切），
+// 以该窗格自身画布换算（自洽优先，避免同一位置在两个窗格读出不同比例）。
+//
+// 边界：倍数仍受 MIN_ZOOM / MAX_ZOOM 钳制。极小图或极大图顶到上下限时相对尺寸不再严格
+// 相等——这与 fitViewport 同一口径，不能为了「看起来一样大」越过缩放上限（否则像素级
+// 查看失去意义）。
+// 由 src/features/viewer/viewport.test.ts 用独立演算的字面量守护。
+
+function usableSize(size: Size): boolean {
+  return (
+    Number.isFinite(size.width) &&
+    Number.isFinite(size.height) &&
+    size.width > 0 &&
+    size.height > 0
+  );
+}
+
+/** 适配倍数与 fitViewport 同一口径（含上下限钳制），保证默认状态相对值精确等于 1。 */
+function fitZoom(image: Size, pane: Size): number {
+  return fitViewport(image, pane).zoom;
+}
+
+/**
+ * 共享视口（锚图绝对口径）→ 某张图在某个窗格里的视口。
+ * 尺寸不可用时原样返回共享视口：宁可暂时与其它窗格不同，也不产生 NaN 坐标；
+ * 调用方（舞台）在资源未就绪时会先跳过绘制。
+ */
+export function relativeViewport(
+  shared: ViewportState,
+  anchor: Size,
+  image: Size,
+  pane: Size,
+): ViewportState {
+  if (!usableSize(anchor) || !usableSize(image) || !usableSize(pane) || shared.zoom <= 0) {
+    return { ...shared };
+  }
+  const anchorFit = fitZoom(anchor, pane);
+  const imageFit = fitZoom(image, pane);
+  return {
+    centerX: (shared.centerX / anchor.width) * image.width,
+    centerY: (shared.centerY / anchor.height) * image.height,
+    zoom: clampZoom(imageFit * (shared.zoom / anchorFit)),
+  };
+}
+
+/**
+ * relativeViewport 的逆运算：把某张图的视口写回共享的绝对口径。
+ * 交互（滚轮锚点、拖拽、方向键）先在该窗格坐标系里算，再经这里写回共享状态，
+ * 其它窗格因此按同一相对倍数跟随。
+ */
+export function absoluteViewportFromRelative(
+  relative: ViewportState,
+  anchor: Size,
+  image: Size,
+  pane: Size,
+): ViewportState {
+  if (!usableSize(anchor) || !usableSize(image) || !usableSize(pane) || relative.zoom <= 0) {
+    return { ...relative };
+  }
+  const anchorFit = fitZoom(anchor, pane);
+  const imageFit = fitZoom(image, pane);
+  return {
+    centerX: (relative.centerX / image.width) * anchor.width,
+    centerY: (relative.centerY / image.height) * anchor.height,
+    zoom: clampZoom((relative.zoom / imageFit) * anchorFit),
+  };
+}
+
 /** 图片坐标 → 屏幕坐标（窗格内的 CSS 像素） */
 export function imageToScreen(
   vp: ViewportState,

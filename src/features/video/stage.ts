@@ -23,10 +23,12 @@ import { icon } from '../../ui/icons';
 import { button, emptyState, iconButton, segmented, spinner } from '../../ui/primitives';
 import { toast } from '../../ui/toast';
 import {
+  absoluteViewportFromRelative,
   attachPanZoom,
   drawSource,
   fitViewport,
   prepareCanvas,
+  relativeViewport,
   watchSize,
   withZoom,
   type ViewportState,
@@ -133,6 +135,17 @@ interface Pane {
   /** 网格格子的选源下拉（其他模式没有）。 */
   select?: HTMLSelectElement;
   detach: () => void;
+}
+
+/**
+ * 锚视频：所有窗格的相对视口都相对它换算（共享视口按它的绝对口径存储）。
+ * 滑动以左路为基准（左路即锚，右路按相对倍数跟随）；分屏/网格以原视频优先，
+ * 没有或尚未就绪时取当前显示的第一段就绪视频。
+ */
+interface AnchorVideo {
+  path: string;
+  width: number;
+  height: number;
 }
 
 interface StageTimeline {
@@ -364,7 +377,94 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     return truncateFileName(fileName(path));
   }
 
-  function createInteractiveCanvas(path: string | null, label: string): {
+  // ---------- 逐窗归一（不同分辨率的视频不应一小一大） ----------
+  //
+  // 所有窗格共用一份 state.viewport，它按锚视频的绝对口径存储（中心=锚视频像素、
+  // 倍数=锚视频在首个窗格里的绝对倍数）。若直接套给每个窗格，分辨率小的视频只会占
+  // 窗格一角；这里按共享画布层的相对视口换算：每段视频先按自己的尺寸适配所在窗格，
+  // 共享缩放退化为「相对适应的倍数」（相对 1 = 正好填满窗格），滚轮/拖拽再逆换算写回。
+
+  /** 视频已就绪时的原始像素尺寸；未就绪返回 null。 */
+  function readyVideoSize(path: string): { width: number; height: number } | null {
+    const snapshot = peekVideo(path);
+    if (!snapshot || snapshot.status !== 'ready' || snapshot.width <= 0 || snapshot.height <= 0) {
+      return null;
+    }
+    return { width: snapshot.width, height: snapshot.height };
+  }
+
+  /** 锚视频（见 AnchorVideo 注释）：它决定所有相对视口的换算基准。 */
+  function anchorVideo(): AnchorVideo | null {
+    const order: (string | null)[] = [];
+    if (state.mode === 'slider') order.push(state.leftPath);
+    order.push(referencePath);
+    order.push(...displayedPaths());
+    for (const path of order) {
+      if (!path) continue;
+      const size = readyVideoSize(path);
+      if (size) return { path, width: size.width, height: size.height };
+    }
+    return null;
+  }
+
+  /** 某栏/格当前显示的源：分屏取固定源，网格逐格解析，滑动没有单一路（null）。 */
+  function panePathOf(pane: Pane): string | null {
+    if (state.mode === 'split') return pane.path;
+    if (state.mode === 'slider') return null;
+    return pane.cellIndex === undefined
+      ? null
+      : resolveCellVideo(pane.cellIndex, state.cellPaths, state.leftPath ?? '', sources);
+  }
+
+  /** 第 index 个窗格的 CSS 尺寸（取整口径与 prepareCanvas 一致）。 */
+  function paneSizeAt(index: number): { width: number; height: number } | null {
+    const pane = panes[index];
+    if (!pane) return null;
+    const rect = pane.canvas.getBoundingClientRect();
+    const width = Math.round(rect.width);
+    const height = Math.round(rect.height);
+    if (width < 2 || height < 2) return null;
+    return { width, height };
+  }
+
+  /** 某段视频在给定窗格尺寸里的相对视口；未就绪返回 null。 */
+  function viewportFor(
+    path: string,
+    pane: { width: number; height: number },
+    anchor: AnchorVideo,
+  ): ViewportState | null {
+    const shared = state.viewport;
+    const image = readyVideoSize(path);
+    if (!shared || !image) return null;
+    return relativeViewport(shared, anchor, image, pane);
+  }
+
+  /**
+   * 交互用：第 index 个窗格当前显示的相对视口。
+   * 滑动只有一块画布，基准是左路（左路即锚视频，因此它就是共享视口本身）。
+   */
+  function paneViewport(index: number): ViewportState | null {
+    const anchor = anchorVideo();
+    const size = paneSizeAt(index);
+    const pane = panes[index];
+    if (!anchor || !size || !pane) return null;
+    const path = state.mode === 'slider' ? anchor.path : panePathOf(pane);
+    return path ? viewportFor(path, size, anchor) : null;
+  }
+
+  /** 把某窗格的视口逆换算写回共享绝对口径（滚轮/拖拽/双击复位经这里）。 */
+  function writePaneViewport(index: number, viewport: ViewportState): void {
+    const anchor = anchorVideo();
+    const size = paneSizeAt(index);
+    const pane = panes[index];
+    if (!anchor || !size || !pane) return;
+    const path = state.mode === 'slider' ? anchor.path : panePathOf(pane);
+    const image = path ? readyVideoSize(path) : null;
+    if (!image) return;
+    state.viewport = absoluteViewportFromRelative(viewport, anchor, image, size);
+  }
+
+  function createInteractiveCanvas(path: string | null, label: string, index: number): {
     canvas: HTMLCanvasElement;
     detach: () => void;
   } {
@@ -381,9 +481,10 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       },
     });
     const detach = attachPanZoom(canvas, {
-      getViewport: () => state.viewport,
+      // 逐窗归一：把该窗格的相对视口暴露给画布交互，写回时再逆换算成共享绝对口径
+      getViewport: () => paneViewport(index),
       setViewport: (viewport) => {
-        state.viewport = viewport;
+        writePaneViewport(index, viewport);
       },
       onChange: scheduleDraw,
       onReset: () => {
@@ -400,7 +501,7 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     area.appendChild(group);
     const built: Pane[] = [];
     paths.forEach((path, index) => {
-      const created = createInteractiveCanvas(path, '视频');
+      const created = createInteractiveCanvas(path, '视频', index);
       const tag = el('span', {
         class: 'video-pane__tag',
         text: paneLabel(path, index),
@@ -417,6 +518,7 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     const created = createInteractiveCanvas(
       state.leftPath && state.rightPath ? `${state.leftPath}|${state.rightPath}` : null,
       '滑动对比',
+      0,
     );
     const badge = el('span', { class: 'video-pane__badge', attrs: { hidden: true } });
     const divider = el('div', {
@@ -515,7 +617,7 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     const count = rows * cols;
     for (let index = 0; index < count; index += 1) {
       const current = resolveCellVideo(index, state.cellPaths, state.leftPath ?? '', sources);
-      const created = createInteractiveCanvas(current, `第 ${index + 1} 格`);
+      const created = createInteractiveCanvas(current, `第 ${index + 1} 格`, index);
       const badge = el('span', { class: 'video-pane__badge', attrs: { hidden: true } });
       const select = el('select', {
         class: 'select video-cell__select',
@@ -842,44 +944,52 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     if (!pane) return;
     const rect = pane.canvas.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) return;
-    for (const path of displayedPaths()) {
-      const snapshot = peekVideo(path);
-      if (snapshot && snapshot.status === 'ready' && snapshot.width > 0) {
-        state.viewport = fitViewport(
-          { width: snapshot.width, height: snapshot.height },
-          { width: Math.round(rect.width), height: Math.round(rect.height) },
-        );
-        return;
-      }
-    }
+    // 共享视口按锚视频的绝对口径建立；各窗格再由它换算成自己的相对视口
+    const anchor = anchorVideo();
+    if (!anchor) return;
+    state.viewport = fitViewport(
+      { width: anchor.width, height: anchor.height },
+      { width: Math.round(rect.width), height: Math.round(rect.height) },
+    );
   }
 
   function drawSourceInto(
     target: ReturnType<typeof prepareCanvas>,
     path: string | null,
+    anchor: AnchorVideo | null,
   ): void {
-    if (!target || !path || !state.viewport) return;
+    if (!target || !path || !state.viewport || !anchor) return;
     const snapshot = peekVideo(path);
     const element = videoElement(path);
     if (!snapshot || snapshot.status !== 'ready' || !element || element.readyState < 2) return;
-    drawSource(target.ctx, target.size, element, snapshot.width, snapshot.height, state.viewport);
+    if (snapshot.width <= 0 || snapshot.height <= 0) return;
+    // 逐窗归一：这段视频按自己的尺寸适配本窗格，共享缩放只作相对倍数
+    const viewport = relativeViewport(
+      state.viewport,
+      anchor,
+      { width: snapshot.width, height: snapshot.height },
+      target.size,
+    );
+    drawSource(target.ctx, target.size, element, snapshot.width, snapshot.height, viewport);
   }
 
   function draw(): void {
     if (!root.isConnected) return;
     ensureFitted();
+    const anchor = anchorVideo();
     if (state.mode === 'slider') {
       const pane = panes[0];
       if (pane) {
         const prepared = prepareCanvas(pane.canvas);
         if (prepared) {
-          // 先整幅画右路，再裁左半幅画左路——共享同一视口与时间点。
-          drawSourceInto(prepared, state.rightPath);
+          // 先整幅画右路，再裁左半幅画左路——共享同一时间点；左右各按自己的尺寸适配，
+          // 分辨率不同也不会一小一大（左路是锚视频，视口即共享绝对视口）。
+          drawSourceInto(prepared, state.rightPath, anchor);
           prepared.ctx.save();
           prepared.ctx.beginPath();
           prepared.ctx.rect(0, 0, state.divider * prepared.size.width, prepared.size.height);
           prepared.ctx.clip();
-          drawSourceInto(prepared, state.leftPath);
+          drawSourceInto(prepared, state.leftPath, anchor);
           prepared.ctx.restore();
           if (dividerEl) {
             dividerEl.style.left = `${state.divider * prepared.size.width}px`;
@@ -894,18 +1004,7 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       for (const pane of panes) {
         const prepared = prepareCanvas(pane.canvas);
         if (!prepared) continue;
-        const path =
-          state.mode === 'split'
-            ? pane.path
-            : pane.cellIndex === undefined
-              ? null
-              : resolveCellVideo(
-                  pane.cellIndex,
-                  state.cellPaths,
-                  state.leftPath ?? '',
-                  sources,
-                );
-        drawSourceInto(prepared, path);
+        drawSourceInto(prepared, panePathOf(pane), anchor);
       }
     }
     syncPaneBadges();
@@ -925,13 +1024,7 @@ export function mountVideoStage(host: HTMLElement, ctx: ViewCtx): MountedView {
 
   function syncPaneBadges(): void {
     for (const pane of panes) {
-      const path =
-        state.mode === 'split'
-          ? pane.path
-          : pane.cellIndex === undefined
-            ? null
-            : resolveCellVideo(pane.cellIndex, state.cellPaths, state.leftPath ?? '', sources);
-      const status = paneStatus(path);
+      const status = paneStatus(panePathOf(pane));
       pane.badge.textContent = status.text;
       pane.badge.hidden = !status.visible;
     }
