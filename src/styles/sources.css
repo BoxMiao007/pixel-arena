@@ -1,7 +1,20 @@
-/* 来源域样式：检视器「原图 / 跑分图」两个分区。
+/* 来源域样式：检视器「原图（含本轮跑分入口） / 跑分图」两个分区的公共部分。
  *
  * 只引用 tokens 变量（色值、字号、发丝线、间距、圆角），不写字面量；
  * 行内状态靠徽标颜色表达，不给卡片加左边缘彩条。 */
+
+.reference__source {
+  min-width: 0;
+}
+
+/* 原图卡片与跑分动作同属一个分区：用一条发丝线分隔，读起来是「这张图 + 它的跑分」 */
+.reference__score {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-top: var(--s-2);
+  border-top: var(--hairline) solid var(--line);
+}
 
 .source {
   display: flex;

@@ -166,7 +166,7 @@ export async function removeCandidateAt(ctx: RoundCtx, path: string): Promise<vo
  *
  * 为什么先补生成：变体的产物必须先进本轮才能参与跑分（「参与下次跑分」）；新产物由
  * runQueuePlanOnce 的子集跑分当场出指标，原有行再整轮重算一次——每张图只算一次。
- * 进度与忙标志统一挂在 `score:<轮>` 上（跑分分区读同一个 id）。
+ * 进度与忙标志统一挂在 `score:<轮>` 上（原图分区里的跑分块读同一个 id）。
  */
 export async function runFullScore(ctx: RoundCtx): Promise<boolean> {
   const groupId = ctx.group.id;
@@ -748,7 +748,7 @@ export async function recheckLadder(ctx: RoundCtx, state: LadderUiState): Promis
  *
  * 顺序 = 预检编码器 → 逐项 onestop_encode → 产物一次性入轮 → 只对本次新产物跑分。
  * 不再隐式探测目标大小（有 pending 时拒绝生成，由分区的「探测目标大小」先走一步），
- * 也不再整轮重算（那是「跑分」分区的职责）。
+ * 也不再整轮重算（那是原图分区跑分块的职责）。
  */
 export async function generateLadder(ctx: RoundCtx, state: LadderUiState): Promise<void> {
   if (isBusy()) return;

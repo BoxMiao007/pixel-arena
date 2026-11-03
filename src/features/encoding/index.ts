@@ -1,4 +1,4 @@
-// encoding 域的注册入口：4 个检视器分区 + 5 个命令 + 分组关闭时的会话态清理。
+// encoding 域的注册入口：3 个检视器分区 + 5 个命令 + 分组关闭时的会话态清理。
 //
 // 外壳只认 shell/registry 的注册表；本域不 import 外壳的界面代码，只调注册函数。
 // 注册幂等：main 显式调用与模块副作用各一次都不会重复挂。
@@ -24,7 +24,6 @@ import { ladderStateFor } from './session';
 import { candidatesSection } from './sections/candidates';
 import { ladderSection } from './sections/ladder';
 import { referenceSection } from './sections/reference';
-import { scoreSection } from './sections/score';
 
 /** 当前激活轮；没有（空工作区 / 组里没有轮）时返回 null。 */
 function current(): RoundCtx | null {
@@ -54,7 +53,6 @@ export function registerEncoding(): void {
 
   registerPanelSection(referenceSection);
   registerPanelSection(candidatesSection);
-  registerPanelSection(scoreSection);
   registerPanelSection(ladderSection);
 
   registerCommand({

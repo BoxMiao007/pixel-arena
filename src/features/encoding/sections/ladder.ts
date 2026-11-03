@@ -7,7 +7,7 @@
 //   未勾选的行灰显而不是消失，随时能勾回来。
 // - 预览与生成共用 buildLadderPreview 的 plan：界面上的项数就是实际生成项数。
 // - 目标大小先「探测」再「生成」，探测结果显示实测字节与命中点；不再隐式探测。
-// - 生成后只跑本次新产物，整轮重算留在「跑分」分区。
+// - 生成后只跑本次新产物，整轮重算留在「原图」分区的跑分入口。
 
 import { button, chip, emptyState, progressBar, segmented, sliderField, switchField } from '../../../ui/primitives';
 import { el } from '../../../ui/dom';
