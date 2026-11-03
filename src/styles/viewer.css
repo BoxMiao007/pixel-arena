@@ -575,20 +575,22 @@
 
 /* 画布右下的比例尺：屏幕上这一段等于多少原始像素。
  * 纯信息提示（读屏由工具栏的缩放档位负责），所以不吃指针事件，也不抢焦点。 */
+/* 比例尺：跟着缩放组放在工具条里，不再压住画面右下角。 */
+.viewer__scale-slot {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  min-width: 0;
+}
+
 .viewer__scale {
-  position: absolute;
-  right: var(--s-2);
-  bottom: var(--s-2);
-  z-index: 4;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 22px;
-  padding: 0 var(--s-2);
-  border: var(--hairline) solid var(--line);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
-  color: var(--text-muted);
+  flex: none;
+  height: var(--control-h-sm);
+  padding: 0 var(--s-1);
+  color: var(--text-subtle);
   font-size: var(--fs-meta);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
@@ -610,7 +612,7 @@
   white-space: nowrap;
 }
 
-/* 极窄舞台：比例尺让位给画面本身（探针读数在左侧，别两头都是角标） */
+/* 极窄舞台：比例尺让位，先保住缩放组与模式条 */
 @container (max-width: 560px) {
   .viewer__scale {
     display: none;

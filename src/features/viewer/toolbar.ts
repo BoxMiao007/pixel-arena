@@ -38,6 +38,8 @@ export interface ToolbarHandle {
   node: HTMLElement;
   /** 模式参数组（内联在模式条右侧；无参数的模式为空节点，CSS 会隐藏）。 */
   props: HTMLElement;
+  /** 比例尺槽位（缩放控件左侧）：计算与显隐仍由舞台负责。 */
+  scaleHost: HTMLElement;
   setMode: (mode: ViewerMode) => void;
   /** pickable=true 时上下文文字变成换图入口（单槽模式）；分屏/网格只作说明。 */
   setContext: (text: string, pickable?: boolean) => void;
@@ -101,6 +103,8 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
   // 模式参数（不透明度 / 阈值 / 播放）跟着模式条走：它们是「当前模式」的参数，
   // 放在工具栏里紧邻分段控制，既是就近原则，也不再压住画布上的图像。
   const props = el('div', { class: 'viewer__props', attrs: { 'data-empty': 'true' } });
+  // 比例尺原来浮在画布右下角，会压住图像角上的内容；移到工具条缩放组左侧。
+  const scaleHost = el('span', { class: 'viewer__scale-slot' });
 
   const node = el(
     'div',
@@ -109,6 +113,7 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
     props,
     context,
     el('span', { class: 'viewer__spacer' }),
+    scaleHost,
     el('div', { class: 'viewer__zoom' }, zoomOut, zoomValue, zoomIn, fit),
   );
 
@@ -132,6 +137,7 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
   return {
     node,
     props,
+    scaleHost,
     setMode: (mode) => {
       seg.setValue(mode);
     },

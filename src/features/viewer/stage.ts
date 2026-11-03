@@ -198,7 +198,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     class: 'viewer__overlay',
     attrs: { 'aria-live': 'polite', 'aria-atomic': 'false' },
   });
-  stage.append(scaleBar, overlay);
+  stage.append(overlay);
 
   // ---------- 图片条目 ----------
   let imagesByPath = new Map<string, ViewerImage>();
@@ -544,9 +544,9 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     surface?.destroy();
     surface = null;
     divider = null;
-    // 旧结构的节点整体移除（overlay、比例尺与模式参数组是常驻节点，不参与重建）
+    // 旧结构的节点整体移除（overlay 与模式参数组是常驻节点，不参与重建）
     for (const child of [...stage.children]) {
-      if (child === overlay || child === scaleBar) continue;
+      if (child === overlay) continue;
       child.remove();
     }
   }
@@ -1626,6 +1626,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       openMenuHandle = openMenu(anchor, items, { align: 'end', label: '缩放档位' });
     },
   });
+  toolbar.scaleHost.append(scaleBar);
   root.append(toolbar.node, stage);
   host.replaceChildren(root);
   toolbar.buildProps(propsOptions());
