@@ -196,11 +196,11 @@
   color: var(--text-subtle);
 }
 
-/* 两列：左列格式胶囊等宽，右列档位/状态从同一 x 起排——不同长度的格式名
-   （JPEG / WebP / AVIF / JPEG XL、无损 WebP…）不再把右列挤得参差。 */
+/* 两列：左列格式胶囊等宽（按最长的「无损 WebP」定宽，再收紧到刚好放下），
+   右列档位/状态从同一 x 起排——不同长度的格式名不再把右列挤得参差。 */
 .ladder__row {
   display: grid;
-  grid-template-columns: 5.5rem minmax(0, 1fr);
+  grid-template-columns: 4.75rem minmax(0, 1fr);
   align-items: center;
   gap: var(--s-1) var(--s-2);
   min-width: 0;
