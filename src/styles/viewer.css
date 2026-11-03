@@ -87,44 +87,6 @@
   flex: 1;
 }
 
-/* 像素探针读数：等宽数字对齐，锁定时用琥珀描边；位置/差值用空白分段（不用中点） */
-.viewer__probe {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  max-width: 300px;
-  height: var(--control-h-sm);
-  padding: 0 var(--s-2);
-  border: var(--hairline) solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
-  color: var(--text-muted);
-  font-size: var(--fs-meta);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.viewer__probe:hover {
-  background: var(--surface-3);
-  border-color: var(--line-strong);
-}
-
-.viewer__probe.is-locked {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.viewer__probe-icon {
-  display: none;
-}
-
-.viewer__probe-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .viewer__zoom {
   display: inline-flex;
   align-items: center;
@@ -168,39 +130,11 @@
   color: var(--accent);
 }
 
-.viewer__pixel-badge {
-  flex: none;
-}
-
 /* 让位顺序（模式条与缩放组永远保留；模式条在真正挤不下时才退回纯图标）：
-   1. 像素徽标：<940 收起（纯状态提示，最先让位）；
-   2. 探针读数：<1120 只留一个图标按钮（读数在锁定后浮到画布左下角）；
-   3. 收紧：<900 模式条内边距与滑杆一起收窄，先省装饰性留白再收内容；
-   4. 上下文文案：<860 收起文字，单槽模式只留一个换图图标按钮（它是唯一选图入口）；
-   5. 模式条文字：<780 退回纯图标（每个图标都有 aria-label 与 title，语义不丢）；
-   6. 极窄 <620：工具栏换行成两行，任何控件都不裁切。 */
-@container (max-width: 940px) {
-  .viewer__pixel-badge {
-    display: none;
-  }
-}
-
-@container (max-width: 1119px) {
-  .viewer__probe {
-    width: var(--control-h-sm);
-    padding: 0;
-    justify-content: center;
-  }
-
-  .viewer__probe-text {
-    display: none;
-  }
-
-  .viewer__probe-icon {
-    display: inline;
-  }
-}
-
+   1. 收紧：<900 模式条内边距与滑杆一起收窄，先省装饰性留白再收内容；
+   2. 上下文文案：<860 收起文字，单槽模式只留一个换图图标按钮（它是唯一选图入口）；
+   3. 模式条文字：<780 退回纯图标（每个图标都有 aria-label 与 title，语义不丢）；
+   4. 极窄 <620：工具栏换行成两行，任何控件都不裁切。 */
 @container (max-width: 900px) {
   /* 这一段仍保留模式文字：先把内边距与滑杆收窄，别急着丢信息 */
   .viewer__modes .segmented__item {
@@ -680,34 +614,6 @@
 @container (max-width: 560px) {
   .viewer__scale {
     display: none;
-  }
-}
-
-/* 锁定后的读数浮在画布左下角：窄舞台塞不进工具栏时仍能看到像素值 */
-.viewer__probe-hud {
-  position: absolute;
-  left: var(--s-2);
-  bottom: var(--s-2);
-  z-index: 4;
-  display: none;
-  max-width: calc(100% - var(--s-4));
-  height: 24px;
-  padding: 0 var(--s-2);
-  border: var(--hairline) solid var(--accent);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: var(--fs-meta);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-@container (max-width: 1119px) {
-  .viewer__probe-hud {
-    display: inline-flex;
-    align-items: center;
   }
 }
 

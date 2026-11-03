@@ -1,6 +1,6 @@
 // 查看器工具栏与模式参数。
 //
-// 工具栏一行：模式分段控制 + 模式专属参数 + 当前对比对象 + 缩放控件 + 像素徽标。
+// 工具栏一行：模式分段控制 + 模式专属参数 + 当前对比对象 + 缩放控件。
 // 模式参数（不透明度 / 阈值 / 播放）以前浮在画布右上角，会盖住图像主体（窄窗尤甚）；
 // 现在紧邻模式条内联，既是就近原则，也让画布整块留给图像。
 
@@ -24,14 +24,6 @@ export interface ToolbarOptions {
   onZoomMenu: (anchor: HTMLElement) => void;
   /** 单槽模式：点上下文文字打开「选择对比图」菜单。 */
   onPickCandidate: (anchor: HTMLElement) => void;
-  /** 点击像素读数：未锁定则锁定，已锁定则复制。 */
-  onProbeToggle: () => void;
-}
-
-export interface ProbeView {
-  text: string;
-  detail: string;
-  locked: boolean;
 }
 
 export interface PropsOptions {
@@ -51,8 +43,6 @@ export interface ToolbarHandle {
   setContext: (text: string, pickable?: boolean) => void;
   setZoom: (zoom: number, pixel: boolean) => void;
   setZoomEnabled: (enabled: boolean) => void;
-  /** 像素探针读数；null 表示指针不在图片上（隐藏读数）。 */
-  setProbe: (probe: ProbeView | null) => void;
   /** 重建参数浮条（模式变化时调用）。 */
   buildProps: (options: PropsOptions) => void;
   /** 同步参数值（拖动中不重建 DOM）。 */
@@ -108,26 +98,6 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
   const zoomIn = iconButton({ icon: 'zoomIn', label: '放大', size: 'sm', onClick: options.onZoomIn });
   const fit = iconButton({ icon: 'fit', label: '适应窗口（0）', size: 'sm', onClick: options.onZoomFit });
 
-  const probeText = el('span', { class: 'viewer__probe-text', text: '' });
-  const probe = el(
-    'button',
-    {
-      class: 'viewer__probe',
-      attrs: { type: 'button' },
-      on: { click: () => options.onProbeToggle() },
-    },
-    icon('ruler', 'icon viewer__probe-icon'),
-    probeText,
-  );
-  probe.hidden = true;
-
-  const pixelBadge = el('span', {
-    class: 'badge badge--accent viewer__pixel-badge',
-    text: '像素',
-    title: '缩放已达 100%：按最近邻显示原始像素',
-  });
-  pixelBadge.hidden = true;
-
   // 模式参数（不透明度 / 阈值 / 播放）跟着模式条走：它们是「当前模式」的参数，
   // 放在工具栏里紧邻分段控制，既是就近原则，也不再压住画布上的图像。
   const props = el('div', { class: 'viewer__props', attrs: { 'data-empty': 'true' } });
@@ -139,8 +109,6 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
     props,
     context,
     el('span', { class: 'viewer__spacer' }),
-    probe,
-    pixelBadge,
     el('div', { class: 'viewer__zoom' }, zoomOut, zoomValue, zoomIn, fit),
   );
 
@@ -178,25 +146,12 @@ export function buildToolbar(options: ToolbarOptions): ToolbarHandle {
     setZoom: (zoom, pixel) => {
       zoomValue.textContent = formatZoomPercent(zoom);
       zoomValue.classList.toggle('is-pixel', pixel);
-      pixelBadge.hidden = !pixel;
     },
     setZoomEnabled: (enabled) => {
       for (const button of [zoomOut, zoomValue, zoomIn, fit]) {
         button.disabled = !enabled;
       }
       if (!enabled) zoomValue.textContent = '—';
-    },
-    setProbe: (reading) => {
-      probe.hidden = reading === null;
-      if (!reading) return;
-      probeText.textContent = reading.text;
-      probe.classList.toggle('is-locked', reading.locked);
-      probe.title = `${reading.detail}
-${reading.locked ? '已锁定：点击复制读数' : '点击锁定这个像素'}`;
-      probe.setAttribute(
-        'aria-label',
-        reading.locked ? '像素读数（已锁定，点击复制）' : '像素读数（点击锁定）',
-      );
     },
     buildProps: (next) => {
       propsMode = next.mode;

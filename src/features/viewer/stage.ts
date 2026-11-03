@@ -38,16 +38,6 @@ import {
   type ViewportState,
 } from '../../ui/canvas';
 import { diffCacheKey, diffExceedsLimit, renderDiffCanvas } from './diff';
-import {
-  deltaOf,
-  formatProbe,
-  formatProbeDetail,
-  mapPixelPoint,
-  pixelAt,
-  samplePixelCached,
-  type ProbeReading,
-  type Rgb,
-} from './probe';
 import { gridLayout, isPaneSizeSane, paneCount, sameBox } from './layout';
 import {
   applyPick,
@@ -181,11 +171,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
 
   let statusKey = '';
 
-  // 像素探针：坐标存在图片坐标系里（缩放平移后读数不变），锁定时不再跟随指针
-  let probePoint: { x: number; y: number } | null = null;
-  let probeLocked = false;
-  let probeSlotIndex = 0;
-  let lastProbe: ProbeReading | null = null;
   // 指针当前所在的栏/格：网格模式用它决定「读哪一格的逐格视口」（缩放读数与比例尺）
   let hoverIndex: number | null = null;
 
@@ -198,12 +183,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   host.classList.add('viewer-host');
   const root = el('div', { class: 'viewer', dataset: { mode } });
   const stage = el('div', { class: 'viewer__stage' });
-  const probeHud = el('button', {
-    class: 'viewer__probe-hud',
-    attrs: { type: 'button', 'aria-label': '已锁定的像素读数，点击复制' },
-    on: { click: () => toggleProbeLock() },
-  });
-  probeHud.hidden = true;
   // 画布右下的比例尺：把当前缩放换成「屏幕上这一段等于多少原始像素」。
   // 像素级比对时不必心算 43.4% 到底对应多少图片像素；纯信息提示，读屏交给工具栏的缩放档位。
   const scaleTrack = el('span', { class: 'viewer__scale-bar' });
@@ -219,7 +198,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     class: 'viewer__overlay',
     attrs: { 'aria-live': 'polite', 'aria-atomic': 'false' },
   });
-  stage.append(probeHud, scaleBar, overlay);
+  stage.append(scaleBar, overlay);
 
   // ---------- 图片条目 ----------
   let imagesByPath = new Map<string, ViewerImage>();
@@ -298,177 +277,27 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   const roleOf = (path: string | null): string =>
     path !== null && path === round.reference?.path ? '原图' : '跑分图';
 
-  // ---------- 像素探针 ----------
+  // ---------- 指针悬停 ----------
   /**
-   * 探针读数口径：
-   * - 坐标以「指针坐标系那张图」为准：单画布模式恒为原图（原图用共享绝对视口绘制），
-   *   分屏/网格是当前栏/格的那张；
-   * - 另一侧按比例映射到自己的像素坐标取样（逐窗归一后两张图尺寸不同，同一屏幕位置
-   *   对应的是同一相对位置）；
-   * - 尺寸不同仍不给差值：同一坐标不是同一内容，差值为零/非零都会误导。
+   * 指针当前所在的栏/格：网格的缩放读数与比例尺跟着指针换口径
+   * （指针 → 聚焦 → 第一张就绪的格）。这里只维护 hoverIndex，不读取像素。
    */
-  function probeReading(): ProbeReading | null {
-    if (!probePoint) return null;
-    const reference = round.reference;
-    if (!reference) return null;
-    const refEntry = entryFor(reference.path);
-    if (refEntry.status !== 'ok' || !refEntry.img) return null;
-    // 坐标基：单画布 = 原图；多窗格 = 当前栏/格的那张图
-    const focusPath = isSingleSlotMode(mode) ? reference.path : resolveSlot(probeSlotIndex);
-    const focusEntry = focusPath ? entryFor(focusPath) : null;
-    if (!focusEntry || focusEntry.status !== 'ok' || !focusEntry.img) return null;
-    if (focusEntry.width <= 0 || focusEntry.height <= 0) return null;
-    const focusSize = { width: focusEntry.width, height: focusEntry.height };
-    const refPoint =
-      focusPath === reference.path
-        ? probePoint
-        : mapPixelPoint(probePoint, focusSize, {
-            width: refEntry.width,
-            height: refEntry.height,
-          });
-    const ref = samplePixelCached(reference.displayPath, refEntry.img, refPoint.x, refPoint.y);
-    if (!ref) return null;
-    // 对比侧：单画布恒为当前跑分图；多窗格是当前栏那张（原图栏没有第二张可比）
-    const candPath = isSingleSlotMode(mode)
-      ? candidatePathOf()
-      : focusPath !== reference.path
-        ? focusPath
-        : null;
-    let cand: Rgb | null = null;
-    let delta: ProbeReading['delta'] = null;
-    if (candPath && candPath !== reference.path) {
-      const candEntry = entryFor(candPath);
-      if (candEntry.status === 'ok' && candEntry.img && candEntry.width > 0) {
-        const candPoint =
-          candPath === focusPath
-            ? probePoint
-            : mapPixelPoint(probePoint, focusSize, {
-                width: candEntry.width,
-                height: candEntry.height,
-              });
-        cand = samplePixelCached(displayPathOf(candPath), candEntry.img, candPoint.x, candPoint.y);
-        // 尺寸不同时同一坐标不是同一内容，只给两图取样，不给误导性的差值
-        if (cand && candEntry.width === refEntry.width && candEntry.height === refEntry.height) {
-          delta = deltaOf(ref, cand);
-        }
-      }
-    }
-    return { x: probePoint.x, y: probePoint.y, ref, cand, delta };
-  }
-
-  function toggleProbeLock(): void {
-    if (!probeLocked) {
-      if (!probePoint) return;
-      probeLocked = true;
-      updateProbe();
-      return;
-    }
-    // 已锁定：再点一次 = 复制读数（工具栏按钮与画布角 HUD 同一入口）
-    if (lastProbe) copyText(formatProbeDetail(lastProbe), () => toast('已复制像素读数', 'ok'));
-  }
-
-  function updateProbe(): void {
-    const reading = probeReading();
-    lastProbe = reading;
-    toolbar?.setProbe(
-      reading
-        ? { text: formatProbe(reading), detail: formatProbeDetail(reading), locked: probeLocked }
-        : null,
-    );
-    // 窄舞台工具栏放不下整行读数：锁定后浮到画布左下角（没跑分图时让位给空态引导）
-    const showHud = reading !== null && probeLocked && round.candidates.length > 0;
-    probeHud.hidden = !showHud;
-    if (showHud && reading) {
-      probeHud.textContent = formatProbe(reading);
-      probeHud.title = `${formatProbeDetail(reading)}
-点击复制读数`;
-    }
-  }
-
-  function setProbePoint(point: { x: number; y: number } | null): void {
-    if (point?.x === probePoint?.x && point?.y === probePoint?.y) return;
-    probePoint = point;
-    updateProbe();
-  }
-
-  function attachProbe(canvas: HTMLCanvasElement, index: number): () => void {
-    let last: { x: number; y: number } | null = null;
-    let downAt: { x: number; y: number } | null = null;
-
-    const recompute = (): void => {
-      const shared = state.viewport;
-      if (!shared || !last) return;
-      const rect = canvas.getBoundingClientRect();
-      const pane = paneSizeOf(index) ?? { width: rect.width, height: rect.height };
-      let entry: ImageEntry | null = null;
-      let vp: ViewportState | null = shared;
-      if (isSingleSlotMode(mode)) {
-        // 单画布：坐标基是原图（原图永远用共享绝对视口绘制）；没有原图就没有可比读数
-        const reference = round.reference;
-        entry = reference ? entryFor(reference.path) : null;
-      } else {
-        // 分屏/网格：读指针所在栏/格自己的图与逐栏视口（空格子不拿原图冒充）
-        const slotPath = resolveSlot(index);
-        entry = slotPath ? entryFor(slotPath) : null;
-        vp = slotViewport(index, shared);
-      }
-      if (!entry || entry.status !== 'ok' || entry.width <= 0 || !vp) {
-        setProbePoint(null);
-        return;
-      }
-      const point = pixelAt(vp, pane, last.x, last.y, { width: entry.width, height: entry.height });
-      probeSlotIndex = index;
-      setProbePoint(point);
-    };
-
-    const onMove = (event: PointerEvent): void => {
-      const rect = canvas.getBoundingClientRect();
-      last = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-      if (hoverIndex !== index) {
-        // 网格的缩放读数/比例尺读「当前格」，指针换格时立即跟着换口径
-        hoverIndex = index;
-        syncToolbar();
-      }
-      if (probeLocked) return;
-      recompute();
+  function attachHover(canvas: HTMLCanvasElement, index: number): () => void {
+    const onMove = (): void => {
+      if (hoverIndex === index) return;
+      hoverIndex = index;
+      syncToolbar();
     };
     const onLeave = (): void => {
-      last = null;
-      if (hoverIndex === index) {
-        hoverIndex = null;
-        syncToolbar();
-      }
-      if (!probeLocked) setProbePoint(null);
+      if (hoverIndex !== index) return;
+      hoverIndex = null;
+      syncToolbar();
     };
-    // 滚轮缩放后光标下的像素变了，读数要跟着重算（缩放本身由 attachPanZoom 先处理）
-    const onWheel = (): void => {
-      if (probeLocked) return;
-      recompute();
-    };
-    const onDown = (event: PointerEvent): void => {
-      if (event.button !== 0) return;
-      downAt = { x: event.clientX, y: event.clientY };
-    };
-    const onUp = (event: PointerEvent): void => {
-      if (!downAt) return;
-      const moved = Math.hypot(event.clientX - downAt.x, event.clientY - downAt.y);
-      downAt = null;
-      if (moved > 4 || !probePoint) return;
-      probeLocked = !probeLocked;
-      updateProbe();
-    };
-
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerleave', onLeave);
-    canvas.addEventListener('wheel', onWheel, { passive: true });
-    canvas.addEventListener('pointerdown', onDown);
-    canvas.addEventListener('pointerup', onUp);
     return () => {
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerleave', onLeave);
-      canvas.removeEventListener('wheel', onWheel);
-      canvas.removeEventListener('pointerdown', onDown);
-      canvas.removeEventListener('pointerup', onUp);
     };
   }
 
@@ -492,7 +321,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   // ---------- 视口 ----------
   /**
    * 第 index 个画布的 CSS 尺寸（取整口径与 prepareCanvas 一致）。
-   * fit、网格逐格换算、探针、右键命中都用同一份尺寸，避免同一位置在两处差半像素。
+   * fit、网格逐格换算、指针悬停与右键命中都用同一份尺寸，避免同一位置在两处差半像素。
    */
   function paneSizeOf(index: number): Size | null {
     const canvas = surface?.canvases[index];
@@ -717,7 +546,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     divider = null;
     // 旧结构的节点整体移除（overlay、比例尺与模式参数组是常驻节点，不参与重建）
     for (const child of [...stage.children]) {
-      if (child === overlay || child === scaleBar || child === probeHud) continue;
+      if (child === overlay || child === scaleBar) continue;
       child.remove();
     }
   }
@@ -780,7 +609,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
         }),
       );
       detachers.push(attachCanvasKeys(canvas, index));
-      detachers.push(attachProbe(canvas, index));
+      detachers.push(attachHover(canvas, index));
       detachers.push(attachContextMenu(canvas, index));
       // 逐画布监听：栏/格尺寸真正定下来（或窗口/面板变化）时，自动模式重算 fit。
       // 只监听舞台外层曾在真窗里漏掉「外层不变、内部分栏宽度变化」的情况。
@@ -820,7 +649,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     }
     structureKey = structureSignature();
     syncChrome();
-    updateProbe();
     // 不重挂后定时器要自己续：从别的模式切回闪烁且仍在播放时恢复自动交替
     if (mode === 'blink' && state.compare.blinkPlaying) startBlink();
     else stopBlink();
@@ -1130,7 +958,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
    * 图片右键菜单：只在指针确实落在该格画出来的图片上时弹出（空白边距上右键不弹）。
    * 菜单项与失败提示复用 ui/image-menu（与检视器列表/结果表同一套），按鼠标坐标
    * （openMenu 的 at 选项）弹出；不改视口状态，因此不会打断左键的拖动平移、
-   * 双击复位、长按看对比图与探针点击。
+   * 双击复位、长按看对比图。
    */
   function attachContextMenu(canvas: HTMLCanvasElement, index: number): () => void {
     const onContextMenu = (event: MouseEvent): void => {
@@ -1176,8 +1004,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     hoverIndex = null;
     diffStatus = 'idle';
     faceTag = null;
-    probePoint = null;
-    probeLocked = false;
     // 自动 fit 出来的比例不该带到新窗格（7 栏分屏的 5.69% 挪到滑动会变成一张小图）；
     // 用户手动缩放/拖过的视图仍然跨模式保留。保留时多窗格按「锚图所在栏」的绝对倍数
     // 对齐，其余栏按相对倍数换算（见 ui/canvas 的 relativeViewport），观感连续。
@@ -1682,30 +1508,12 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     return index === null ? null : slotViewport(index, shared);
   }
 
-  /**
-   * 多窗格的像素徽标口径：所有已显示的窗格都到 1:1 或更高才亮。
-   * 逐窗适配下小图默认就会被放大到 100% 以上（这本来就是「看起来一样大」的代价），
-   * 只看当前窗格会在其它窗格仍在缩小时误报「按原始像素显示」，所以按全部窗格判断。
-   */
-  function allPanesPixelZoom(): boolean {
-    const shared = state.viewport;
-    if (!surface || !shared) return false;
-    let shown = 0;
-    for (let index = 0; index < surface.canvases.length; index++) {
-      const cell = slotViewport(index, shared);
-      if (!cell) continue;
-      shown += 1;
-      if (!isPixelZoom(cell.zoom)) return false;
-    }
-    return shown > 0;
-  }
-
   function syncToolbar(): void {
     if (!toolbar) return;
     // 多窗格读「当前栏/格」的逐栏视口；单画布模式就是共享视口（以原图为准）
     const vp = activeViewport();
     toolbar.setZoomEnabled(vp !== null);
-    if (vp) toolbar.setZoom(vp.zoom, isMultiPaneMode(mode) ? allPanesPixelZoom() : isPixelZoom(vp.zoom));
+    if (vp) toolbar.setZoom(vp.zoom, isPixelZoom(vp.zoom));
     syncScale(vp);
     // 单槽模式没有每栏/每格的下拉，上下文文字本身就是「换对比图」入口
     toolbar.setContext(
@@ -1800,7 +1608,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     onZoomIn: () => zoomBy(steppedZoom(1, 1)),
     onZoomOut: () => zoomBy(steppedZoom(1, -1)),
     onZoomFit: resetViewport,
-    onProbeToggle: () => toggleProbeLock(),
     onPickCandidate: (anchor) => openCandidateMenu(anchor),
     onZoomMenu: (anchor) => {
       // 多窗格读「当前栏/格」的逐栏视口（与读数、比例尺同一口径）
@@ -1857,8 +1664,6 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       state.viewportTouched = false;
       diffCache = null;
       diffStatus = 'idle';
-      probePoint = null;
-      probeLocked = false;
     }
     if (mode === 'slider') applyDivider();
     if (structureSignature() !== structureKey) {
