@@ -989,3 +989,26 @@
     opacity: 0.7;
   }
 }
+
+/* ============ 判断徽标（画质最好 / 体积最小 / 综合最优） ============ */
+/* 与状态徽标区分：更矮一点、带发丝描边，读起来像「结论标签」而不是「状态灯」。
+   结果表文件名格、检视器跑分图行、多视图每格角上共用（core/highlight.ts 出判定）。 */
+.pick-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pick-chip.badge {
+  height: 17px;
+  padding: 0 5px;
+  border: var(--hairline) solid currentColor;
+  border-radius: var(--r-xs);
+  letter-spacing: 0.01em;
+}
+
+.pick-chip--md.badge {
+  height: 19px;
+  padding: 0 7px;
+}
