@@ -503,6 +503,17 @@ fn parse_format_selection(
     Ok(selected)
 }
 
+/// CLI 侧的 avifdec 注入：只返回真实存在的文件。
+///
+/// `decode::avif_decoder_path` 只做确定性路径推导、不校验存在性（GUI 的语义是
+/// 「装好即可用」）；CLI 没有 GUI 的下载/捆绑优先级链，直接把不存在的路径注入
+/// 环境变量会把错误信息指到假路径（#65）。缺失时返回 None，让 decode 层走
+/// 「请设置 PIXEL_ARENA_AVIFDEC 或 --tools-dir」的提示。
+fn existing_avifdec(tools_dir: &Path) -> Option<PathBuf> {
+    let decoder = pixel_arena_core::decode::avif_decoder_path(tools_dir)?;
+    decoder.is_file().then_some(decoder)
+}
+
 /// 展开编码阶梯：取点数据源 = 核心库 ladder 模块（单一实现，GUI 目录同源）。
 fn build_run_ladder(
     mode: &LadderMode,
@@ -707,9 +718,11 @@ fn run_run(args: RunArgs) -> ExitCode {
     };
 
     // AVIF 产物的解码/代片要 avifdec：CLI 与桌面端同一约定，从工具目录推导注入
-    //（已设置时尊重调用方覆盖，见 examples/onestop_sample.rs）
+    //（已设置时尊重调用方覆盖，见 examples/onestop_sample.rs）。只注入真实存在的
+    // 文件：缺失时不注入，让 decode 层给出「请设置环境变量或 --tools-dir」的原生
+    // 错误，而不是把一条不存在的推导路径写进环境变量（#65）。
     if std::env::var_os("PIXEL_ARENA_AVIFDEC").is_none() {
-        if let Some(decoder) = pixel_arena_core::decode::avif_decoder_path(&tools_dir) {
+        if let Some(decoder) = existing_avifdec(&tools_dir) {
             std::env::set_var("PIXEL_ARENA_AVIFDEC", decoder);
         }
     }
@@ -1016,5 +1029,22 @@ mod tests {
         // 2 在核数 ≥2 时原样使用；单核机器上被钳到 1（2.min(cores) 两端都锚定，无条件断言）
         assert_eq!(resolve_concurrency(Some(2)), 2.min(cores));
         assert_eq!(resolve_concurrency(Some(1)), 1);
+    }
+
+    #[test]
+    fn avifdec_只注入真实存在的文件() {
+        let temp = tempfile::tempdir().expect("临时目录");
+        // 平台没有 AVIF 来源清单时推导为 None，本用例直接跳过
+        let Some(decoder) = pixel_arena_core::decode::avif_decoder_path(temp.path()) else {
+            return;
+        };
+        assert_eq!(existing_avifdec(temp.path()), None, "文件不存在时不应注入");
+        std::fs::create_dir_all(decoder.parent().expect("推导路径必有父目录")).expect("建目录");
+        std::fs::write(&decoder, b"stub").expect("写桩文件");
+        assert_eq!(
+            existing_avifdec(temp.path()),
+            Some(decoder),
+            "文件存在时应返回同一路径"
+        );
     }
 }
