@@ -39,6 +39,7 @@ import {
 } from '../../ui/canvas';
 import { diffCacheKey, diffExceedsLimit, renderDiffCanvas } from './diff';
 import { gridLayout, isPaneSizeSane, paneCount, sameBox } from './layout';
+import { pickScaleTick } from './scale';
 import {
   applyPick,
   defaultLayout,
@@ -183,7 +184,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   host.classList.add('viewer-host');
   const root = el('div', { class: 'viewer', dataset: { mode } });
   const stage = el('div', { class: 'viewer__stage' });
-  // 画布右下的比例尺：把当前缩放换成「屏幕上这一段等于多少原始像素」。
+  // 比例尺：把当前缩放换成「屏幕上这一段等于多少原始像素」，挂在工具条缩放组左侧。
   // 像素级比对时不必心算 43.4% 到底对应多少图片像素；纯信息提示，读屏交给工具栏的缩放档位。
   const scaleTrack = el('span', { class: 'viewer__scale-bar' });
   const scaleText = el('span', { class: 'viewer__scale-text' });
@@ -1524,8 +1525,9 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   }
 
   /**
-   * 比例尺：在 1 / 2 / 5 × 10ⁿ 里挑一条显示宽度最接近 72px 的整数像素长度。
-   * 这样任意缩放下刻度都是整数像素，不会出现 137 px 这种没法用的读数。
+   * 比例尺：在 1 / 2 / 5 × 10ⁿ 里挑一条整数像素长度，且尺身不超过目标宽度
+   * （选刻度本身见 `pickScaleTick`）。这样任意缩放下刻度都是整数像素，不会出现
+   * 137 px 这种没法用的读数，也不会在极端缩小时把工具条右侧挤掉。
    *
    * 多窗格模式没有统一的绝对倍数：读数取「当前栏/格」的逐栏视口与那张图本身的尺寸
    * （各图尺寸不同，套共享倍率会给出错误数值，所以必须跟着当前栏走）。
@@ -1546,23 +1548,16 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       scaleBar.hidden = true;
       return;
     }
-    // 工具条窄时把尺身目标收短，给缩放组留位置；尺身长度仍按 best * zoom
-    // 真实换算（只换选刻度的目标，不截断线条，读数与画面距离保持成比例）。
+    // 工具条窄时把尺身目标收短，给缩放组留位置；尺身长度仍按真实像素换算
+    // （只换选刻度的目标，不截断线条，读数与画面距离保持成比例）。
     const targetPx = root.clientWidth < 900 ? 48 : 72;
-    const idealPx = targetPx / vp.zoom;
-    const magnitude = 10 ** Math.floor(Math.log10(Math.max(idealPx, 1)));
-    let best = magnitude;
-    let bestGap = Number.POSITIVE_INFINITY;
-    for (const multiplier of [1, 2, 5, 10]) {
-      const candidate = multiplier * magnitude;
-      const gap = Math.abs(candidate * vp.zoom - targetPx);
-      if (gap < bestGap) {
-        best = candidate;
-        bestGap = gap;
-      }
+    const tick = pickScaleTick(vp.zoom, targetPx);
+    if (!tick) {
+      scaleBar.hidden = true;
+      return;
     }
-    scaleTrack.style.width = `${Math.round(best * vp.zoom)}px`;
-    scaleText.textContent = `${Math.round(best)} px`;
+    scaleTrack.style.width = `${tick.screenPx}px`;
+    scaleText.textContent = `${tick.pixels} px`;
     const label = isMultiPaneMode(mode) && path !== round.reference?.path ? '跑分图' : '原图';
     scaleBar.title = `${label} ${entry.width} × ${entry.height}，当前 ${formatZoomPercent(vp.zoom)}`;
     scaleBar.hidden = false;
