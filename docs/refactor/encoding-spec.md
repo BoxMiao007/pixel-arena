@@ -238,7 +238,7 @@
 
 - **开始跑分**（主按钮，Ctrl+Enter）：`runFullScore`——先补生成脏参数变体（编码 + 子集跑分），
   再对本轮原有跑分图整轮重算（`round_score_candidates { paths: 原有路径 }`）；每张图只算一次。
-  忙标志统一挂在 `score:<轮>` 上，跑分分区读同一个 id 显示进度。
+  忙标志统一挂在 `score:<轮>` 上，原图分区里的跑分块读同一个 id 显示进度。
 - **重跑改过的（N 张）**：`runChangedEntries`——只补生成脏变体 + 只对缺指标 / 上次失败的跑分图跑分；
   N = 待生成变体数 + 缺指标跑分图数（`rerunChangedButtonLabel(plan, pending)`）。0 张时按钮仍可点，
   点开只提示「没有需要跑的」。
