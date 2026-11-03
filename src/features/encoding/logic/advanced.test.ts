@@ -20,6 +20,10 @@ import {
   buildEntryArgsLenient,
   validateEntry,
   availabilityErrors,
+  baseFlagsOf,
+  conflictingRows,
+  availableKnownParams,
+  normalizeDuplicateRows,
   shellQuote,
   formatCommandLine,
   previewImageCommand,
@@ -28,6 +32,7 @@ import {
   type AdvancedParamRow,
   type AdvancedSession,
   type ImageSpec,
+  type KnownParam,
   type ToolStatusLite,
   type VideoSpec,
 } from './advanced';
@@ -294,6 +299,179 @@ describe('validateEntry（必填缺失/范围/冲突的汇总报错）', () => {
     );
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatch(/-quality/);
+  });
+});
+
+// ---------- 参数行去重与冲突（界面即时提示；口径与 mergeArgs 相同） ----------
+
+describe('baseFlagsOf（基础命令行占用的标志）', () => {
+  it('质量模式按编码器取 qualityFlag；无损模式不追加质量标志', () => {
+    expect(baseFlagsOf(jpegSpec, { lossless: false })).toEqual(['-quality']);
+    expect(baseFlagsOf(webpSpec, { lossless: false })).toEqual(['-quiet', '-q']);
+    expect(baseFlagsOf(webpSpec, { lossless: true })).toEqual(['-quiet', '-lossless']);
+  });
+
+  it('jxl 无损的 losslessArgs 自带 -q 100：-q 仍算基础标志', () => {
+    expect(baseFlagsOf(jxlSpec, { lossless: true })).toEqual(['--quiet', '-q']);
+  });
+
+  it('不支持无损的编码器打开无损：不追加任何参数（与 quickBaseArgs 抛错前的基础一致）', () => {
+    expect(baseFlagsOf(jpegSpec, { lossless: true })).toEqual([]);
+  });
+
+  it('表外编码器（无规格）没有基础标志', () => {
+    expect(baseFlagsOf(null, { lossless: false })).toEqual([]);
+  });
+
+  it('无损开关切换会改变冲突集合（webp 的 -q 在无损模式下不再占用）', () => {
+    expect(baseFlagsOf(webpSpec, { lossless: false })).toContain('-q');
+    expect(baseFlagsOf(webpSpec, { lossless: true })).not.toContain('-q');
+  });
+});
+
+describe('conflictingRows（重复行与基础命令行冲突）', () => {
+  it('与基础命令行冲突只报启用的行（未启用行 mergeArgs 也会跳过）', () => {
+    const enabled = conflictingRows(jpegSpec, entry({
+      rows: [row({ name: '质量', flag: '-quality', value: '50' })],
+    }));
+    expect(enabled).toHaveLength(1);
+    expect(enabled[0].kind).toBe('base');
+    expect(enabled[0].message).toContain('基础命令行');
+
+    const disabled = conflictingRows(jpegSpec, entry({
+      rows: [row({ name: '质量', flag: '-quality', value: '50', enabled: false })],
+    }));
+    expect(disabled).toEqual([]);
+  });
+
+  it('同标志第二次出现报重复并点名第 1 行', () => {
+    const conflicts = conflictingRows(jpegSpec, entry({
+      rows: [
+        row({ name: '渐进式', flag: '-progressive' }),
+        row({ name: '渐进式', flag: '-progressive' }),
+      ],
+    }));
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].index).toBe(1);
+    expect(conflicts[0].kind).toBe('duplicate');
+    expect(conflicts[0].message).toContain('第 1 行');
+    expect(conflicts[0].message).toContain('-progressive');
+  });
+
+  it('未启用的重复行也报重复（归一化后它显示为「已标为不生效」）', () => {
+    const conflicts = conflictingRows(jpegSpec, entry({
+      rows: [
+        row({ name: '渐进式', flag: '-progressive' }),
+        row({ name: '渐进式', flag: '-progressive', enabled: false }),
+      ],
+    }));
+    expect(conflicts[0]?.kind).toBe('duplicate');
+    expect(conflicts[0]?.message).toContain('不生效');
+  });
+
+  it('webp 无损时 -q 不报冲突，质量模式时报冲突（跟着无损开关变）', () => {
+    const qualityMode = conflictingRows(webpSpec, entry({
+      encoderId: 'webp',
+      rows: [row({ name: '质量', flag: '-q', value: '60' })],
+    }));
+    expect(qualityMode.map((item) => item.kind)).toEqual(['base']);
+
+    const losslessMode = conflictingRows(webpSpec, entry({
+      encoderId: 'webp',
+      lossless: true,
+      rows: [row({ name: '质量', flag: '-q', value: '60' })],
+    }));
+    expect(losslessMode).toEqual([]);
+  });
+
+  it('空标志的自定义行不报冲突（还没填完，不打断输入）', () => {
+    expect(conflictingRows(jpegSpec, entry({ rows: [row({ name: '', flag: '' })] }))).toEqual([]);
+  });
+
+  it('表外编码器没有基础命令行可冲突，但仍能报重复', () => {
+    const conflicts = conflictingRows(null, entry({
+      rows: [row({ name: 'a', flag: '-x' }), row({ name: 'a', flag: '-x' })],
+    }));
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.kind).toBe('duplicate');
+  });
+});
+
+describe('availableKnownParams（下拉选项过滤）', () => {
+  const knowns: KnownParam[] = [
+    { name: '渐进式', flag: '-progressive', kind: { type: 'bool' }, note: '' },
+    { name: '优化 Huffman', flag: '-optimize', kind: { type: 'bool' }, note: '' },
+    {
+      name: '平滑',
+      flag: '-smooth',
+      kind: { type: 'number', min: 0, max: 100, step: 1, default: 0 },
+      note: '',
+    },
+  ];
+
+  it('顶部下拉排除所有行已占用的项', () => {
+    const rows = [row({ name: '渐进式', flag: '-progressive' }), row({ name: '平滑', flag: '-smooth' })];
+    expect(availableKnownParams(knowns, rows, null).map((item) => item.flag)).toEqual(['-optimize']);
+  });
+
+  it('行下拉保留本行当前标志（即使它已被其它行占用，也要能回显）', () => {
+    const rows = [
+      row({ name: '渐进式', flag: '-progressive' }),
+      row({ name: '渐进式', flag: '-progressive' }),
+    ];
+    // -progressive 被第 1 行占用，但第 2 行当前值就是它：必须出现在选项里才能回显
+    expect(availableKnownParams(knowns, rows, 1).map((item) => item.flag)).toEqual([
+      '-progressive',
+      '-optimize',
+      '-smooth',
+    ]);
+  });
+
+  it('行下拉排除其它行占用的项，空标志不占位', () => {
+    const rows = [row({ name: '', flag: '' }), row({ name: '优化', flag: '-optimize' })];
+    expect(availableKnownParams(knowns, rows, 0).map((item) => item.flag)).toEqual([
+      '-progressive',
+      '-smooth',
+    ]);
+  });
+});
+
+describe('normalizeDuplicateRows（历史重复行归一化）', () => {
+  it('同一标志只保留第一行，后面的标成不生效（不删除）', () => {
+    const rows = [
+      row({ name: '渐进式', flag: '-progressive' }),
+      row({ name: '重复', flag: '-progressive', value: '1' }),
+      row({ name: '平滑', flag: '-smooth', value: '20' }),
+    ];
+    expect(normalizeDuplicateRows(rows)).toBe(1);
+    expect(rows).toHaveLength(3);
+    expect(rows[0].enabled).toBe(true);
+    expect(rows[1].enabled).toBe(false);
+    expect(rows[2].enabled).toBe(true);
+  });
+
+  it('没有重复时返回 0；空标志不参与判重', () => {
+    const rows = [row({ name: '', flag: '' }), row({ name: '', flag: '' })];
+    expect(normalizeDuplicateRows(rows)).toBe(0);
+    expect(rows.every((item) => item.enabled)).toBe(true);
+  });
+
+  it('已经关掉的重复行不重复计数（幂等）', () => {
+    const rows = [
+      row({ name: '渐进式', flag: '-progressive' }),
+      row({ name: '重复', flag: '-progressive', enabled: false }),
+    ];
+    expect(normalizeDuplicateRows(rows)).toBe(0);
+    expect(normalizeDuplicateRows(rows)).toBe(0);
+  });
+
+  it('归一化后 mergeArgs 不再因历史重复报错（与提交口径对齐）', () => {
+    const rows = [
+      row({ name: '渐进式', flag: '-progressive' }),
+      row({ name: '重复', flag: '-progressive' }),
+    ];
+    normalizeDuplicateRows(rows);
+    expect(mergeArgs([], rows)).toEqual(['-progressive']);
   });
 });
 

@@ -24,6 +24,7 @@ import {
   judgeImageEntry,
   newImageEntry,
   newVariant,
+  normalizeCardRows,
   paramFingerprint,
   planScore,
   planSummary,
@@ -815,6 +816,59 @@ describe('参数变体会话态与复制', () => {
     const other = imageQueueFor('g1', 'r2');
     expect(other.entries).toEqual([]);
     expect(planScore(other.entries, probeOf({})).runImageCount).toBe(0);
+  });
+});
+
+// ---------- 历史重复参数行的加载归一化 ----------
+
+describe('历史重复参数行归一化（进入编辑前修好）', () => {
+  /** 一张带历史重复 -progressive 的编码器卡（旧版本界面能加出这种行）。 */
+  const duplicateCard = (): EncoderCard =>
+    card({
+      rows: [
+        row({ name: '渐进式', flag: '-progressive' }),
+        row({ name: '重复的渐进式', flag: '-progressive' }),
+        row({ name: '平滑', flag: '-smooth', value: '20' }),
+      ],
+    });
+
+  it('normalizeCardRows 保留第一行，把后面的重复行标成不生效（幂等）', () => {
+    const target = duplicateCard();
+    expect(normalizeCardRows(target)).toBe(true);
+    expect(target.rows.map((item) => item.enabled)).toEqual([true, false, true]);
+    // 第二次调用没有可改写的行
+    expect(normalizeCardRows(target)).toBe(false);
+  });
+
+  it('syncEntryReference 同步时就归一化（即使原图路径没变，也返回被改写）', () => {
+    const target = entry({ encoders: [duplicateCard()] });
+    expect(syncEntryReference([target], '/photos/a.png')).toBe(true);
+    expect(target.encoders[0].rows[1]?.enabled).toBe(false);
+  });
+
+  it('imageQueueFor 取变体列表时归一化（弹窗与就地编辑都经这条加载路径）', () => {
+    const session = imageQueueFor('g1', 'r1');
+    // 直接 push 一段历史数据：模拟加载前就存在的重复行
+    session.entries.push(entry({ encoders: [duplicateCard()] }));
+    expect(session.entries[0]?.encoders[0].rows[1]?.enabled).toBe(true);
+
+    const loaded = imageQueueFor('g1', 'r1').entries[0];
+    expect(loaded?.encoders[0].rows[1]?.enabled).toBe(false);
+    expect(loaded?.encoders[0].rows[0]?.enabled).toBe(true);
+  });
+
+  it('归一化只做一次：用户事后重新打开的重复行不会被下一次加载悄悄改回去', () => {
+    const session = imageQueueFor('g1', 'r1');
+    const target = entry({ encoders: [duplicateCard()] });
+    session.entries.push(target);
+    expect(imageQueueFor('g1', 'r1').entries[0]).toBe(target);
+    expect(target.encoders[0].rows[1]?.enabled).toBe(false);
+
+    // 用户明确把重复行重新打开：界面会显示冲突红字，提交时 mergeArgs 仍会报错；
+    // 加载路径不再替他做决定。
+    target.encoders[0].rows[1]!.enabled = true;
+    imageQueueFor('g1', 'r1');
+    expect(target.encoders[0].rows[1]?.enabled).toBe(true);
   });
 });
 

@@ -256,6 +256,159 @@ export function buildEntryArgs(spec: QuickSpec, entry: AdvancedEntry): string[] 
   return mergeArgs(quickBaseArgs(spec, entry.lossless, entry.quality), entry.rows);
 }
 
+// ---------- 参数行的占用 / 重复 / 基础命令行冲突（界面即时提示，与 mergeArgs 同口径） ----------
+//
+// 提交时的权威校验仍是 mergeArgs（核心库 advanced.rs 的 merge_args 人工镜像）：同一
+// 标志词面出现两次就判冲突，未启用的行整体跳过。下面几个纯函数只是把同一套判定提前
+// 到输入时，供界面禁用选项 / 红字说明；不引入后端不认的额外规则（不同写法的同义参数
+// 依旧不判冲突，靠命令行预览自查）。
+
+/**
+ * 基础命令行已经用掉的标志（mergeArgs 里「基础 ↔ 高级」冲突的另一半）。
+ *
+ * 为什么单独抽出来：界面要在用户输入、切换无损之前就禁用或提示，而 merge_args 是
+ * 提交时才抛错的权威校验；两处必须同口径，所以这里只比 trim 后的标志词面是否相同。
+ *
+ * 质量值不参与校验：这里不调 quickBaseArgs 的范围检查——输入中途出现越界值时，
+ * 冲突集合不能整个消失；只要质量模式的命令行会带 qualityFlag，这个标志就算占用。
+ * 无损打开时不追加质量标志（如 webp 的 -q 不参与），但 jxl 的 losslessArgs 自带
+ * -q 100，所以 jxl 无损时 -q 仍算基础标志——与 quickBaseArgs 的实际输出一致。
+ */
+export function baseFlagsOf(
+  spec: QuickSpec | null,
+  entry: Pick<AdvancedEntry, 'lossless'>,
+): string[] {
+  if (!spec) return [];
+  const words = [...spec.baseArgs];
+  if (entry.lossless) {
+    // 不支持无损的编码器在 quickBaseArgs 里会报错、不追加任何参数；这里同样只算 baseArgs
+    if (spec.losslessSupported) words.push(...spec.losslessArgs);
+  } else {
+    words.push(spec.qualityFlag);
+  }
+  const flags: string[] = [];
+  const seen = new Set<string>();
+  for (const word of words) {
+    const flag = word.trim();
+    if (!isFlag(flag) || seen.has(flag)) continue;
+    seen.add(flag);
+    flags.push(flag);
+  }
+  return flags;
+}
+
+/** 推荐参数下拉里某一行可选的项：排除其它行已占用的标志，但保留本行当前标志。
+ *
+ * selfIndex = null 表示卡片顶部的「推荐参数」下拉（不保留任何行的当前标志）。
+ * 保留当前标志是必须的：否则下拉无法回显正在使用的那一项（选项里没有对应 value，
+ * 浏览器会显示成空或第一项，看起来像参数被悄悄换掉了）。
+ */
+export function availableKnownParams(
+  knownParams: readonly KnownParam[],
+  rows: readonly AdvancedParamRow[],
+  selfIndex: number | null,
+): KnownParam[] {
+  const occupied = new Set<string>();
+  rows.forEach((row, index) => {
+    if (index === selfIndex) return;
+    const flag = row.flag.trim();
+    if (flag !== '') occupied.add(flag);
+  });
+  const currentFlag = selfIndex === null ? '' : (rows[selfIndex]?.flag.trim() ?? '');
+  return knownParams.filter((known) => known.flag === currentFlag || !occupied.has(known.flag));
+}
+
+/** 参数行冲突的种类：与其它行重复（同一标志出现两次）或与基础命令行冲突。 */
+export type RowConflictKind = 'duplicate' | 'base';
+
+/** 一行参数与别的命令行内容冲突的说明（界面按 index 分组显示，不自己重拼文案）。 */
+export interface RowConflict {
+  /** 行下标（entry.rows 的下标）。 */
+  index: number;
+  /** trim 后的标志。 */
+  flag: string;
+  kind: RowConflictKind;
+  /** 直接可上屏的简体中文说明。 */
+  message: string;
+}
+
+/**
+ * 算出当前条目所有参数行的冲突（重复 / 与基础命令行冲突）。
+ *
+ * 口径与 mergeArgs 一致：
+ * - 重复：按行序第一次出现的标志算「占用」，后面同标志的行报冲突；这里不看 enabled
+ *   ——重复本身是结构问题，未启用的重复行也应被指出（归一化后它就是「已标为不生效」）；
+ * - 基础命令行冲突：只看启用的行（mergeArgs 跳过未启用行，关掉的行不会真的进命令行，
+ *   报冲突只会让人以为关掉的参数还在生效）；
+ * - 空标志的行（刚添加还没填）不报，留给提交时的「标志无效 / 缺少参数名」校验。
+ *
+ * 同一行可能同时命中原生重复与基础冲突（例如第二行又填了 -quality），两条都会返回，
+ * 界面把它们拼在一起说明，避免用户改完一个又撞上下一个。
+ */
+export function conflictingRows(spec: QuickSpec | null, entry: AdvancedEntry): RowConflict[] {
+  const baseFlags = new Set(baseFlagsOf(spec, entry));
+  const firstIndexByFlag = new Map<string, number>();
+  const conflicts: RowConflict[] = [];
+  entry.rows.forEach((row, index) => {
+    const flag = row.flag.trim();
+    if (flag === '') return;
+    const firstIndex = firstIndexByFlag.get(flag);
+    if (firstIndex !== undefined) {
+      conflicts.push({
+        index,
+        flag,
+        kind: 'duplicate',
+        message: row.enabled
+          ? `与第 ${firstIndex + 1} 行的「${flag}」重复：同一个标志只能出现一次，请改掉本行标志或删除这一行`
+          : `与第 ${firstIndex + 1} 行的「${flag}」重复，本行已标为不生效`,
+      });
+    } else {
+      firstIndexByFlag.set(flag, index);
+    }
+    if (row.enabled && baseFlags.has(flag)) {
+      conflicts.push({
+        index,
+        flag,
+        kind: 'base',
+        message: `与基础命令行冲突：基础参数里已经带了 ${flag}（由模式 / 质量 / 无损开关决定），本行不能再填这个标志`,
+      });
+    }
+  });
+  return conflicts;
+}
+
+/**
+ * 归一化参数行里的重复标志：同一标志只保留第一次出现的行，后面重复的行标成不生效
+ * （enabled = false，不删除）。返回被改写的行数。
+ *
+ * 为什么标成不生效而不是丢掉：丢掉会连用户填的值和说明一起消失，用户只看到「参数没了」
+ * 却不知道原因；标成不生效保留原行与值，界面还能用红字说明「与第 N 行重复」。
+ * mergeArgs 本来就跳过未启用的行，所以标完即可提交，不需要改后端。
+ *
+ * 为什么按行序保留第一行（不看 enabled）：与界面「先出现的赢」的判重复口径一致，结果
+ * 确定、可解释。若按 enabled 挑赢家，历史数据里「第 1 行关着、第 3 行开着」会被判成
+ * 关掉的那行赢，更难解释。重复行被标关后，用户把第 1 行打开即可恢复该参数。
+ *
+ * 只处理非空标志；无效标志（不以 - 开头）留给 mergeArgs 的权威校验报错。
+ */
+export function normalizeDuplicateRows(rows: readonly AdvancedParamRow[]): number {
+  const seen = new Set<string>();
+  let changed = 0;
+  for (const row of rows) {
+    const flag = row.flag.trim();
+    if (flag === '') continue;
+    if (seen.has(flag)) {
+      if (row.enabled) {
+        row.enabled = false;
+        changed += 1;
+      }
+      continue;
+    }
+    seen.add(flag);
+  }
+  return changed;
+}
+
 /**
  * 预览用的宽松合并：跳过没填完/非法的行，不判冲突——预览要能跟着输入即时刷新
  *（半填的参数行不该把整个面板渲染打断），错误由创建时的 mergeArgs 权威报出。

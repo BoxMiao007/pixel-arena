@@ -546,8 +546,17 @@
 }
 
 .enc-card__known {
-  flex: 1 1 8rem;
-  min-width: 6rem;
+  /* 推荐参数名 + 标志必须读全：给它主位，按钮换行也不缩到截断文字 */
+  flex: 1 1 14rem;
+  min-width: 12rem;
+}
+
+/* 基础命令行占用的标志说明：独占一行，随宽度自然换行，不截断 */
+.enc-card__known-note {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
 }
 
 .enc-card__rows {
@@ -556,21 +565,47 @@
   gap: var(--s-1);
 }
 
+/* 一行参数 = 控件行 + 冲突红字（红字不参与横向排布） */
+.enc-row-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .enc-row {
   display: flex;
   align-items: center;
   gap: var(--s-1);
   min-width: 0;
+  /* 窄窗（检视器 328px）下让值控件与操作按钮换到第二行，标志下拉独占一行读全文案 */
+  flex-wrap: wrap;
 }
 
 .enc-row__flag {
-  flex: 0 1 7rem;
-  min-width: 5rem;
+  /* 标志下拉占主位：名字 + 标志是这一行的信息主体，值控件让位。
+   * 16rem 的 flex-basis 让它在宽卡片里伸展、窄卡片里换行后吃满整行。 */
+  flex: 1 1 16rem;
+  min-width: 12rem;
 }
 
 .enc-row .enc-card__value {
-  flex: 1 1 5rem;
-  min-width: 4rem;
+  flex: 0 1 8rem;
+  min-width: 5.5rem;
+  /* 值控件是次要信息：宽屏不抢标志列的空间，窄屏换行后仍有 5.5rem 可读 */
+}
+
+/* 冲突行：红边 + 行下红字（aria-invalid / aria-describedby 由 encoder-card 并行设置） */
+.enc-row--conflict .enc-row__flag {
+  border-color: var(--danger);
+}
+
+.enc-row__issue {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--danger);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .enc-card__preview-row {
@@ -775,5 +810,17 @@
 @media (max-width: 420px) {
   .enc-card__quick {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 检视器 328px 常态：推荐参数下拉与参数行的标志列各占一整行，
+   * 宁可换行也不把「渐进式（-progressive）」截成「渐进式（-prc」。 */
+  .enc-card__known,
+  .enc-row__flag {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .enc-row .enc-card__value {
+    flex: 1 1 8rem;
   }
 }

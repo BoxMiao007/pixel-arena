@@ -16,12 +16,16 @@ import { el } from './dom';
 import { icon } from './icons';
 import { button, iconButton, segmented, switchField } from './primitives';
 import {
+  availableKnownParams,
+  baseFlagsOf,
+  conflictingRows,
   previewImageCommand,
   previewVideoCommand,
   type AdvancedEntry,
   type AdvancedParamRow,
   type ImageSpec,
   type KnownParam,
+  type RowConflict,
   type QuickSpec,
   type VideoSpec,
 } from '../features/encoding/logic/advanced';
@@ -444,29 +448,56 @@ export function renderEncoderCard(
   // 高级参数行（默认收起：条目一多，展开的参数行会把卡撑得很长）
   const rowsBox = el('div', { class: 'enc-card__rows' });
   const knownList = knownParamsOf(catalog, entry);
-  const usedFlags = new Set(entry.rows.map((row) => row.flag.trim()));
-  const available = knownList.filter((known) => !usedFlags.has(known.flag));
+  // 基础命令行占用的标志（由模式 / 质量 / 无损开关决定）：与 mergeArgs 同口径，
+  // 这里提前算出来，让推荐参数下拉直接禁用这些项、自定义行即时红字提示。
+  // 无损开关 / 模式变化会经宿主重建整卡，因此这份集合随控件切换自动更新。
+  const baseFlags = baseFlagsOf(spec, entry);
+  const baseFlagSet = new Set(baseFlags);
+  const baseConflictText = (flag: string): string =>
+    `与基础命令行冲突：基础参数里已经带了 ${flag}（由模式 / 质量 / 无损开关决定）`;
+
+  // 顶部推荐参数下拉只列「还没有被任何行占用」的项；与基础命令行冲突的项仍然列出
+  // 但禁用——用户需要看到它为什么不能选，而不是从列表里莫名消失（原生 option
+  // disabled 是真的不可选，不是只变灰）。
+  const knownOptions = availableKnownParams(knownList, entry.rows, null);
+  const selectableKnown = knownOptions.filter((known) => !baseFlagSet.has(known.flag));
 
   const knownSelect = el('select', {
     class: 'select enc-card__known',
     attrs: { 'aria-label': '推荐参数' },
   }) as HTMLSelectElement;
-  for (const known of available) {
+  for (const known of knownOptions) {
+    const conflict = baseFlagSet.has(known.flag);
     knownSelect.append(
       el('option', {
-        text: `${known.name}（${known.flag}）`,
-        attrs: { value: known.flag, title: known.note },
+        text: conflict
+          ? `${known.name}（${known.flag}）（与基础命令行冲突）`
+          : `${known.name}（${known.flag}）`,
+        attrs: {
+          value: known.flag,
+          title: conflict ? baseConflictText(known.flag) : known.note,
+          disabled: conflict,
+        },
       }),
     );
   }
+  // 默认停在第一个真正能添加的项上，避免「下拉显示一个禁用项、点添加没反应」
+  knownSelect.value = (selectableKnown[0] ?? knownOptions[0])?.flag ?? '';
   const addKnown = button({
     label: '添加推荐参数',
     variant: 'secondary',
     size: 'sm',
-    disabled: available.length === 0,
+    disabled: selectableKnown.length === 0,
+    title:
+      knownOptions.length === 0
+        ? '推荐参数都已经在参数行里了'
+        : selectableKnown.length === 0
+          ? '剩余的推荐参数都与基础命令行冲突：先调整模式或无损开关'
+          : '把选中的推荐参数加成一行（已过滤掉已占用与冲突的项）',
     onClick: () => {
-      const known = available.find((item) => item.flag === knownSelect.value);
-      if (!known) return;
+      const known = knownOptions.find((item) => item.flag === knownSelect.value);
+      // 禁用项在原生下拉里点不到，这里再挡一次：防御程序化改 value 或旧内核仍允许选禁用项
+      if (!known || baseFlagSet.has(known.flag)) return;
       entry.rows.push(rowFromKnown(known));
       callbacks.onChange();
     },
@@ -481,12 +512,24 @@ export function renderEncoderCard(
       callbacks.onChange();
     },
   });
+  // 基础命令行占用的标志始终写清在折叠区里：推荐参数下拉的「（冲突）」与自定义行
+  // 的红字都指回这一句，不让悬浮说明成为唯一出口。
+  const baseNote =
+    baseFlags.length > 0
+      ? el('p', {
+          class: 'enc-card__known-note',
+          text:
+            `基础命令行已带 ${baseFlags.join('、')}（由模式 / 质量 / 无损开关决定）：` +
+            '这些标志不能再作为高级参数添加。',
+        })
+      : null;
   const addRow = el(
     'div',
     { class: 'enc-card__add-row' },
-    available.length > 0 ? knownSelect : el('span', { class: 'enc-card__hint', text: '推荐参数已全部添加' }),
+    knownOptions.length > 0 ? knownSelect : el('span', { class: 'enc-card__hint', text: '推荐参数已全部添加' }),
     addKnown,
     addCustom,
+    baseNote,
   );
 
   const advanced = makeRegion('advanced', '高级参数行', false);
@@ -550,28 +593,89 @@ export function renderEncoderCard(
     return input;
   };
 
+  /** 参数行的冲突视图：输入时只更新红字与 aria，不重建整卡（保住输入焦点）。 */
+  interface RowConflictView {
+    rowEl: HTMLDivElement;
+    flagControl: HTMLElement;
+    issueEl: HTMLParagraphElement;
+    issueId: string;
+  }
+  const conflictViews: RowConflictView[] = [];
+
+  /** 用同一份纯函数刷新所有行的冲突提示（首渲染与输入时的即时提示不两套口径）。 */
+  const applyConflicts = (): void => {
+    const byRow = new Map<number, RowConflict[]>();
+    for (const conflict of conflictingRows(spec, entry)) {
+      const list = byRow.get(conflict.index);
+      if (list) list.push(conflict);
+      else byRow.set(conflict.index, [conflict]);
+    }
+    conflictViews.forEach((view, index) => {
+      const message = (byRow.get(index) ?? []).map((conflict) => conflict.message).join('；');
+      // 文案没变就不重写 textContent：避免输入时 aria 提示被重复播报
+      if (view.issueEl.textContent !== message) view.issueEl.textContent = message;
+      view.issueEl.hidden = message === '';
+      view.rowEl.classList.toggle('enc-row--conflict', message !== '');
+      if (message === '') {
+        view.flagControl.removeAttribute('aria-invalid');
+        view.flagControl.removeAttribute('aria-describedby');
+      } else {
+        // 红字是视觉提示，aria 说明并行给出：读屏用户也要知道这一行为什么不能用
+        view.flagControl.setAttribute('aria-invalid', 'true');
+        view.flagControl.setAttribute('aria-describedby', view.issueId);
+      }
+    });
+  };
+
   entry.rows.forEach((row, rowIndex) => {
     const rowEl = el('div', { class: 'enc-row' });
+    const issueId = `enc-row-issue-${entry.id}-${rowIndex}`;
+    const issueEl = el('p', {
+      class: 'enc-row__issue',
+      attrs: { id: issueId, role: 'alert' },
+    }) as HTMLParagraphElement;
+    issueEl.hidden = true;
+    // 行 + 红字说明作为一个整体参与纵向排布；红字不挤进横向控件行
+    const rowWrap = el('div', { class: 'enc-row-wrap' }, rowEl, issueEl);
+
     // 命令框：命中推荐目录的行走只读下拉（选项来自目录），自定义行走自由文本
     const known = knownList.find((item) => item.flag === row.flag.trim());
+    let flagControl: HTMLElement;
     if (known) {
+      // 其它行已占用的项不再出现在这个下拉里，避免在这里又制造一次重复；本行当前
+      // 标志必须保留（即使被别处占用或与基础参数冲突），否则下拉无法回显当前值。
+      const options = availableKnownParams(knownList, entry.rows, rowIndex);
       const pick = el('select', {
         class: 'select enc-row__flag',
         attrs: { 'aria-label': '推荐参数', title: known.note },
         on: {
           change: () => {
             const next = knownList.find((item) => item.flag === pick.value);
-            if (!next) return;
+            if (!next || baseFlagSet.has(next.flag)) return;
             entry.rows[rowIndex] = rowFromKnown(next);
             callbacks.onChange();
           },
         },
       }) as HTMLSelectElement;
-      for (const item of knownList) {
-        pick.append(el('option', { text: `${item.name}（${item.flag}）`, attrs: { value: item.flag } }));
+      for (const item of options) {
+        const conflict = baseFlagSet.has(item.flag);
+        const self = item.flag === row.flag.trim();
+        pick.append(
+          el('option', {
+            text:
+              conflict && !self
+                ? `${item.name}（${item.flag}）（与基础命令行冲突）`
+                : `${item.name}（${item.flag}）`,
+            attrs: {
+              value: item.flag,
+              title: conflict ? baseConflictText(item.flag) : item.note,
+              disabled: conflict && !self,
+            },
+          }),
+        );
       }
       pick.value = row.flag.trim();
-      rowEl.append(pick);
+      flagControl = pick;
     } else {
       const flagInput = el('input', {
         class: 'input enc-row__flag',
@@ -590,9 +694,13 @@ export function renderEncoderCard(
         row.name = row.flag.trim().replace(/^-+/, '');
         onChangeLive();
       });
-      rowEl.append(flagInput);
+      // 失焦时重建一次：标志变了会影响其它行下拉的可用项，选项列表要跟着刷新；
+      // 输入过程中不重建（否则焦点会丢），只即时更新红字说明。
+      flagInput.addEventListener('change', () => callbacks.onChange());
+      flagControl = flagInput;
     }
     rowEl.append(
+      flagControl,
       valueWidget(row),
       iconButton({
         label: '上移该参数行',
@@ -629,8 +737,10 @@ export function renderEncoderCard(
         },
       }),
     );
-    rowsBox.append(rowEl);
+    conflictViews.push({ rowEl, flagControl, issueEl, issueId });
+    rowsBox.append(rowWrap);
   });
+  applyConflicts();
 
   body.append(advanced.root, preview.root);
 
@@ -660,6 +770,8 @@ export function renderEncoderCard(
   liveCallbacks.push(() => {
     refreshPreview();
     syncSummary();
+    // 自定义行边输入边判重复 / 基础冲突（结构变化另走 onChange 重建，不在这里重建）
+    applyConflicts();
   });
   refreshPreview();
   return card;

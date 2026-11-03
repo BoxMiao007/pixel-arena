@@ -17,7 +17,7 @@
 // 3. **仅会话态**：变体、参数、快照全部活在模块级 Map 里（按组 → 轮两级键控），不写
 //    workspace.json，重启归零（决策 0031：条目 / 参数 / 快照不进工作区格式）。
 
-import { newEntryId, type AdvancedEntry } from './advanced';
+import { newEntryId, normalizeDuplicateRows, type AdvancedEntry } from './advanced';
 
 /** 编码器卡片：直接复用高级创建的条目形状（字段语义见 advanced.ts），不另造一套模型。 */
 export type EncoderCard = AdvancedEntry;
@@ -172,6 +172,15 @@ export interface RoundSummary {
 /** 组 id → 轮 id → 该轮的变体列表（两级键控：关组时整组一次丢弃）。 */
 const queues = new Map<string, Map<string, ImageQueueSession>>();
 
+/** 已归一化过重复参数行的变体：每个变体只归一化一次。
+ *
+ * 为什么不能每次取列表都重做：归一化会把重复行标成不生效，而用户事后可能把某一行的
+ * 开关重新打开来表达「我就要这么填」；如果每次读取都再归一化一遍，用户的动作会被
+ * 悄无声息地改回去，界面还会闪一下。一次性的加载归一化既能修好历史数据，又不和用户
+ * 当前的编辑打架（重复行仍会显示冲突提示，提交时 mergeArgs 照常报错）。
+ */
+const normalizedEntries = new WeakSet<ImageEntry>();
+
 let nextImageId = 1;
 
 /** 生成变体 id（会话内唯一即可）。 */
@@ -179,7 +188,36 @@ export function newImageEntryId(): string {
   return `img-${nextImageId++}`;
 }
 
-/** 取某个评测轮的参数变体列表；首次用到时建空列表。 */
+/**
+ * 归一化一张编码器卡里重复的参数标志（同一标志只保留第一行，后面的标成不生效）。
+ *
+ * 为什么放在 entries 层而不是编辑器里：编辑弹窗和检视器就地编辑是两份渲染入口，
+ * 归一化一旦只做在其中一处，另一处打开时仍会看到重复行。放在「取变体列表」和
+ * 「同步变体」这两条加载路径上，任何读者拿到的都是已经能直接改的干净数据。
+ * 具体判定与「为什么标成不生效而不是删掉」见 advanced.ts 的 normalizeDuplicateRows。
+ */
+export function normalizeCardRows(card: EncoderCard): boolean {
+  return normalizeDuplicateRows(card.rows) > 0;
+}
+
+/** 归一化一个参数变体的全部编码器卡；每个变体只做一次（见 normalizedEntries）。
+ * 返回是否有行被改写。 */
+export function normalizeEntryRows(entry: ImageEntry): boolean {
+  if (normalizedEntries.has(entry)) return false;
+  normalizedEntries.add(entry);
+  let changed = false;
+  for (const card of entry.encoders) {
+    if (normalizeCardRows(card)) changed = true;
+  }
+  return changed;
+}
+
+/**
+ * 取某个评测轮的参数变体列表；首次用到时建空列表。
+ *
+ * 返回前顺手归一化历史重复行：这是「打开编辑前就改好」的加载入口（弹窗与就地编辑
+ * 都经 variantEntries → 这里取数据）。归一化是幂等的，重复调用没有副作用。
+ */
 export function imageQueueFor(groupId: string, roundId: string): ImageQueueSession {
   let rounds = queues.get(groupId);
   if (!rounds) {
@@ -191,6 +229,7 @@ export function imageQueueFor(groupId: string, roundId: string): ImageQueueSessi
     session = { entries: [] };
     rounds.set(roundId, session);
   }
+  for (const entry of session.entries) normalizeEntryRows(entry);
   return session;
 }
 
@@ -268,18 +307,22 @@ export function removeImageEntry(entries: ImageEntry[], imageId: string): ImageE
 }
 
 /**
- * 让变体跟上本轮原图：路径不同即整体作废（快照 / 失败清掉、replaced 置位）。
+ * 让变体跟上本轮原图：路径不同即整体作废（快照 / 失败清掉、replaced 置位）；
+ * 同时归一化历史重复参数行（编辑前修好，而不是等提交时由 mergeArgs 报错）。
  *
  * 为什么必须整体作废：产物是按旧原图编出来的，留在列表里就是「旧图产物 vs 新原图」
  * 的骗人对比；同时后端换原图本身也会清掉已有指标。
- * 返回是否有变体被改写（界面据此重绘）。
+ * 返回是否有变体被改写（含参数行去重改写的行；界面据此重绘）。
  */
 export function syncEntryReference(
   entries: readonly ImageEntry[],
   referencePath: string | null,
 ): boolean {
-  if (referencePath === null || referencePath === '') return false;
   let changed = false;
+  for (const entry of entries) {
+    if (normalizeEntryRows(entry)) changed = true;
+  }
+  if (referencePath === null || referencePath === '') return changed;
   for (const entry of entries) {
     if (entry.path === referencePath) continue;
     replaceImagePath(entry, referencePath);
