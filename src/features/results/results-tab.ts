@@ -5,6 +5,7 @@
 // 表格骨架（表头/行渲染/排序比较）在 ./table.ts，视频域只读复用。
 
 import { formatRatio, formatSize } from '../../core/format';
+import { highlightChips, type HighlightChip } from '../../core/highlight';
 import { formatLabelForPath } from '../../core/format-label';
 import type { CandidateImage, GroupKind, Round } from '../../core/model';
 import { isBusy, isPathRunning } from '../../core/store';
@@ -20,6 +21,8 @@ import { el } from '../../ui/dom';
 import { icon } from '../../ui/icons';
 import { openPopover } from '../../ui/overlay';
 import { button, iconButton } from '../../ui/primitives';
+import { highlightChipList } from '../../ui/highlight-chips';
+import { openImageMenu } from '../../ui/image-menu';
 import { toast } from '../../ui/toast';
 import { requestRender } from '../../shell/controller';
 import type { DockTab, MountedView, ViewCtx } from '../../shell/registry';
@@ -67,7 +70,8 @@ interface ColumnDef {
 }
 
 const COLUMN_WIDTHS = {
-  name: 220,
+  // 220 → 240：带判断徽标的行要在文件名后留出约 60px，别把文件名截成认不出的样子
+  name: 240,
   format: 84,
   fileSize: 96,
   sizeRatio: 88,
@@ -436,6 +440,8 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
     const visible = visibleOptional(round, metricKeys);
     const columns = columnDefs(visible, metricKeys);
     const best = bestValues(round.candidates, metricKeys);
+    // 本轮判断徽标（画质最好 / 体积最小 / 综合最优）：和检视器列表、多视图角标同一份判定。
+    const chips = highlightChips(round.candidates);
     const activePath = getActiveCandidate(roundId);
     const expanded = expandedHolder.value;
     const sort = sortHolder.value;
@@ -452,12 +458,18 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
       // 名次列的第 1 名单独标出来（样式只改数字颜色，不做彩条卡片）。
       className: index === 0 ? 'is-rank-one' : undefined,
       cells: columns.map((column) => {
-        if (column.key === 'name') return nameCell(candidate);
+        if (column.key === 'name') return nameCell(candidate, chips.get(candidate.path));
         if (column.key === 'status') return statusCell(candidate, expanded.has(candidate.path));
         return formatCellFor(candidate, column.key, best);
       }),
       selected: activePath === candidate.path,
       onActivate: () => activate(candidate.path),
+      // 右键图片菜单：另存为 / 打开图片 / 打开文件位置 / 复制路径（与查看器画布同一份）。
+      onContextMenu: (event) => {
+        openImageMenu(event.currentTarget as HTMLElement, candidate.path, {
+          at: { x: event.clientX, y: event.clientY },
+        });
+      },
       detail: expanded.has(candidate.path) ? errorDetail(candidate.error ?? '') : null,
     }));
 
@@ -468,6 +480,13 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
         rankText: '基准',
         className: 'results-table__reference',
         cells: columns.map((column) => referenceCellFor(column.key, round)),
+        onContextMenu: (event) => {
+          const path = round.referencePath;
+          if (path === null) return;
+          openImageMenu(event.currentTarget as HTMLElement, path, {
+            at: { x: event.clientX, y: event.clientY },
+          });
+        },
       });
     }
 
@@ -490,7 +509,7 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
     };
   }
 
-  function nameCell(candidate: CandidateImage): TableCell {
+  function nameCell(candidate: CandidateImage, chips: readonly HighlightChip[] | undefined): TableCell {
     const node = el(
       'button',
       {
@@ -506,7 +525,11 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
       },
       el('span', { class: 'truncate', text: truncateFileName(fileName(candidate.path)) }),
     );
-    return { node };
+    const chipList = highlightChipList(chips);
+    if (!chipList) return { node };
+    // 徽标跟文件名同一格：本轮只有少数几行会拿到帽子，挤占宽度可接受；
+    // 文件名已经自带 truncate，窄列时让位给徽标（完整路径仍在按钮 title 里）。
+    return { node: el('span', { class: 'results-table__name-cell' }, node, chipList) };
   }
 
   function statusCell(candidate: CandidateImage, isExpanded: boolean): TableCell {

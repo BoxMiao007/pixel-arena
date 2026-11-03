@@ -110,6 +110,8 @@ export interface TableRow {
   detail?: HTMLElement | null;
   /** 行点击（键盘走各域自己的按钮，这里只补鼠标增强）。 */
   onActivate?: () => void;
+  /** 行右键（图片菜单等）；给出时由本行接管 contextmenu 的默认行为。 */
+  onContextMenu?: (event: MouseEvent) => void;
 }
 
 export interface TableSpec {
@@ -203,6 +205,13 @@ function buildBody(spec: TableSpec): HTMLTableSectionElement {
     });
     if (row.selected) tr.classList.add('is-selected');
     if (row.onActivate) tr.dataset.activate = '1';
+    if (row.onContextMenu) {
+      const onContextMenu = row.onContextMenu;
+      tr.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        onContextMenu(event);
+      });
+    }
     tr.appendChild(
       el('td', {
         class: 'results-table__rank',

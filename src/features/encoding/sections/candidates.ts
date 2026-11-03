@@ -10,8 +10,11 @@
 // 两类图不做分组隔离：排序、状态口径、移除交互一致；只有参数变体多一枚「高级」角标。
 
 import { badge, button, iconButton, toolbar } from '../../../ui/primitives';
+import { highlightChipList } from '../../../ui/highlight-chips';
+import { openImageMenu } from '../../../ui/image-menu';
 import { el } from '../../../ui/dom';
 import { formatRatio, formatSize } from '../../../core/format';
+import { highlightChips } from '../../../core/highlight';
 import { fileName, truncateFileName } from '../../../core/util';
 import { isBusy, isPathRunning, touch } from '../../../core/store';
 import type { CandidateImage } from '../../../core/model';
@@ -159,6 +162,12 @@ export const candidatesSection: PanelSection = {
         ui.expanded = null;
         closeEditor();
       }
+      // 判断徽标（画质最好 / 体积最小 / 综合最优）：指标跑完就变，必须进 key，
+      // 否则同一批候选图的指标更新不会触发重绘、帽子就停在旧图上了。
+      const chips = highlightChips(round.candidates);
+      const chipKey = [...chips]
+        .map(([path, list]) => `${path}=${list.map((chip) => chip.kind).join(',')}`)
+        .join('|');
       const key = [
         'candidates',
         ctx.round.id,
@@ -168,6 +177,7 @@ export const candidatesSection: PanelSection = {
         runningPaths,
         round.referencePath === null ? 'noref' : 'ref',
         entryKey,
+        chipKey,
       ].join(':');
 
       paintBody(body, key, () => {
@@ -225,7 +235,26 @@ export const candidatesSection: PanelSection = {
           // 已跑分 / 未跑分的图都不再各自复制一份参数（复制来源本身就是猜的）。
           const row = el(
             'div',
-            { class: 'cand__row' },
+            {
+              class: 'cand__row',
+              // 右键图片菜单：另存为 / 打开图片 / 打开文件位置 / 复制路径 + 从本轮移除。
+              // 与查看器画布、结果表同一份实现，磁盘上的文件一律保留（移除只是移出本轮）。
+              on: {
+                contextmenu: (event) => {
+                  event.preventDefault();
+                  openImageMenu(event.currentTarget as HTMLElement, candidate.path, {
+                    at: { x: event.clientX, y: event.clientY },
+                    extra: [
+                      {
+                        label: '从本轮移除这张跑分图',
+                        danger: true,
+                        onSelect: () => void removeCandidateAt(ctx, candidate.path),
+                      },
+                    ],
+                  });
+                },
+              },
+            },
             // 第一行：文件名 + 高级角标 + 右侧状态与移除
             el(
               'div',
@@ -249,6 +278,9 @@ export const candidatesSection: PanelSection = {
             el(
               'div',
               { class: 'cand__metas' },
+              // 判断徽标放在第二行：名字行还要放状态与移除按钮，挤上去会把文件名截得更短；
+              // 第二行本来就短，徽标在这里既醒目又不抢占识别用的文件名。
+              highlightChipList(chips.get(candidate.path)),
               ...metaItems.map((text) => el('span', { class: 'cand__meta', text })),
             ),
           );
