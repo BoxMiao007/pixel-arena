@@ -103,6 +103,13 @@ export const ipc = {
     invoke<ToolStatus[]>('settings_tool_status'),
   aboutInfo: (): Promise<AboutData> => invoke<AboutData>('about_info'),
 
+  // 图片文件操作（查看器 / 检视器列表右键菜单共用）：系统默认程序打开、文件管理器
+  // 定位、逐字节另存。命令名 image_* 就是前后端协议（src-tauri/src/lib.rs）。
+  imageOpenPath: (path: string): Promise<void> => invoke('image_open_path', { path }),
+  imageRevealPath: (path: string): Promise<void> => invoke('image_reveal_path', { path }),
+  imageSaveAs: (source: string, target: string): Promise<string> =>
+    invoke<string>('image_save_as', { source, target }),
+
   ffmpegCheck: (): Promise<FFmpegCheck> => invoke<FFmpegCheck>('ffmpeg_check'),
   ffmpegDownload: (onProgress: (message: string) => void): Promise<string> => {
     const channel = new Channel<string>();

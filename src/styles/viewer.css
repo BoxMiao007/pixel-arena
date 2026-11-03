@@ -430,6 +430,39 @@
   opacity: 0.8;
 }
 
+/* ---- 网格格子右上角的判断徽标（画质最好 / 体积最小 / 综合最优） ----
+ * 胶囊本体复用 ui/highlight-chips 的共享 .pick-chips / .badge（颜色、字号、圆角、
+ * 悬浮说明都在那里，与结果表/侧栏保持一致）；这里只负责「贴在格子右上角」的定位：
+ * 最多两枚竖排堆叠，避开左上角的选图下拉。 */
+.viewer__chips {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  max-width: calc(100% - 12px);
+}
+
+/* 作者样式里的 display:flex 会盖掉浏览器对 [hidden] 的默认隐藏，这里显式补回 */
+.viewer__chips[hidden] {
+  display: none;
+}
+
+/* 格子角窄，共享列表在图像上竖排：两枚徽标不会横向铺满整格 */
+.viewer__chips .pick-chips {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+/* 网格格子的选图按钮给右上角徽标让位：长文件名只在自己的按钮内省略，
+ * 不会伸到角标下面把判断盖住（分屏没有徽标，保持原来的整行宽度）。 */
+.viewer__cell .viewer__picker {
+  max-width: calc(100% - 96px);
+}
+
 /* ---- 每栏/每格的加载/失败/空态 ---- */
 .viewer__pane-status {
   position: absolute;

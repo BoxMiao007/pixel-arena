@@ -5,7 +5,9 @@
 
 import { el } from '../../ui/dom';
 import { icon } from '../../ui/icons';
+import { highlightChipList } from '../../ui/highlight-chips';
 import { spinner } from '../../ui/primitives';
+import type { HighlightChip } from '../../core/highlight';
 import { GRID_MIN_CELL_PX, GRID_MIN_ROW_PX, SPLIT_MIN_PANE_PX } from './layout';
 
 /** 单栏/单格的占位状态（加载中 / 加载失败 / 显式留空）。 */
@@ -40,6 +42,12 @@ export interface ViewerSurface {
   setFocus: (index: number | null) => void;
   /** 占位状态；同状态重复调用不会重建 DOM。 */
   setStatus: (index: number, status: PaneStatus) => void;
+  /**
+   * 网格每格右上角的判断徽标（分屏/单画布没有徽标宿主，调用无副作用）。
+   * 视觉复用 ui/highlight-chips 的共享胶囊，与结果表/侧栏保持同一套；
+   * 内容不变时不重建 DOM，避免悬停/重绘抖动。
+   */
+  setChips: (index: number, chips: readonly HighlightChip[]) => void;
   destroy: () => void;
 }
 
@@ -49,6 +57,8 @@ interface PaneParts {
   picker: HTMLButtonElement | null;
   statusHost: HTMLElement;
   pickerEmpty: boolean;
+  /** 只有网格格子有徽标宿主；分屏/单画布为 null。 */
+  chipHost: HTMLElement | null;
 }
 
 function buildStatusHost(): HTMLElement {
@@ -85,6 +95,30 @@ function buildPicker(onClick: () => void): HTMLButtonElement {
     },
     ...pickerChildren(''),
   ) as HTMLButtonElement;
+}
+
+/** 网格格子右上角的判断徽标容器（初始隐藏；没有徽标时不占位、不吃指针）。 */
+function buildChipHost(): HTMLElement {
+  const host = el('div', { class: 'viewer__chips' });
+  host.hidden = true;
+  return host;
+}
+
+/** 徽标渲染键：内容没变就不重建 DOM（重绘/悬停切换格时不抖动）。 */
+function chipsKey(chips: readonly HighlightChip[]): string {
+  // detail 带具体指标值，指标变了 title 也要跟着变，所以一并进键
+  return chips.map((chip) => `${chip.kind}|${chip.label}|${chip.detail}`).join('\n');
+}
+
+/**
+ * 格角徽标：直接复用 ui/highlight-chips 的共享胶囊（结果表 / 侧栏 / 多视图同一套视觉），
+ * 这里只套一个绝对定位的容器，尺寸与颜色都不在局部重定义。
+ */
+function renderChips(host: HTMLElement, chips: readonly HighlightChip[]): void {
+  const list = highlightChipList(chips, 'sm');
+  if (list) host.replaceChildren(list);
+  else host.replaceChildren();
+  host.hidden = list === null;
 }
 
 /** 把占位状态渲染进容器（只在状态 key 变化时重建）。 */
@@ -155,6 +189,7 @@ function statusKey(status: PaneStatus): string {
 export function mountSurface(options: SurfaceOptions): ViewerSurface {
   const panes: PaneParts[] = [];
   const statusKeys: string[] = [];
+  const chipKeys: string[] = [];
   const cleanups: Array<() => void> = [];
   let root: HTMLElement;
 
@@ -162,7 +197,7 @@ export function mountSurface(options: SurfaceOptions): ViewerSurface {
     const canvas = decorateCanvas(el('canvas', { class: 'viewer__canvas' }));
     const statusHost = buildStatusHost();
     root = el('div', { class: 'viewer__surface viewer__surface--single' }, canvas, statusHost);
-    panes.push({ wrapper: root, canvas, picker: null, statusHost, pickerEmpty: false });
+    panes.push({ wrapper: root, canvas, picker: null, statusHost, pickerEmpty: false, chipHost: null });
   } else if (options.mode === 'split') {
     root = el('div', { class: 'viewer__split' });
     root.style.setProperty('--pane-min', `${SPLIT_MIN_PANE_PX}px`);
@@ -182,7 +217,7 @@ export function mountSurface(options: SurfaceOptions): ViewerSurface {
       wrapper.addEventListener('pointerdown', focus);
       cleanups.push(() => wrapper.removeEventListener('pointerdown', focus));
       root.appendChild(wrapper);
-      panes.push({ wrapper, canvas, picker, statusHost, pickerEmpty: false });
+      panes.push({ wrapper, canvas, picker, statusHost, pickerEmpty: false, chipHost: null });
     }
   } else {
     root = el('div', { class: 'viewer__grid' });
@@ -198,18 +233,22 @@ export function mountSurface(options: SurfaceOptions): ViewerSurface {
       const canvas = decorateCanvas(el('canvas', { class: 'viewer__canvas' }), index === 0);
       const statusHost = buildStatusHost();
       const picker = buildPicker(() => options.onPick(index));
+      // 判断徽标只给网格：分屏是「原图 + 一张张并排」，格子没有更强的归属，
+      // 而多视图每格就是一张跑分图，角标才读得通。
+      const chipHost = buildChipHost();
       const wrapper = el(
         'div',
         { class: 'viewer__pane viewer__cell', dataset: { index: String(index) } },
         canvas,
         picker,
+        chipHost,
         statusHost,
       );
       const focus = (): void => options.onFocus(index);
       wrapper.addEventListener('pointerdown', focus);
       cleanups.push(() => wrapper.removeEventListener('pointerdown', focus));
       root.appendChild(wrapper);
-      panes.push({ wrapper, canvas, picker, statusHost, pickerEmpty: false });
+      panes.push({ wrapper, canvas, picker, statusHost, pickerEmpty: false, chipHost });
     }
   }
 
@@ -250,6 +289,14 @@ export function mountSurface(options: SurfaceOptions): ViewerSurface {
           if (status.kind === 'error') options.onCopy(index, status.path);
         },
       });
+    },
+    setChips: (index, chips) => {
+      const pane = panes[index];
+      if (!pane?.chipHost) return;
+      const key = chipsKey(chips);
+      if (chipKeys[index] === key) return;
+      chipKeys[index] = key;
+      renderChips(pane.chipHost, chips);
     },
     destroy: () => {
       for (const cleanup of cleanups) cleanup();

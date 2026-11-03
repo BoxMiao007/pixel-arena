@@ -32,14 +32,20 @@ export const MODE_META: Record<ViewerMode, ModeMeta> = {
   grid: { label: '多视图', icon: 'grid', description: '多图网格，逐格选图' },
 };
 
-/** 键盘 1–6 与模式条的顺序（设计契约 §3.2）。 */
+/**
+ * 键盘 1–6 与模式条的顺序（设计契约 §3.2）。
+ *
+ * 多视图紧跟分屏：两者都是「多栏/多格并排」的浏览方式，常用性仅次于主力分屏；
+ * 滑动/叠加/差异/闪烁共用同一块单画布，排在后面。数字键、模式条、帮助文案
+ * 全部由本数组派生，改顺序只需动这里。
+ */
 export const MODE_ORDER: readonly ViewerMode[] = [
   'split',
+  'grid',
   'slider',
   'overlay',
   'diff',
   'blink',
-  'grid',
 ];
 
 /** 存储/外部输入 → 合法模式（localStorage 可能留着旧版本或手改的垃圾值）。 */
@@ -102,7 +108,12 @@ export interface ViewerState {
   /** 上一次构建时各栏/各格的默认布局（候选增删后据此让过期的显式选择失效）。 */
   paneDefaults: (string | null)[];
   cellDefaults: (string | null)[];
-  /** 全窗格共享视口；null = 待适配（图片就绪后按窗格尺寸 fit）。 */
+  /**
+   * 全窗格共享视口，中心与倍数都按「锚图」（原图，没有时第一张候选）的图片像素
+   * 绝对口径记录；null = 待适配（图片就绪后按窗格尺寸 fit）。
+   * 网格模式不直接套这份绝对倍数：每格按自己的图片尺寸适配，共享倍数只作为
+   * 「相对适应的倍数」使用（换算见 grid-view.ts），这样各格图像看起来一样大。
+   */
   viewport: { centerX: number; centerY: number; zoom: number } | null;
   /**
    * 用户是否亲手调过缩放/位移（滚轮、拖拽、±、缩放档位、Shift+0）。

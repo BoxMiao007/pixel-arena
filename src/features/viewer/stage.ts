@@ -8,12 +8,14 @@
 
 import { getState } from '../../core/store';
 import { chooseCandidates, chooseReference } from '../../core/actions';
+import { highlightChips, type HighlightChip } from '../../core/highlight';
 import { isProxyFormat } from '../../core/model';
 import { copyText, fileName, truncateFileName } from '../../core/util';
 import { getPref, roundScoped, setPref } from '../../core/ui-state';
 import type { MountedView, ViewCtx } from '../../shell/registry';
 import { el } from '../../ui/dom';
 import { icon } from '../../ui/icons';
+import { openImageMenu } from '../../ui/image-menu';
 import { openMenu, type MenuItem } from '../../ui/overlay';
 import { button, emptyState, spinner } from '../../ui/primitives';
 import { toast } from '../../ui/toast';
@@ -26,6 +28,7 @@ import {
   loadImage,
   panBy,
   prepareCanvas,
+  screenToImage,
   watchSize,
   zoomAt,
   type ImageEntry,
@@ -33,6 +36,7 @@ import {
   type ViewportState,
 } from '../../ui/canvas';
 import { diffCacheKey, diffExceedsLimit, renderDiffCanvas } from './diff';
+import { cellViewport, sharedViewportFromCell } from './grid-view';
 import {
   deltaOf,
   formatProbe,
@@ -156,6 +160,9 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   let fitProbePane: Size | null = null;
   let fitProbeTries = 0;
   let insanePaneTries = 0;
+  // 当前共享视口是按哪张锚图（路径 + 尺寸）适配的。自动模式下锚图换了（原图刚解码完、
+  // 候选曾先就绪）要重新适配，否则网格会按旧锚图口径解释同一份中心/倍数。
+  let fittedAnchorKey = '';
 
   // 差异图：单条缓存 + 计算中标记（不在绘制里同步做重活）
   let diffCache: { key: string; canvas: HTMLCanvasElement } | null = null;
@@ -169,6 +176,12 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   let probeLocked = false;
   let probeSlotIndex = 0;
   let lastProbe: ProbeReading | null = null;
+  // 指针当前所在的栏/格：网格模式用它决定「读哪一格的逐格视口」（缩放读数与比例尺）
+  let hoverIndex: number | null = null;
+
+  // 本轮判断徽标（画质最好 / 体积最小 / 综合最优），路径 → 徽标。
+  // ctx.round 只是挂载快照，指标变化由 update() 用最新一轮重算（见 update 末尾）。
+  let chipsByPath: Map<string, HighlightChip[]> = highlightChips(ctx.round.candidates);
 
   // 舞台容器由外壳提供：补齐「占满 + 可绝对定位」的宿主约束（只在缺类时加，destroy 时还原）
   const hostClassAdded = !host.classList.contains('viewer-host');
@@ -340,8 +353,8 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     let downAt: { x: number; y: number } | null = null;
 
     const recompute = (): void => {
-      const vp = state.viewport;
-      if (!vp || !last) return;
+      const shared = state.viewport;
+      if (!shared || !last) return;
       const rect = canvas.getBoundingClientRect();
       // 单画布模式：有跑分图读跑分图，否则读原图（空白舞台也能探原图）；
       // 分屏/网格：读指针所在栏/格，空格子没有可探的图（不拿原图冒充）
@@ -353,9 +366,16 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
         setProbePoint(null);
         return;
       }
+      // 网格用该格的逐格视口：各格图片尺寸不同，拿共享绝对倍数会把坐标算偏
+      const vp = slotViewport(index, shared);
+      if (!vp) {
+        setProbePoint(null);
+        return;
+      }
+      const pane = paneSizeOf(index) ?? { width: rect.width, height: rect.height };
       const point = pixelAt(
         vp,
-        { width: rect.width, height: rect.height },
+        pane,
         last.x,
         last.y,
         { width: entry.width, height: entry.height },
@@ -367,11 +387,20 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     const onMove = (event: PointerEvent): void => {
       const rect = canvas.getBoundingClientRect();
       last = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      if (hoverIndex !== index) {
+        // 网格的缩放读数/比例尺读「当前格」，指针换格时立即跟着换口径
+        hoverIndex = index;
+        syncToolbar();
+      }
       if (probeLocked) return;
       recompute();
     };
     const onLeave = (): void => {
       last = null;
+      if (hoverIndex === index) {
+        hoverIndex = null;
+        syncToolbar();
+      }
       if (!probeLocked) setProbePoint(null);
     };
     // 滚轮缩放后光标下的像素变了，读数要跟着重算（缩放本身由 attachPanZoom 先处理）
@@ -424,16 +453,93 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   }
 
   // ---------- 视口 ----------
-  const primaryPaneSize = (): Size | null => {
-    const canvas = surface?.canvases[0];
+  /**
+   * 第 index 个画布的 CSS 尺寸（取整口径与 prepareCanvas 一致）。
+   * fit、网格逐格换算、探针、右键命中都用同一份尺寸，避免同一位置在两处差半像素。
+   */
+  function paneSizeOf(index: number): Size | null {
+    const canvas = surface?.canvases[index];
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    // 与 prepareCanvas 同一取整口径：fit 与绘制用同一尺寸，避免半像素级偏心
     const width = Math.round(rect.width);
     const height = Math.round(rect.height);
     if (width < 4 || height < 4) return null;
     return { width, height };
-  };
+  }
+
+  const primaryPaneSize = (): Size | null => paneSizeOf(0);
+
+  /**
+   * 共享视口的锚图：原图优先，没有或尚未就绪时取第一张就绪的图。
+   * 首帧 fit、网格逐格换算、右键命中都以它为「绝对口径」的参照。
+   */
+  function anchorEntry(): { path: string; entry: ImageEntry } | null {
+    const paths: (string | null)[] = [round.reference?.path ?? null];
+    if (isSingleSlotMode(mode)) paths.push(candidatePathOf());
+    else {
+      const count = surface?.canvases.length ?? 1;
+      for (let i = 0; i < count; i++) paths.push(resolveSlot(i));
+    }
+    for (const path of paths) {
+      if (!path) continue;
+      const entry = entryFor(path);
+      if (entry.status === 'ok' && entry.width > 0) return { path, entry };
+    }
+    return null;
+  }
+
+  function firstReadyEntry(): ImageEntry | null {
+    return anchorEntry()?.entry ?? null;
+  }
+
+  /** 锚图身份（路径 + 像素尺寸）：尺寸也参与，换图但尺寸相同就不必重新 fit。 */
+  function anchorKeyOf(anchor: { path: string; entry: ImageEntry }): string {
+    return `${anchor.path}|${anchor.entry.width}x${anchor.entry.height}`;
+  }
+
+  /** 锚图尺寸（网格换算只需要宽高）；没有就绪图片时 null。 */
+  function anchorSize(): Size | null {
+    const anchor = anchorEntry();
+    return anchor ? { width: anchor.entry.width, height: anchor.entry.height } : null;
+  }
+
+  /**
+   * 网格模式：第 index 格实际使用的视口（共享缩放换算成「相对适应的倍数」，见 grid-view.ts）；
+   * 其它模式直接返回共享视口。返回 null 表示这一格还没有可用的图。
+   */
+  function slotViewport(index: number, shared: ViewportState): ViewportState | null {
+    if (mode !== 'grid') return shared;
+    const pane = paneSizeOf(index);
+    const anchor = anchorSize();
+    const path = resolveSlot(index);
+    const entry = path ? entryFor(path) : null;
+    if (!pane || !anchor || !entry || entry.status !== 'ok') return null;
+    if (entry.width <= 0 || entry.height <= 0) return null;
+    return cellViewport(shared, anchor, { width: entry.width, height: entry.height }, pane);
+  }
+
+  /**
+   * 把某一格的视口写回共享状态（滚轮、拖拽、方向键、缩放档位都经这里）。
+   * 非网格模式视口本来就是共享的，直接赋值；网格模式做逆换算，其余格按同一相对倍数跟随。
+   */
+  function writeSlotViewport(index: number, cell: ViewportState): void {
+    if (mode !== 'grid') {
+      state.viewport = cell;
+      return;
+    }
+    const pane = paneSizeOf(index);
+    const anchor = anchorSize();
+    const path = resolveSlot(index);
+    const entry = path ? entryFor(path) : null;
+    if (!pane || !anchor || !entry || entry.status !== 'ok') return;
+    if (entry.width <= 0 || entry.height <= 0) return;
+    state.viewport = sharedViewportFromCell(
+      cell,
+      anchor,
+      { width: entry.width, height: entry.height },
+      pane,
+    );
+  }
 
   /**
    * 窗格尺寸是否已经受舞台约束：刚挂载的那一帧，浏览器可能还没把祖先的网格/弹性
@@ -450,7 +556,21 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
    * 2) 连续两帧量到同一尺寸（挡住布局尚未收敛的首帧）。
    */
   function ensureViewport(): boolean {
-    if (state.viewport) return true;
+    if (state.viewport) {
+      // 自动模式下锚图换了（原图刚解码完、候选曾先就绪）要按新锚图重新适配：
+      // 否则网格会把旧锚图的中心/倍数套到新尺寸上，首屏比例就不对。
+      // 手动视图（用户亲手缩放过）保持不动。
+      if (!state.viewportTouched) {
+        const anchor = anchorEntry();
+        const key = anchor ? anchorKeyOf(anchor) : '';
+        if (key) {
+          // 视口是从上一挂载恢复的：先认下当前锚图，之后这一轮才检测「锚图换了」
+          if (!fittedAnchorKey) fittedAnchorKey = key;
+          else if (key !== fittedAnchorKey) state.viewport = null;
+        }
+      }
+      if (state.viewport) return true;
+    }
     const pane = primaryPaneSize();
     if (!pane) {
       // 窗格还没量出尺寸（隐藏/未布局）：等画布 ResizeObserver 唤醒，不要空转 rAF
@@ -486,23 +606,10 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     fitProbePane = null;
     fitProbeTries = 0;
     state.viewport = fitViewport({ width: entry.width, height: entry.height }, pane);
+    const fitted = anchorEntry();
+    fittedAnchorKey = fitted ? anchorKeyOf(fitted) : '';
     lastFitPane = pane;
     return true;
-  }
-
-  function firstReadyEntry(): ImageEntry | null {
-    const candidates = [round.reference?.path ?? null];
-    if (isSingleSlotMode(mode)) candidates.push(candidatePathOf());
-    else {
-      const count = surface?.canvases.length ?? 1;
-      for (let i = 0; i < count; i++) candidates.push(resolveSlot(i));
-    }
-    for (const path of candidates) {
-      if (!path) continue;
-      const entry = entryFor(path);
-      if (entry.status === 'ok' && entry.width > 0) return entry;
-    }
-    return null;
   }
 
   /** 显式「适应窗口」（0 / 双击 / 适应按钮 / 菜单）：回到自动适配语义。 */
@@ -513,21 +620,47 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   }
 
   function zoomBy(factor: number): void {
-    const vp = state.viewport;
-    const pane = primaryPaneSize();
-    if (!vp || !pane) return;
-    state.viewport = zoomAt(vp, factor, pane.width / 2, pane.height / 2, pane);
+    const shared = state.viewport;
+    if (!shared) return;
+    if (mode === 'grid') {
+      // 网格：在当前格的中心缩放该格，再按同一相对倍数写回共享状态
+      const index = activeSlotIndex();
+      const pane = index === null ? null : paneSizeOf(index);
+      const cell = index === null ? null : slotViewport(index, shared);
+      if (index === null || !pane || !cell) return;
+      writeSlotViewport(index, zoomAt(cell, factor, pane.width / 2, pane.height / 2, pane));
+    } else {
+      const pane = primaryPaneSize();
+      if (!pane) return;
+      state.viewport = zoomAt(shared, factor, pane.width / 2, pane.height / 2, pane);
+    }
     state.viewportTouched = true;
     schedule();
     syncToolbar();
   }
 
+  /**
+   * 缩放到指定倍数（菜单档位 / Shift+0）。
+   * 网格模式落在「当前格」的绝对倍数上，其余格按同一相对倍数跟随：各格按自己的尺寸
+   * 适配，所以 100% 只对当前格精确成立，这是逐格视口口径的必然结果。
+   */
   function zoomTo(zoom: number): void {
+    const shared = state.viewport;
+    if (mode === 'grid') {
+      if (!shared) return;
+      const index = activeSlotIndex();
+      const cell = index === null ? null : slotViewport(index, shared);
+      if (index === null || !cell) return;
+      writeSlotViewport(index, { ...cell, zoom });
+      state.viewportTouched = true;
+      schedule();
+      syncToolbar();
+      return;
+    }
     const entry = referenceEntry() ?? firstReadyEntry();
     if (!entry || entry.status !== 'ok') return;
-    const vp = state.viewport;
-    const center = vp
-      ? { centerX: vp.centerX, centerY: vp.centerY }
+    const center = shared
+      ? { centerX: shared.centerX, centerY: shared.centerY }
       : { centerX: entry.width / 2, centerY: entry.height / 2 };
     state.viewport = { ...center, zoom };
     state.viewportTouched = true;
@@ -589,9 +722,15 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     surface.canvases.forEach((canvas, index) => {
       detachers.push(
         attachPanZoom(canvas, {
-          getViewport: () => state.viewport,
+          // 网格模式下把「该格视口」暴露成画布视口：滚轮锚点/拖拽都在本格坐标系里算，
+          // 再经 setViewport 逆换算写回共享状态，其它格按同一相对倍数跟随。
+          getViewport: () => {
+            const shared = state.viewport;
+            if (!shared) return null;
+            return slotViewport(index, shared);
+          },
           setViewport: (vp) => {
-            state.viewport = vp;
+            writeSlotViewport(index, vp);
           },
           onChange: () => {
             state.viewportTouched = true;
@@ -600,8 +739,9 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
           onReset: resetViewport,
         }),
       );
-      detachers.push(attachCanvasKeys(canvas));
+      detachers.push(attachCanvasKeys(canvas, index));
       detachers.push(attachProbe(canvas, index));
+      detachers.push(attachContextMenu(canvas, index));
       // 逐画布监听：栏/格尺寸真正定下来（或窗口/面板变化）时，自动模式重算 fit。
       // 只监听舞台外层曾在真窗里漏掉「外层不变、内部分栏宽度变化」的情况。
       detachers.push(
@@ -770,7 +910,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   }
 
   // ---------- 键盘：画布聚焦时方向键平移 ----------
-  function attachCanvasKeys(canvas: HTMLCanvasElement): () => void {
+  function attachCanvasKeys(canvas: HTMLCanvasElement, index: number): () => void {
     const onKeyDown = (event: KeyboardEvent): void => {
       const step = event.shiftKey ? 80 : 16;
       const delta =
@@ -784,10 +924,17 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
                 ? { x: 0, y: -step }
                 : null;
       if (!delta) return;
-      const vp = state.viewport;
-      if (!vp) return;
+      const shared = state.viewport;
+      if (!shared) return;
       event.preventDefault();
-      state.viewport = panBy(vp, delta.x, delta.y);
+      if (mode === 'grid') {
+        // 网格：平移「当前格的视口」再写回共享状态，其它格按相对位置跟随
+        const cell = slotViewport(index, shared);
+        if (!cell) return;
+        writeSlotViewport(index, panBy(cell, delta.x, delta.y));
+      } else {
+        state.viewport = panBy(shared, delta.x, delta.y);
+      }
       state.viewportTouched = true;
       schedule();
     };
@@ -893,6 +1040,85 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     openMenuHandle = openMenu(anchor, items, { align: 'start', label: '选择对比图' });
   }
 
+  // ---------- 图片右键菜单 ----------
+  /** 指针是否落在这张图画出来的范围内（与绘制同一视口口径）。 */
+  function pointerOnImage(
+    path: string | null,
+    pane: Size,
+    vp: ViewportState,
+    sx: number,
+    sy: number,
+  ): boolean {
+    if (!path) return false;
+    const entry = entryFor(path);
+    if (entry.status !== 'ok' || entry.width <= 0 || entry.height <= 0) return false;
+    const point = screenToImage(vp, pane, sx, sy);
+    return point.x >= 0 && point.y >= 0 && point.x < entry.width && point.y < entry.height;
+  }
+
+  /**
+   * 单画布的右键目标：取指针下「真正在画」的那张图——滑动看分割线两侧、
+   * 叠加看顶层跑分图、闪烁看当前面、差异回到原图层；只有一侧命中时就用那一侧。
+   * 不这样做会出现「右键原图区域却弹出跑分图菜单」的错位。
+   * 返回真实路径（不是 AVIF/JXL 的 .png 代片）。
+   */
+  function singleContextTarget(
+    pane: Size,
+    vp: ViewportState,
+    sx: number,
+    sy: number,
+  ): string | null {
+    const refPath = round.reference?.path ?? null;
+    const candPath = candidatePathOf();
+    const refHit = pointerOnImage(refPath, pane, vp, sx, sy);
+    const candHit = pointerOnImage(candPath, pane, vp, sx, sy);
+    if (!refHit) return candHit ? candPath : null;
+    if (!candHit) return refPath;
+    if (mode === 'slider') return sx < state.divider * pane.width ? refPath : candPath;
+    if (mode === 'overlay') return candPath;
+    if (mode === 'blink') {
+      const showRef = longPressComparing ? false : state.compare.blinkShowingRef;
+      return showRef ? refPath : candPath;
+    }
+    // diff：原图是底图，差异图是它的派生覆盖，右键语义仍回到原图层
+    return refPath;
+  }
+
+  /**
+   * 图片右键菜单：只在指针确实落在该格画出来的图片上时弹出（空白边距上右键不弹）。
+   * 菜单项与失败提示复用 ui/image-menu（与检视器列表/结果表同一套），按鼠标坐标
+   * （openMenu 的 at 选项）弹出；不改视口状态，因此不会打断左键的拖动平移、
+   * 双击复位、长按看对比图与探针点击。
+   */
+  function attachContextMenu(canvas: HTMLCanvasElement, index: number): () => void {
+    const onContextMenu = (event: MouseEvent): void => {
+      // 画布上的系统右键菜单没有用处，一律拦下；能否弹菜单看下面是否命中图像
+      event.preventDefault();
+      const shared = state.viewport;
+      const pane = paneSizeOf(index);
+      const vp = shared ? slotViewport(index, shared) : null;
+      if (!pane || !vp) return;
+      const rect = canvas.getBoundingClientRect();
+      const sx = event.clientX - rect.left;
+      const sy = event.clientY - rect.top;
+      let path: string | null;
+      if (isSingleSlotMode(mode)) {
+        path = singleContextTarget(pane, vp, sx, sy);
+      } else {
+        // 分屏/网格：右键针对该栏/该格当前显示的图
+        const slotPath = resolveSlot(index);
+        path = pointerOnImage(slotPath, pane, vp, sx, sy) ? slotPath : null;
+      }
+      if (!path) return;
+      openMenuHandle?.close();
+      openMenuHandle = openImageMenu(canvas, path, {
+        at: { x: event.clientX, y: event.clientY },
+      });
+    };
+    canvas.addEventListener('contextmenu', onContextMenu);
+    return () => canvas.removeEventListener('contextmenu', onContextMenu);
+  }
+
   // ---------- 模式切换 ----------
   function setMode(next: ViewerMode): void {
     if (destroyed || next === mode) return;
@@ -905,12 +1131,14 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     setPref('viewerMode', next);
     root.dataset.mode = next;
     focusIndex = null;
+    hoverIndex = null;
     diffStatus = 'idle';
     faceTag = null;
     probePoint = null;
     probeLocked = false;
     // 自动 fit 出来的比例不该带到新窗格（7 栏分屏的 5.69% 挪到滑动会变成一张小图）；
-    // 用户手动缩放/拖过的视图仍然跨模式保留。
+    // 用户手动缩放/拖过的视图仍然跨模式保留。保留时网格按「锚图所在格」的绝对倍数
+    // 对齐，其余格按相对倍数换算（见 grid-view.ts），所以原图那格与分屏里的观感连续。
     if (!state.viewportTouched) state.viewport = null;
     toolbar?.setMode(next);
     toolbar?.buildProps(propsOptions());
@@ -1110,6 +1338,9 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
 
   function drawMulti(vp: ViewportState): void {
     const canvases = surface?.canvases ?? [];
+    // 网格：每格先按自己的图片尺寸适配，共享缩放只作「相对适应的倍数」（grid-view.ts）。
+    // 分屏保持原行为：所有栏套同一份绝对视口（那是用户要求的「同屏同倍率、看裁切差异」）。
+    const anchor = mode === 'grid' ? anchorSize() : null;
     for (let index = 0; index < canvases.length; index++) {
       const prepared = prepareCanvas(canvases[index]!);
       if (!prepared) continue;
@@ -1117,7 +1348,11 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       if (!path) continue;
       const entry = entryFor(path);
       if (entry.status !== 'ok' || !entry.img) continue;
-      drawSource(prepared.ctx, prepared.size, entry.img, entry.width, entry.height, vp);
+      const cellVp =
+        mode === 'grid' && anchor
+          ? cellViewport(vp, anchor, { width: entry.width, height: entry.height }, prepared.size)
+          : vp;
+      drawSource(prepared.ctx, prepared.size, entry.img, entry.width, entry.height, cellVp);
     }
   }
 
@@ -1345,11 +1580,65 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     return `${MODE_META[mode].label}：${name}`;
   }
 
+  /**
+   * 网格读数/操作用的「当前格」：指针所在格 → 聚焦格 → 第一张就绪的格。
+   * 指针停在空格子上时回落到有图的格，避免缩放按钮与读数在一处空位上失效；
+   * 网格没有单一共享绝对倍数，缩放读数、比例尺、缩放按钮都以这一格的逐格视口为准。
+   */
+  function activeSlotIndex(): number | null {
+    if (mode !== 'grid' || !surface) return null;
+    const count = surface.canvases.length;
+    const preferred =
+      hoverIndex !== null && hoverIndex < count
+        ? hoverIndex
+        : focusIndex !== null && focusIndex < count
+          ? focusIndex
+          : null;
+    const candidates: number[] = preferred === null ? [] : [preferred];
+    for (let index = 0; index < count; index += 1) {
+      if (index !== preferred) candidates.push(index);
+    }
+    for (const index of candidates) {
+      const path = resolveSlot(index);
+      if (!path) continue;
+      const entry = entryFor(path);
+      if (entry.status === 'ok' && entry.width > 0) return index;
+    }
+    return preferred;
+  }
+
+  function activeViewport(): ViewportState | null {
+    const shared = state.viewport;
+    if (!shared) return null;
+    if (mode !== 'grid') return shared;
+    const index = activeSlotIndex();
+    return index === null ? null : slotViewport(index, shared);
+  }
+
+  /**
+   * 网格的像素徽标口径：所有已显示的格子都到 1:1 或更高才亮。
+   * 逐格适配下小图默认就会被放大到 100% 以上（这本来就是「看起来一样大」的代价），
+   * 只看当前格会在其它格仍在缩小时误报「按原始像素显示」，所以按全部格子判断。
+   */
+  function gridPixelZoom(): boolean {
+    const shared = state.viewport;
+    if (!surface || !shared) return false;
+    let shown = 0;
+    for (let index = 0; index < surface.canvases.length; index++) {
+      const cell = slotViewport(index, shared);
+      if (!cell) continue;
+      shown += 1;
+      if (!isPixelZoom(cell.zoom)) return false;
+    }
+    return shown > 0;
+  }
+
   function syncToolbar(): void {
     if (!toolbar) return;
-    const vp = state.viewport;
+    // 网格读「当前格」的逐格视口；其它模式就是共享视口
+    const vp = activeViewport();
     toolbar.setZoomEnabled(vp !== null);
-    if (vp) toolbar.setZoom(vp.zoom, isPixelZoom(vp.zoom));
+    if (vp) toolbar.setZoom(vp.zoom, mode === 'grid' ? gridPixelZoom() : isPixelZoom(vp.zoom));
     syncScale(vp);
     // 单槽模式没有每栏/每格的下拉，上下文文字本身就是「换对比图」入口
     toolbar.setContext(
@@ -1362,9 +1651,21 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   /**
    * 比例尺：在 1 / 2 / 5 × 10ⁿ 里挑一条显示宽度最接近 72px 的整数像素长度。
    * 这样任意缩放下刻度都是整数像素，不会出现 137 px 这种没法用的读数。
+   *
+   * 网格模式没有统一的绝对倍数：读数取「当前格」的逐格视口与那张图本身的尺寸
+   * （不同格图尺寸不同，套共享倍率会给出错误数值，所以必须跟着当前格走）。
    */
   function syncScale(vp: ViewportState | null): void {
-    const entry = referenceEntry();
+    let entry: ImageEntry | null = null;
+    let path: string | null = null;
+    if (mode === 'grid') {
+      const index = activeSlotIndex();
+      path = index === null ? null : resolveSlot(index);
+      entry = path ? entryFor(path) : null;
+    } else {
+      entry = referenceEntry();
+      path = round.reference?.path ?? null;
+    }
     if (!vp || !entry || entry.status !== 'ok' || vp.zoom <= 0) {
       scaleBar.hidden = true;
       return;
@@ -1383,8 +1684,21 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     }
     scaleTrack.style.width = `${Math.round(best * vp.zoom)}px`;
     scaleText.textContent = `${Math.round(best)} px`;
-    scaleBar.title = `原图 ${entry.width} × ${entry.height}，当前 ${formatZoomPercent(vp.zoom)}`;
+    const label = mode === 'grid' && path !== round.reference?.path ? '跑分图' : '原图';
+    scaleBar.title = `${label} ${entry.width} × ${entry.height}，当前 ${formatZoomPercent(vp.zoom)}`;
     scaleBar.hidden = false;
+  }
+
+  /**
+   * 网格每格右上角的判断徽标（画质最好 / 体积最小 / 综合最优）。
+   * 分屏与单画布不建徽标宿主，surface 会直接忽略这些调用。
+   */
+  function syncChips(): void {
+    if (!surface || mode !== 'grid') return;
+    for (let index = 0; index < surface.canvases.length; index++) {
+      const path = resolveSlot(index);
+      surface.setChips(index, path ? chipsByPath.get(path) ?? [] : []);
+    }
   }
 
   function syncPickers(): void {
@@ -1407,6 +1721,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   function syncChrome(): void {
     syncToolbar();
     syncPickers();
+    syncChips();
     surface?.setFocus(focusIndex);
   }
 
@@ -1420,7 +1735,8 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     onProbeToggle: () => toggleProbeLock(),
     onPickCandidate: (anchor) => openCandidateMenu(anchor),
     onZoomMenu: (anchor) => {
-      const vp = state.viewport;
+      // 网格读「当前格」的逐格视口（与读数、比例尺同一口径）
+      const vp = activeViewport();
       // 缩放档位是单选（checked → menuitemradio）；「适应窗口」是动作，不带 checked。
       const items: MenuItem[] = ZOOM_PRESETS.map((preset) => ({
         label: preset === 1 ? '100%（1:1）' : `${Math.round(preset * 100)}%`,
@@ -1496,6 +1812,9 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       const group = workspace?.groups.find((item) => item.id === groupId);
       const latest = group?.rounds.find((item) => item.id === roundId);
       if (!latest) return;
+      // 指标变化（跑分完成/清空/失败）会改变判断徽标：先按最新一轮重算，再走既有
+      // update 路径刷新舞台与每格角标（ctx.round 只是挂载时的快照）。
+      chipsByPath = highlightChips(latest.candidates);
       adoptRound(
         buildRound({
           id: latest.id,

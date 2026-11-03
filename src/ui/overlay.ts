@@ -195,11 +195,14 @@ export interface MenuHandle {
   close: () => void;
 }
 
-/** 锚定菜单：在 anchor 下方（空间不足则上方）弹出，方向键导航。 */
+/**
+ * 锚定菜单：在 anchor 下方（空间不足则上方）弹出，方向键导航。
+ * 传入 at 时改按这组视口坐标（鼠标位置）弹出，供画布右键菜单使用。
+ */
 export function openMenu(
   anchor: HTMLElement,
   items: MenuItem[],
-  options: { align?: 'start' | 'end'; label?: string } = {},
+  options: { align?: 'start' | 'end'; label?: string; at?: { x: number; y: number } } = {},
 ): MenuHandle {
   const previousFocus = document.activeElement as HTMLElement | null;
   const menu = el('div', {
@@ -284,13 +287,20 @@ export function openMenu(
   pushStack(entry);
 
   // 定位：优先下方，空间不足翻到上方；start/end 决定水平对齐。
-  const rect = anchor.getBoundingClientRect();
+  // at（鼠标坐标）来自画布右键：菜单左上角落在指针处，再统一钳进视口。
   const menuRect = menu.getBoundingClientRect();
-  const spaceBelow = window.innerHeight - rect.bottom;
-  const above = spaceBelow < menuRect.height + 8 && rect.top > menuRect.height + 8;
-  const top = above ? rect.top - menuRect.height - 4 : rect.bottom + 4;
-  const left =
-    options.align === 'end' ? rect.right - menuRect.width : rect.left;
+  let top: number;
+  let left: number;
+  if (options.at) {
+    top = options.at.y;
+    left = options.at.x;
+  } else {
+    const rect = anchor.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const above = spaceBelow < menuRect.height + 8 && rect.top > menuRect.height + 8;
+    top = above ? rect.top - menuRect.height - 4 : rect.bottom + 4;
+    left = options.align === 'end' ? rect.right - menuRect.width : rect.left;
+  }
   menu.style.setProperty('top', `${Math.max(4, Math.min(top, window.innerHeight - menuRect.height - 4))}px`);
   menu.style.setProperty('left', `${Math.max(4, Math.min(left, window.innerWidth - menuRect.width - 4))}px`);
   menu.focus();

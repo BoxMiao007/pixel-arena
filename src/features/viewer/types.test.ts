@@ -14,8 +14,8 @@ import {
 } from './types';
 
 describe('模式集合', () => {
-  it('键盘 1–6 的顺序是 分屏/滑动/叠加/差异/闪烁/网格', () => {
-    expect(MODE_ORDER).toEqual(['split', 'slider', 'overlay', 'diff', 'blink', 'grid']);
+  it('键盘 1–6 的顺序是 分屏/多视图/滑动/叠加/差异/闪烁（多视图紧跟分屏）', () => {
+    expect(MODE_ORDER).toEqual(['split', 'grid', 'slider', 'overlay', 'diff', 'blink']);
   });
 
   it('每个模式都有标签、图标与说明', () => {
@@ -55,8 +55,11 @@ describe('normalizeMode（外部值 → 合法模式）', () => {
 describe('modeForKey（数字键 → 模式）', () => {
   it('1–6 映射到对应模式', () => {
     expect(modeForKey('1')).toBe('split');
-    expect(modeForKey('3')).toBe('overlay');
-    expect(modeForKey('6')).toBe('grid');
+    expect(modeForKey('2')).toBe('grid');
+    expect(modeForKey('3')).toBe('slider');
+    expect(modeForKey('4')).toBe('overlay');
+    expect(modeForKey('5')).toBe('diff');
+    expect(modeForKey('6')).toBe('blink');
   });
 
   it('越界与非数字键返回 null（不抢其它键）', () => {

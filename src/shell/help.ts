@@ -37,7 +37,7 @@ const GROUPS: ShortcutGroup[] = [
   {
     title: '对比查看器',
     rows: [
-      { keys: ['1…6'], label: '分屏 / 滑动 / 叠加 / 差异 / 闪烁 / 多视图' },
+      { keys: ['1…6'], label: '分屏 / 多视图 / 滑动 / 叠加 / 差异 / 闪烁' },
       { keys: ['空格'], label: '闪烁对比开关' },
       { keys: ['+', '−'], label: '放大 / 缩小' },
       { keys: ['0'], label: '适应窗口' },

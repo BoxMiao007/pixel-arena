@@ -1354,6 +1354,45 @@ fn round_export(
     export_round_file(&ws, &group_id, &round_id, &kind, &path, &generated_at)
 }
 
+/// IPC 命令：用系统默认程序打开一张图片（查看器右键「打开图片」）。
+///
+/// 走 opener 插件而不是前端 `window.open`：用户点的是磁盘上的真实文件，交给系统
+/// 关联程序打开才是桌面语义。路径只来自界面已展示的原图/跑分图路径。
+#[tauri::command]
+fn image_open_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path.clone(), None::<&str>)
+        .map_err(|err| format!("打开 {path} 失败：{err}"))
+}
+
+/// IPC 命令：在系统文件管理器里定位这张图（查看器右键「打开文件位置」）。
+#[tauri::command]
+fn image_reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .reveal_item_in_dir(Path::new(&path))
+        .map_err(|err| format!("定位 {path} 失败：{err}"))
+}
+
+/// IPC 命令：把图片另存到用户选的路径（查看器右键「另存为…」）。
+///
+/// 目标路径来自前端保存对话框；这里只做一次字节拷贝，并核对源文件存在、目标不是
+/// 源文件本身——覆盖已有文件是用户在对话框里已经确认过的选择，不再二次询问。
+#[tauri::command]
+fn image_save_as(source: String, target: String) -> Result<String, String> {
+    let from = Path::new(&source);
+    let to = Path::new(&target);
+    if !from.is_file() {
+        return Err(format!("源文件不存在或不是文件：{source}"));
+    }
+    if from == to {
+        return Err("目标路径与源文件相同，无需另存".to_string());
+    }
+    std::fs::copy(from, to).map_err(|err| format!("另存 {target} 失败：{err}"))?;
+    Ok(target)
+}
+
 /// 评测轮报告导出的实现体（T13）：定位组与轮 → 核心库序列化 → 写文件。
 /// 抽成独立函数是为了不经 Tauri 运行时即可端到端测试（tests/export.rs）。
 pub fn export_round_file(
@@ -1670,6 +1709,10 @@ pub fn run() {
             video_stream_url,
             // T13 报告导出
             round_export,
+            // 查看器右键菜单：系统打开 / 定位文件 / 另存为
+            image_open_path,
+            image_reveal_path,
+            image_save_as,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri 应用启动失败")
