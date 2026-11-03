@@ -1546,13 +1546,16 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
       scaleBar.hidden = true;
       return;
     }
-    const idealPx = 72 / vp.zoom;
+    // 工具条窄时把尺身目标收短，给缩放组留位置；尺身长度仍按 best * zoom
+    // 真实换算（只换选刻度的目标，不截断线条，读数与画面距离保持成比例）。
+    const targetPx = root.clientWidth < 900 ? 48 : 72;
+    const idealPx = targetPx / vp.zoom;
     const magnitude = 10 ** Math.floor(Math.log10(Math.max(idealPx, 1)));
     let best = magnitude;
     let bestGap = Number.POSITIVE_INFINITY;
     for (const multiplier of [1, 2, 5, 10]) {
       const candidate = multiplier * magnitude;
-      const gap = Math.abs(candidate * vp.zoom - 72);
+      const gap = Math.abs(candidate * vp.zoom - targetPx);
       if (gap < bestGap) {
         best = candidate;
         bestGap = gap;

@@ -136,10 +136,16 @@
    3. 模式条文字：<780 退回纯图标（每个图标都有 aria-label 与 title，语义不丢）；
    4. 极窄 <620：工具栏换行成两行，任何控件都不裁切。 */
 @container (max-width: 900px) {
-  /* 这一段仍保留模式文字：先把内边距与滑杆收窄，别急着丢信息 */
+  /* 这一段仍保留模式文字：先把内边距与滑杆收窄，别急着丢信息。
+     差异 / 叠加模式还带参数滑杆，最容易把右侧缩放组挤出工具条边界；
+     收紧这里给缩放组留余量，比例尺的尺身长度仍按真实像素换算。 */
+  .viewer__toolbar {
+    gap: var(--s-1);
+  }
+
   .viewer__modes .segmented__item {
     gap: 4px;
-    padding: 0 6px;
+    padding: 0 4px;
   }
 
   .viewer__props {
@@ -147,8 +153,8 @@
     padding-left: 6px;
   }
 
-  .viewer__props .slider {
-    width: 64px;
+  .viewer__zoom-value {
+    min-width: 48px;
   }
 }
 
@@ -575,7 +581,7 @@
 
 /* 画布右下的比例尺：屏幕上这一段等于多少原始像素。
  * 纯信息提示（读屏由工具栏的缩放档位负责），所以不吃指针事件，也不抢焦点。 */
-/* 比例尺：跟着缩放组放在工具条里，不再压住画面右下角。 */
+/* 比例尺跟着缩放组放在工具条里，不再压住画面右下角。 */
 .viewer__scale-slot {
   display: inline-flex;
   align-items: center;
