@@ -1,22 +1,29 @@
-// 检视器分区「编码阶梯」：一站式两种模式 + 单点模式 + 阶梯预览 + 真实进度。
+// 检视器分区「编码阶梯」：三种互斥方式 + 一张阶梯矩阵 + 一个主按钮。
 //
-// 与旧控件的差别（Phase B）：
-// - 模式用 segmented、质量用 sliderField、目标大小用数字输入 + KB/MB；
-// - 格式与无损组仍是多选胶囊，但「单点模式」与「无损组」降到次级行；
-// - **提交前能看见清单**：真取点后按「格式一行、质量点一排」渲染，可逐点取消；
-// - 一键只生成 + 跑分，进度用真实 N/M（不伪造），失败项就地展开。
+// 设计口径（决策 0042）：
+// - 方式只有三种：单点（每个有损格式压基准这一档）、阶梯（围绕基准取 3 档）、
+//   目标大小（逐格式探测逼近目标，命中点与邻近档一起生成）；不再有独立的单点开关。
+// - 矩阵的 7 行（4 有损 + 3 无损）常驻显示，行首胶囊是唯一勾选控件；格子只读。
+//   未勾选的行灰显而不是消失，随时能勾回来。
+// - 预览与生成共用 buildLadderPreview 的 plan：界面上的项数就是实际生成项数。
+// - 目标大小先「探测」再「生成」，探测结果显示实测字节与命中点；不再隐式探测。
+// - 生成后只跑本次新产物，整轮重算留在「跑分」分区。
 
-import { button, chip, progressBar, segmented, sliderField } from '../../../ui/primitives';
+import { button, chip, emptyState, progressBar, segmented, sliderField } from '../../../ui/primitives';
 import { el } from '../../../ui/dom';
-import { copyText } from '../../../core/util';
+import { formatSize } from '../../../core/format';
+import { errorText, copyText } from '../../../core/util';
 import { isBusy } from '../../../core/store';
-import { runCommand } from '../../../shell/registry';
+import type { BusyEntry } from '../../../core/store';
+import type { Round } from '../../../core/model';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
 import {
-  LOSSLESS_FORMATS,
-  LOSSY_FORMATS,
-  groupLadderByFormat,
-  ladderItemKey,
+  SIZE_SLIDER_STEPS,
+  bytesFromSlider,
+  sliderFromBytes,
+  type LadderCell,
+  type LadderMode,
+  type LadderPreview,
 } from '../logic/ladder';
 import { busyProgressView } from '../logic/progress';
 import {
@@ -24,27 +31,26 @@ import {
   ensureLadderCatalog,
   generateLadder,
   loadLadder,
-  plannedCount,
-  runSizeSearch,
-  sizeLadderPreview,
+  openSettingsPage,
+  probeSize,
+  recheckLadder,
   status,
 } from '../actions';
 import {
-  formatLadderOf,
+  ensureDefaultSelection,
   ladderStateFor,
-  syncLadderKey,
-  toggleLadderItem,
+  previewOf,
+  setBaseline,
+  setLadderMode,
+  setTargetBytes,
+  syncQualityKey,
+  syncReference,
+  syncSizeKey,
   toggleSelectionFormat,
 } from '../session';
-import { busyOf, debounce, liveRoundOf, mountSection, paintBody } from './common';
+import { busyOf, liveRoundOf, mountSection, paintBody } from './common';
 
 const UNIT_BYTES = { KB: 1024, MB: 1024 * 1024 } as const;
-
-/** 目标大小的显示值（单位随 state.unit 切换，真值永远是字节）。 */
-function formatTargetIn(state: { targetBytes: number; unit: 'KB' | 'MB' }): string {
-  const value = state.targetBytes / UNIT_BYTES[state.unit];
-  return Number.isInteger(value) ? String(value) : value.toFixed(2);
-}
 
 /** 从文案里抽出 http(s) 链接（预检结论里带官方发布页）。 */
 function extractUrls(text: string): string[] {
@@ -61,349 +67,499 @@ export const ladderSection: PanelSection = {
     const { body } = mountSection(host, { id: 'ladder', title: '编码阶梯', defaultOpen: false });
     let disposed = false;
 
-    const sizeMode = (): boolean => state.mode === 'size' && !state.singlePoint;
-
     const repaint = (): void => {
       if (!disposed) render();
     };
 
-    // 取点：滑杆停手 200ms 后再打 IPC（拖动期间只更新数值显示）
-    const fetchLadder = debounce(() => {
-      void loadLadder(state).then(repaint);
-    }, 200);
+    /** 同步原图标识与两条缓存轴（渲染与入口动作共用同一套失效规则）。 */
+    const syncAll = (): void => {
+      const round = liveRoundOf(ctx);
+      syncReference(state, round);
+      syncQualityKey(state);
+      syncSizeKey(state);
+    };
 
+    /** 目录就绪后补默认勾选、按需取点；失败留在分区里给重试。 */
     const ensure = async (): Promise<void> => {
       try {
         await ensureLadderCatalog();
       } catch (err) {
-        status(`加载编码器目录失败：${String(err)}`, true);
+        state.ladderError = `加载编码器目录失败：${errorText(err)}`;
+        repaint();
         return;
       }
-      const keyChanged = syncLadderKey(state);
-      if (keyChanged || (state.ladder === null && !sizeMode())) await loadLadder(state);
+      ensureDefaultSelection(state);
+      syncAll();
+      if (
+        state.mode !== 'size' &&
+        state.ladder === null &&
+        !state.ladderLoading &&
+        state.ladderError === null
+      ) {
+        await loadLadder(state);
+      }
       repaint();
     };
 
-    /** 打开设置页（命令由设置域注册；没有就只提示，不假装能跳）。 */
-    const openSettings = async (): Promise<void> => {
-      if (!(await runCommand('open-settings'))) {
-        status('设置入口还没就绪：请从顶栏「设置」打开编码器区指定外部路径', true);
-      }
+    /** 目标大小的精确输入值：真值永远是字节，单位只影响显示。 */
+    const targetInUnit = (): string => {
+      const value = state.targetBytes / UNIT_BYTES[state.unit];
+      if (Number.isInteger(value)) return String(value);
+      return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
     };
 
-    const sizeRow = (): HTMLElement => {
+    /** 单点 / 阶梯的主参数：基准质量。拖动只改读数，松手才取点。 */
+    const qualityParam = (): HTMLElement => {
+      const slider = sliderField({
+        label: '基准质量',
+        min: 0,
+        max: 100,
+        step: 1,
+        value: state.baseline,
+        onInput: (value) => setBaseline(state, value),
+      });
+      slider.input.addEventListener('change', () => {
+        syncQualityKey(state);
+        void ensure();
+        repaint();
+      });
+      return el('div', { class: 'ladder__primary' }, [
+        slider.node,
+        el('p', {
+          class: 'ladder__hint',
+          text: '各格式按自身质量范围映射（JPEG XL 上限 95）',
+        }),
+      ]);
+    };
+
+    /** 目标大小的主参数：对数滑杆粗调 + 精确输入 + KB/MB。 */
+    const sizeParam = (): HTMLElement => {
       const input = el('input', {
         class: 'input ladder__size',
-        attrs: { type: 'number', min: '0', step: 'any', 'aria-label': '目标大小' },
+        attrs: {
+          type: 'number',
+          min: '0',
+          step: 'any',
+          'aria-label': '目标大小（精确值）',
+        },
       }) as HTMLInputElement;
-      input.value = formatTargetIn(state);
-      input.addEventListener('change', () => {
-        const bytes = Math.round(Number(input.value) * UNIT_BYTES[state.unit]);
-        if (Number.isFinite(bytes) && bytes >= 1) {
-          state.targetBytes = bytes;
-          syncLadderKey(state);
-          repaint();
-          return;
-        }
-        // 非法输入不落状态：回显真值并在状态栏说明（输入框旁另有 field__hint）
-        input.value = formatTargetIn(state);
-        status('目标大小无效：请输入大于 0 的数值', true);
-      });
       const unit = el('select', {
         class: 'select ladder__unit',
-        attrs: { 'aria-label': '大小单位' },
+        attrs: { 'aria-label': '目标大小单位' },
       }) as HTMLSelectElement;
       for (const name of ['KB', 'MB'] as const) {
         unit.append(el('option', { text: name, attrs: { value: name } }));
       }
       unit.value = state.unit;
-      unit.addEventListener('change', () => {
-        state.unit = unit.value === 'MB' ? 'MB' : 'KB';
+      const error = el('span', { class: 'field__error' });
+      error.hidden = true;
+
+      const slider = sliderField({
+        label: '目标大小',
+        min: 0,
+        max: SIZE_SLIDER_STEPS,
+        step: 1,
+        value: sliderFromBytes(state.targetBytes),
+        format: (position) => `≈ ${formatSize(bytesFromSlider(position))}`,
+        onInput: (position) => {
+          setTargetBytes(state, bytesFromSlider(position));
+          input.value = targetInUnit();
+        },
+      });
+      input.value = targetInUnit();
+
+      input.addEventListener('change', () => {
+        const raw = Number(input.value);
+        const bytes = Math.round(raw * UNIT_BYTES[state.unit]);
+        if (!Number.isFinite(bytes) || bytes < 1) {
+          error.textContent = '请输入大于 0 的数值';
+          error.hidden = false;
+          input.value = targetInUnit();
+          return;
+        }
+        error.hidden = true;
+        setTargetBytes(state, bytes);
+        slider.setValue(sliderFromBytes(state.targetBytes));
+        input.value = targetInUnit();
         repaint();
       });
+      unit.addEventListener('change', () => {
+        state.unit = unit.value === 'MB' ? 'MB' : 'KB';
+        input.value = targetInUnit();
+        slider.setValue(sliderFromBytes(state.targetBytes));
+        repaint();
+      });
+      slider.input.addEventListener('change', () => {
+        // 松手：目标已在 onInput 落状态并清探测结果，这里只重画清单
+        repaint();
+      });
+
+      return el('div', { class: 'ladder__primary' }, [
+        slider.node,
+        el('div', { class: 'ladder__size-field' }, [
+          el('div', { class: 'ladder__size-row' }, [
+            el('span', { class: 'field__label', text: '精确值' }),
+            input,
+            unit,
+          ]),
+          error,
+        ]),
+      ]);
+    };
+
+    const cellNode = (cell: LadderCell): HTMLElement =>
+      el(
+        'span',
+        {
+          class: `ladder__cell${cell.hit ? ' ladder__cell--hit' : ''}${
+            cell.bytes === null ? '' : ' ladder__cell--sized'
+          }`,
+          title: cell.title,
+        },
+        el('span', { class: 'ladder__cell-q', text: cell.text }),
+        cell.bytes === null
+          ? null
+          : el('span', { class: 'ladder__cell-bytes', text: formatSize(cell.bytes) }),
+      );
+
+    /** 阶梯矩阵：7 行常驻，行首胶囊是唯一勾选控件。 */
+    const buildMatrix = (preview: LadderPreview, busy: boolean): HTMLElement => {
+      if (preview.rows.length === 0) {
+        return emptyState({
+          title: '编码器目录还没就绪',
+          hint: state.ladderError ?? '正在加载编码器目录…',
+          actions: [
+            button({
+              label: '重试',
+              variant: 'secondary',
+              size: 'sm',
+              disabled: busy,
+              onClick: () => {
+                state.ladderError = null;
+                void ensure();
+              },
+            }),
+          ],
+          className: 'ladder__empty',
+        });
+      }
+
+      const matrix = el('div', {
+        class: 'ladder__matrix',
+        attrs: { role: 'group', 'aria-label': '编码格式与档位' },
+      });
+      let losslessTitle = false;
+      for (const row of preview.rows) {
+        if (row.lossless && !losslessTitle) {
+          losslessTitle = true;
+          matrix.append(
+            el('p', { class: 'ladder__group-title', text: '无损对照（默认不选）' }),
+          );
+        }
+        const cells = el('div', { class: 'ladder__cells' });
+        if (row.error !== null) {
+          cells.append(el('span', { class: 'ladder__cell ladder__cell--error', text: '探测失败' }));
+        } else if (row.pending) {
+          cells.append(el('span', { class: 'ladder__cell ladder__cell--muted', text: '待探测' }));
+        } else if (row.cells.length === 0) {
+          const text = !row.selected
+            ? '—'
+            : state.ladderLoading
+              ? '取点中…'
+              : state.ladderError !== null
+                ? '取点失败'
+                : '—';
+          cells.append(el('span', { class: 'ladder__cell ladder__cell--muted', text }));
+        } else {
+          for (const cell of row.cells) cells.append(cellNode(cell));
+        }
+
+        matrix.append(
+          el(
+            'div',
+            {
+              class: `ladder__row${row.selected ? '' : ' is-off'}${
+                row.lossless ? ' is-lossless' : ''
+              }`,
+            },
+            chip({
+              label: row.label,
+              active: row.selected,
+              disabled: busy,
+              title: row.selected ? `取消 ${row.label}` : `选择 ${row.label}`,
+              onClick: () => {
+                toggleSelectionFormat(state, row.lossless ? 'lossless' : 'lossy', row.format);
+                repaint();
+              },
+            }),
+            cells,
+          ),
+        );
+        if (row.note !== null) {
+          matrix.append(el('p', { class: 'ladder__row-note', text: row.note }));
+        }
+        if (row.error !== null) {
+          matrix.append(
+            el('p', { class: 'ladder__row-note ladder__row-note--error', text: row.error }),
+          );
+        }
+      }
+      return matrix;
+    };
+
+    /** 按钮上方的一行事实：下一步是什么、将生成几项。 */
+    const hintOf = (round: Round, preview: LadderPreview): string => {
+      if (round.referencePath === null) return '先选择原图';
+      if (state.ladderError !== null) return state.ladderError;
+      if (preview.rows.length === 0) return '正在加载编码器目录…';
+      if (state.mode !== 'size' && state.ladder === null) return '正在取点…';
+      if (state.mode === 'size') {
+        if (preview.failedFormats.length > 0) {
+          return `${preview.failedFormats.length} 个格式探测失败：可重试或取消勾选`;
+        }
+        if (preview.pendingFormats.length > 0) {
+          return `先探测 ${preview.pendingFormats.length} 个格式的目标大小（探测会真实编码若干次）`;
+        }
+      }
+      if (preview.count === 0) return '先勾选至少一个格式';
+      const extra =
+        preview.existingCount > 0 ? `（${preview.existingCount} 项本轮已有）` : '';
+      return `将生成 ${preview.count} 项${extra}`;
+    };
+
+    const actionsView = (round: Round, preview: LadderPreview, busy: boolean): HTMLElement => {
+      const selectedLossy = state.selection.lossyFormats.length;
+      const needProbe =
+        state.mode === 'size' &&
+        (preview.pendingFormats.length > 0 || preview.failedFormats.length > 0);
+      const probeDisabled = busy || round.referencePath === null || selectedLossy === 0;
+      const generateDisabled =
+        busy ||
+        round.referencePath === null ||
+        preview.count === 0 ||
+        preview.pendingFormats.length > 0 ||
+        preview.failedFormats.length > 0 ||
+        state.ladderError !== null;
+
+      const probeHint =
+        round.referencePath === null
+          ? '先选择原图'
+          : selectedLossy === 0
+            ? '先勾选至少一个有损格式'
+            : '对勾选格式逐个逼近目标大小（探测会真实编码若干次）';
+      const generateHint =
+        round.referencePath === null
+          ? '先选择原图'
+          : preview.pendingFormats.length > 0
+            ? '先探测目标大小'
+            : preview.failedFormats.length > 0
+              ? '先重试探测或取消失败格式'
+              : preview.count === 0
+                ? '先勾选至少一个格式'
+                : `生成 ${preview.count} 项并跑分`;
+
+      const primary = needProbe
+        ? button({
+            label: preview.failedFormats.length > 0 ? '重试探测' : '探测目标大小',
+            variant: 'primary',
+            disabled: probeDisabled,
+            title: probeHint,
+            onClick: () => void probeSize(ctx, state).then(repaint),
+          })
+        : button({
+            label: '生成并跑分',
+            variant: 'primary',
+            disabled: generateDisabled,
+            title: generateHint,
+            onClick: () => void generateLadder(ctx, state).then(repaint),
+          });
+
+      const secondary =
+        state.mode === 'size' && !needProbe && Object.keys(state.sizeOutcomes).length > 0
+          ? button({
+              label: '重新探测',
+              variant: 'secondary',
+              disabled: busy,
+              title: '清空当前探测结果，按目标大小重新逼近',
+              onClick: () => void probeSize(ctx, state, { force: true }).then(repaint),
+            })
+          : state.mode !== 'size' && state.ladderError !== null
+            ? button({
+                label: '重试取点',
+                variant: 'secondary',
+                disabled: busy,
+                onClick: () => {
+                  state.ladderError = null;
+                  void ensure();
+                },
+              })
+            : null;
+
+      return el('div', { class: 'ladder__actions' }, [primary, secondary]);
+    };
+
+    const issueCard = (busy: boolean): HTMLElement | null => {
+      if (state.encoderIssue === null) return null;
+      const urls = extractUrls(state.encoderIssue);
+      return el('div', { class: 'ladder__issue' }, [
+        el('p', { class: 'ladder__issue-text', text: state.encoderIssue.split('\n')[0] }),
+        el('div', { class: 'ladder__issue-actions' }, [
+          button({
+            label: '打开设置',
+            variant: 'secondary',
+            size: 'sm',
+            onClick: () => void openSettingsPage(),
+          }),
+          button({
+            label: '复制发布页链接',
+            variant: 'quiet',
+            size: 'sm',
+            disabled: urls.length === 0,
+            onClick: () => copyText(urls.join('\n'), () => status('已复制发布页链接')),
+          }),
+          button({
+            label: '重新检测',
+            variant: 'quiet',
+            size: 'sm',
+            disabled: busy,
+            onClick: () => void recheckLadder(ctx, state).then(repaint),
+          }),
+        ]),
+      ]);
+    };
+
+    const failuresView = (): HTMLElement | null => {
+      if (state.failures.length === 0) return null;
       return el(
-        'div',
-        { class: 'ladder__size-row' },
-        el('span', { class: 'field__label', text: '目标大小' }),
-        input,
-        unit,
+        'details',
+        { class: 'ladder__failures' },
+        el('summary', {
+          class: 'ladder__summary',
+          text: `${state.failures.length} 项生成失败（展开）`,
+        }),
+        el(
+          'ul',
+          { class: 'ladder__failure-list' },
+          ...state.failures.map((line) => el('li', { class: 'ladder__failure', text: line })),
+        ),
       );
     };
 
-    const render = (): void => {
-      const busy = isBusy();
-      // 同轮内选图只走 update()：ctx 是挂载快照，必须重取活数据（见 common.ts）
-      const round = liveRoundOf(ctx);
-      const ladderBusy = busyOf(busyIdOf('ladder', ctx.round.id));
-      const key = [
+    const progressView = (entry: BusyEntry | undefined): HTMLElement | null => {
+      if (!entry) return null;
+      const progress = progressBar({ label: '生成进度' });
+      const view = busyProgressView(entry);
+      if (view.kind === 'determinate') progress.set(view.completed, view.total, view.label);
+      else progress.setIndeterminate(view.label);
+      return el('div', { class: 'ladder__progress' }, [
+        progress.node,
+        el('p', { class: 'ladder__hint', text: '生成与跑分进行中，完成前无法中止' }),
+      ]);
+    };
+
+    const signatureOf = (
+      busy: boolean,
+      round: Round,
+      preview: LadderPreview,
+      ladderBusy: BusyEntry | undefined,
+    ): string => {
+      const busySig = ladderBusy
+        ? `${ladderBusy.detail}|${ladderBusy.completed ?? ''}|${ladderBusy.total ?? ''}`
+        : '';
+      const sizeSig = Object.entries(state.sizeOutcomes)
+        .map(
+          ([format, outcome]) =>
+            `${format}:${outcome.points
+              .map((point) => `${point.quality}-${point.bytes}`)
+              .join('_')}:${outcome.hitQuality}:${outcome.note ?? ''}`,
+        )
+        .join(',');
+      const sizeErrSig = Object.entries(state.sizeErrors)
+        .map(([format, error]) => `${format}:${error}`)
+        .join(',');
+      return [
         'ladder',
         ctx.round.id,
         state.mode,
-        state.singlePoint ? 'single' : 'multi',
         state.baseline,
         state.targetBytes,
         state.unit,
         state.selection.lossyFormats.join(','),
         state.selection.losslessFormats.join(','),
-        state.excluded.size,
         state.ladder === null ? 'noladder' : 'ladder',
-        Object.keys(state.sizeOutcomes).length,
-        ladderBusy?.detail ?? '',
-        ladderBusy?.completed ?? '',
-        ladderBusy?.total ?? '',
-        state.failures.length,
-        state.encoderIssue === null ? '' : 'issue',
+        state.ladderLoading ? 'loading' : '',
+        state.ladderError ?? '',
+        state.sizeKey,
+        sizeSig,
+        sizeErrSig,
+        preview.count,
+        preview.pendingFormats.join(','),
+        preview.failedFormats.join(','),
+        preview.existingCount,
+        busySig,
+        state.failures.join('|'),
+        state.encoderIssue ?? '',
         busy ? 'busy' : 'idle',
-        round.referencePath === null ? 'noref' : 'ref',
-      ].join(':');
+        round.referencePath ?? '',
+        round.candidates.length,
+      ].join('|');
+    };
 
-      paintBody(body, key, () => {
+    const render = (): void => {
+      const busy = isBusy();
+      const round = liveRoundOf(ctx);
+      syncAll();
+      const preview = previewOf(state, round.candidates);
+      const ladderBusy = busyOf(busyIdOf('ladder', ctx.round.id));
+      paintBody(body, signatureOf(busy, round, preview, ladderBusy), () => {
         const modeControl = segmented({
           items: [
-            { id: 'quality', label: '质量优先', title: '统一基准质量，自动在基准附近取多个点' },
-            { id: 'size', label: '大小优先', title: '输入期望文件大小，每个格式自动逼近' },
+            { id: 'single', label: '单点', title: '每个格式只压基准这一档' },
+            { id: 'ladder', label: '阶梯', title: '每个格式在基准上下各取一档（共 3 档）' },
+            {
+              id: 'size',
+              label: '目标大小',
+              title: '每个格式自动逼近目标大小，命中点与邻近档一起生成',
+            },
           ],
           value: state.mode,
-          ariaLabel: '自动编码模式',
+          ariaLabel: '编码方式',
           size: 'sm',
           onChange: (id) => {
-            if (state.singlePoint) return;
-            state.mode = id === 'size' ? 'size' : 'quality';
-            syncLadderKey(state);
+            setLadderMode(state, id as LadderMode);
+            syncQualityKey(state);
             void ensure();
+            repaint();
           },
         });
 
-        const primaryParam = state.singlePoint
-          ? el('div', { class: 'ladder__locked' }, [
-              el('span', { class: 'ladder__locked-text', text: '单点模式' }),
-              el('span', {
-                class: 'ladder__locked-hint',
-                text: '每个有损格式只压一个质量点；关掉可回到多档取点',
-              }),
-            ])
-          : state.mode === 'quality'
-            ? sliderField({
-                label: '基准质量',
-                min: 0,
-                max: 100,
-                step: 1,
-                value: state.baseline,
-                onInput: (value) => {
-                  state.baseline = value;
-                  syncLadderKey(state);
-                  fetchLadder.run();
-                },
-              }).node
-            : sizeRow();
+        const matrix = buildMatrix(preview, busy);
 
-        const formatChips = el(
-          'div',
-          { class: 'ladder__chips', attrs: { role: 'group', 'aria-label': '编码格式' } },
-          ...LOSSY_FORMATS.map((format) =>
-            chip({
-              label: format.label,
-              active: state.selection.lossyFormats.includes(format.format),
-              disabled: busy,
-              title: state.selection.lossyFormats.includes(format.format)
-                ? `取消 ${format.label}`
-                : `选择 ${format.label}`,
-              onClick: () => {
-                toggleSelectionFormat(state, 'lossy', format.format);
-                repaint();
-              },
-            }),
-          ),
-        );
-
-        const singleToggle = el(
-          'button',
-          {
-            class: `ladder__toggle${state.singlePoint ? ' is-on' : ''}`,
-            attrs: {
-              type: 'button',
-              role: 'switch',
-              'aria-checked': String(state.singlePoint),
-              'aria-label': '单点模式',
-            },
-            on: {
-              click: () => {
-                state.singlePoint = !state.singlePoint;
-                if (state.singlePoint) state.mode = 'quality';
-                syncLadderKey(state);
-                repaint();
-                fetchLadder.run();
-              },
-            },
-          },
+        return el('div', { class: 'ladder' }, [
           el(
-            'span',
-            { class: 'ladder__toggle-track' },
-            el('span', { class: 'ladder__toggle-thumb' }),
-          ),
-          el('span', { text: '单点模式' }),
-        );
-
-        const losslessChips = el(
-          'div',
-          { class: 'ladder__chips', attrs: { role: 'group', 'aria-label': '无损对照组' } },
-          ...LOSSLESS_FORMATS.map((format) =>
-            chip({
-              label: format.label,
-              active: state.selection.losslessFormats.includes(format.format),
-              disabled: busy,
-              title: '无损对照组：像素与原图逐位一致，作为参照',
-              onClick: () => {
-                toggleSelectionFormat(state, 'lossless', format.format);
-                repaint();
-              },
-            }),
-          ),
-        );
-
-        // 预览网格：真取点后按格式分行，逐点可取消
-        const previewLadder =
-          sizeMode() ? sizeLadderPreview(state) : formatLadderOf(state);
-        const rows = groupLadderByFormat(previewLadder);
-        const grid = el('div', { class: 'ladder__grid' });
-        for (const row of rows) {
-          const points = el('div', { class: 'ladder__points' });
-          for (const item of row.items) {
-            const on = !state.excluded.has(ladderItemKey(item));
-            points.append(
-              chip({
-                label: row.lossless ? '对照' : `q${item.quality}`,
-                active: on,
-                disabled: busy,
-                title: row.lossless
-                  ? `${row.label}：无损对照组`
-                  : `${row.label} q${item.quality}${on ? '（点击取消这一档）' : '（点击加回这一档）'}`,
-                onClick: () => {
-                  toggleLadderItem(state, item);
-                  repaint();
-                },
-              }),
-            );
-          }
-          grid.append(
-            el('div', { class: 'ladder__row' }, [
-              el('span', {
-                class: 'ladder__row-label',
-                text: row.lossless ? `${row.label}（无损）` : row.label,
-              }),
-              points,
+            'fieldset',
+            { class: 'ladder__fieldset', attrs: { disabled: busy ? true : null } },
+            el('div', { class: 'ladder__controls' }, [
+              modeControl.node,
+              state.mode === 'size' ? sizeParam() : qualityParam(),
             ]),
-          );
-        }
-
-        const planned = plannedCount(state);
-        const progress = progressBar({ label: '生成进度' });
-        if (ladderBusy) {
-          const view = busyProgressView(ladderBusy);
-          if (view.kind === 'determinate') progress.set(view.completed, view.total, view.label);
-          else progress.setIndeterminate(view.label);
-        }
-
-        const selectedAny =
-          state.selection.lossyFormats.length > 0 || state.selection.losslessFormats.length > 0;
-        const countText = sizeMode()
-          ? !selectedAny
-            ? '还没有选择格式'
-            : Object.keys(state.sizeOutcomes).length === 0
-              ? '先点「搜索目标大小」探一遍（探测编码需要几十秒）'
-              : `将生成 ${planned} 项（含无损对照组）`
-          : state.ladder === null
-            ? '正在取点…'
-            : `将生成 ${planned} 项`;
-
-        const runDisabled = busy || round.referencePath === null || planned === 0;
-
-        return el(
-          'div',
-          { class: 'ladder' },
-          el('div', { class: 'ladder__controls' }, [modeControl.node, primaryParam]),
-          formatChips,
-          el('div', { class: 'ladder__secondary' }, [singleToggle, losslessChips]),
-          el('div', { class: 'ladder__preview' }, [
-            el('div', { class: 'ladder__preview-head' }, [
-              el('span', { class: 'ladder__preview-title', text: '本次清单' }),
-              el('span', { class: 'ladder__preview-count', text: countText }),
-            ]),
-            grid,
-          ]),
-          el('div', { class: 'ladder__actions' }, [
-            button({
-              label: state.singlePoint ? '按单点自动跑分' : '开始自动跑分',
-              variant: 'primary',
-              disabled: runDisabled,
-              title:
-                round.referencePath === null
-                  ? '先选择原图'
-                  : planned === 0
-                    ? '先选择至少一个格式或无损组'
-                    : `生成 ${planned} 份产物并逐张跑分`,
-              onClick: () => void generateLadder(ctx, state),
-            }),
-            sizeMode()
-              ? button({
-                  label:
-                    Object.keys(state.sizeOutcomes).length === 0 ? '搜索目标大小' : '重新搜索',
-                  variant: 'secondary',
-                  disabled: busy || state.selection.lossyFormats.length === 0,
-                  title: '对每个勾选格式逼近目标大小（探测编码在后端完成）',
-                  onClick: () => void runSizeSearch(ctx, state).then(repaint),
-                })
-              : null,
-          ]),
-          ladderBusy ? el('div', { class: 'ladder__progress' }, progress.node) : null,
-          state.encoderIssue
-            ? el('div', { class: 'ladder__issue' }, [
-                el('p', { class: 'ladder__issue-text', text: state.encoderIssue.split('\n')[0] }),
-                el('div', { class: 'ladder__issue-actions' }, [
-                  button({
-                    label: '打开设置',
-                    variant: 'secondary',
-                    size: 'sm',
-                    onClick: () => void openSettings(),
-                  }),
-                  button({
-                    label: '复制发布页链接',
-                    variant: 'quiet',
-                    size: 'sm',
-                    disabled: extractUrls(state.encoderIssue).length === 0,
-                    onClick: () => {
-                      copyText(extractUrls(state.encoderIssue ?? '').join('\n'), () =>
-                        status('已复制发布页链接'),
-                      );
-                    },
-                  }),
-                ]),
-              ])
-            : null,
-          state.failures.length > 0
-            ? el(
-                'details',
-                { class: 'ladder__failures' },
-                el('summary', {
-                  class: 'ladder__summary',
-                  text: `${state.failures.length} 项生成失败（展开）`,
-                }),
-                el(
-                  'ul',
-                  { class: 'ladder__failure-list' },
-                  ...state.failures.map((line) =>
-                    el('li', { class: 'ladder__failure', text: line }),
-                  ),
-                ),
-              )
-            : null,
-          planned > 0 && round.referencePath !== null
+            matrix,
+          ),
+          el('p', { class: 'ladder__hint', text: hintOf(round, preview) }),
+          actionsView(round, preview, busy),
+          progressView(ladderBusy),
+          issueCard(busy),
+          failuresView(),
+          round.referencePath !== null && preview.count > 0
             ? el('p', {
                 class: 'ladder__note',
-                text: `${planned} 份产物写进原图旁的 Pixel Arena 文件夹并纳入本轮`,
+                text:
+                  preview.existingCount > 0
+                    ? '产物写进原图旁的 Pixel Arena 文件夹并纳入本轮；只跑本次新生成的产物。已存在的档位会按冲突策略新增一份。'
+                    : '产物写进原图旁的 Pixel Arena 文件夹并纳入本轮；只跑本次新生成的产物',
               })
             : null,
-        );
+        ]);
       });
     };
 
@@ -416,7 +572,6 @@ export const ladderSection: PanelSection = {
       },
       destroy: () => {
         disposed = true;
-        fetchLadder.cancel();
       },
     };
   },

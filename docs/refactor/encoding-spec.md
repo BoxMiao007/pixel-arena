@@ -11,6 +11,11 @@
 > `src/encoder-card.ts`、`src/image-queue.ts`、`src/image-queue-run.ts`、
 > `src/image-queue-runtime.ts`、`src/image-queue-panel.ts`、`src/image-entry-editor.ts`、
 > `src/conflict.ts`、`src/pills.ts`、`src/style.css`、`src-tauri/src/lib.rs`（只读核对）。
+>
+> **2026-11-03 更新（决策 0042）**：本文件第 1.4 / 1.5 / 3.3 / 4.3 / 6.1 节关于
+> 「质量优先 / 大小优先 + 单点模式 + 逐点取消」的口径已被 `docs/decisions.md` 0042 取代；
+> 编码阶梯现在是「单点 / 阶梯 / 目标大小」三方式 + 单一矩阵 + 显式探测，生成只跑新产物。
+> 其余章节（来源、跑分、参数变体、风险）仍然有效。
 
 ---
 

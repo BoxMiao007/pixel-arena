@@ -59,16 +59,17 @@ import {
   fetchSinglePointLadder,
   runLadder,
   searchSizeFormat,
-  sizeOutcomeLadder,
   type LadderItem,
 } from './logic/ladder';
 import { ipc, jobPayloadOf } from './ipc';
 import { runCommand } from '../../shell/registry';
 import {
-  ladderKeyOf,
-  planItemsOf,
-  sizeSearchComplete,
-  syncLadderKey,
+  previewOf,
+  qualityKeyOf,
+  sizeKeyOf,
+  syncQualityKey,
+  syncReference,
+  syncSizeKey,
   type LadderUiState,
 } from './session';
 import { askConflictDialog } from './overlay/conflict';
@@ -580,7 +581,7 @@ export async function precheckEntries(
   }
 }
 
-// ---------- 一站式：取点与生成 ----------
+// ---------- 一站式：取点、探测与生成 ----------
 
 /** 格式目录只拉一次（onestop_catalog）；失败不缓存，允许重试。 */
 let catalogPromise: Promise<void> | null = null;
@@ -595,123 +596,198 @@ export function ensureLadderCatalog(): Promise<void> {
   return catalogPromise;
 }
 
-/** 取当前参数对应的阶梯（质量优先 / 单点模式）；失败写进状态栏。 */
+/**
+ * 取当前方式对应的阶梯（单点 / 阶梯）；目标大小方式不取质量阶梯。
+ *
+ * 失败写进 state.ladderError 与状态栏，分区给「重试取点」；取点期间参数又变了时
+ * 丢弃过期结果（按质量轴键比对）。
+ */
 export async function loadLadder(state: LadderUiState): Promise<void> {
-  if (state.mode === 'size' && !state.singlePoint) return;
-  const key = ladderKeyOf(state);
+  if (state.mode === 'size' || state.ladderLoading) return;
+  const key = qualityKeyOf(state);
+  if (key === null) return;
+  state.ladderLoading = true;
+  state.ladderError = null;
   try {
-    const items = state.singlePoint
-      ? await fetchSinglePointLadder(state.baseline)
-      : await fetchQualityLadder(state.baseline);
-    // 取点期间用户又拖了拉杆：这份结果已过期，丢弃
-    if (ladderKeyOf(state) !== key) return;
+    const items =
+      state.mode === 'single'
+        ? await fetchSinglePointLadder(state.baseline)
+        : await fetchQualityLadder(state.baseline);
+    if (qualityKeyOf(state) !== key) return;
     state.ladder = items;
     state.ladderKey = key;
   } catch (err) {
+    if (qualityKeyOf(state) === key) state.ladderError = `取点失败：${errorText(err)}`;
     status(`取点失败：${errorText(err)}`, true);
+  } finally {
+    if (qualityKeyOf(state) === key) state.ladderLoading = false;
   }
 }
 
-/** 大小优先：对缺结果的勾选格式逐个逼近搜索（每次调用天然形成进度）。 */
-export async function runSizeSearch(ctx: RoundCtx, state: LadderUiState): Promise<void> {
-  // ctx 是挂载快照，入口先重取（分区按钮点击时同轮数据可能已变）
+/** 选中的格式（不区分质量点），用于编码器预检与「重新检测」。 */
+function selectedLadderItems(state: LadderUiState): LadderItem[] {
+  const items: LadderItem[] = [];
+  for (const format of LOSSY_FORMATS) {
+    if (state.selection.lossyFormats.includes(format.format)) {
+      items.push({ format: format.format, quality: null, label: format.label });
+    }
+  }
+  for (const format of LOSSLESS_FORMATS) {
+    if (state.selection.losslessFormats.includes(format.format)) {
+      items.push({ format: format.format, quality: null, label: format.label });
+    }
+  }
+  return items;
+}
+
+/**
+ * 目标大小方式：对缺结果的勾选格式逐个探测（每次调用天然形成进度）。
+ *
+ * 单格式失败不阻断其余格式：失败原因记进 sizeErrors，分区里可重试或取消勾选；
+ * 有失败格式时生成入口保持禁用（不拿残缺清单开工）。
+ */
+export async function probeSize(
+  ctx: RoundCtx,
+  state: LadderUiState,
+  options: { force?: boolean } = {},
+): Promise<void> {
+  if (isBusy()) return;
   const fresh = findRound(getState().workspace, ctx.group.id, ctx.round.id);
   if (fresh) ctx.round = fresh;
+  syncReference(state, ctx.round);
+  syncSizeKey(state);
   const referencePath = ctx.round.referencePath;
-  if (!referencePath) return;
-  const sizeKey = String(state.targetBytes);
-  if (state.sizeKey !== sizeKey) {
-    state.sizeOutcomes = {};
-    state.sizeKey = sizeKey;
+  if (!referencePath) {
+    status('先选择原图，再探测目标大小', true);
+    return;
+  }
+  if (options.force) {
+    for (const format of LOSSY_FORMATS) {
+      if (!state.selection.lossyFormats.includes(format.format)) continue;
+      delete state.sizeOutcomes[format.format];
+      delete state.sizeErrors[format.format];
+    }
   }
   const targets = LOSSY_FORMATS.filter(
     (format) =>
       state.selection.lossyFormats.includes(format.format) &&
       state.sizeOutcomes[format.format] === undefined,
   );
-  if (targets.length === 0) return;
+  if (targets.length === 0) {
+    status('没有需要探测的格式');
+    return;
+  }
+  const issue = await precheckLadder(
+    targets.map((format) => ({ format: format.format, quality: null, label: format.label })),
+  );
+  state.encoderIssue = issue?.message ?? null;
+  if (issue) {
+    status(issue.message.split('\n')[0], true, issue.message);
+    return;
+  }
   const id = busyIdOf('ladder', ctx.round.id);
-  beginBusy(id, '正在逼近目标大小');
+  const sizeKey = sizeKeyOf(state);
+  beginBusy(id, '正在探测目标大小', targets.map((format) => format.format));
   try {
     for (const [index, format] of targets.entries()) {
-      // 目标在搜索期间被改了：停下，等下一次触发
-      if (String(state.targetBytes) !== sizeKey) break;
+      // 探测期间目标或原图又变了：停下，等下一次触发（旧目标的字节不能落进新目标）
+      if (sizeKeyOf(state) !== sizeKey) break;
       updateBusy(id, {
         completed: index,
         total: targets.length,
         detail: `正在逼近 ${format.label}`,
       });
-      setStatus(`正在搜索 ${format.label} 逼近目标大小…`);
-      state.sizeOutcomes[format.format] = await searchSizeFormat({
-        groupId: ctx.group.id,
-        roundId: ctx.round.id,
-        referencePath,
-        format: format.format,
-        targetBytes: state.targetBytes,
-      });
+      setStatus(`正在探测 ${format.label} 逼近目标大小…`);
+      try {
+        state.sizeOutcomes[format.format] = await searchSizeFormat({
+          groupId: ctx.group.id,
+          roundId: ctx.round.id,
+          referencePath,
+          format: format.format,
+          targetBytes: state.targetBytes,
+        });
+        delete state.sizeErrors[format.format];
+      } catch (err) {
+        state.sizeErrors[format.format] = `探测失败：${errorText(err)}`;
+      }
     }
-  } catch (err) {
-    status(`逼近搜索失败：${errorText(err)}`, true);
   } finally {
     endBusy(id);
   }
+  const failed = targets.filter((format) => state.sizeErrors[format.format] !== undefined);
+  if (failed.length > 0) {
+    status(
+      `目标大小探测：${failed.length} 个格式失败（${failed
+        .map((format) => format.label)
+        .join('、')}）`,
+      true,
+    );
+  } else {
+    status(`目标大小探测完成：${targets.length} 个格式`);
+  }
 }
 
-/** 预演：当前参数下最终会生成几项（「将生成 N 项」的唯一来源）。 */
-export function plannedCount(state: LadderUiState): number {
-  return planItemsOf(state).length;
-}
-
-/** 大小优先已完成搜索的清单（预览网格用；未搜到的格式先不显示）。 */
-export function sizeLadderPreview(state: LadderUiState): LadderItem[] {
-  return LOSSY_FORMATS.filter((f) => state.selection.lossyFormats.includes(f.format)).flatMap(
-    (f) => {
-      const outcome = state.sizeOutcomes[f.format];
-      return outcome ? sizeOutcomeLadder(outcome) : [];
-    },
-  );
+/** 重新检测编码器可用性（问题卡上的动作，不触发编码）。 */
+export async function recheckLadder(ctx: RoundCtx, state: LadderUiState): Promise<void> {
+  const round = findRound(getState().workspace, ctx.group.id, ctx.round.id) ?? ctx.round;
+  const preview = previewOf(state, round.candidates);
+  const items = preview.plan.length > 0 ? preview.plan : selectedLadderItems(state);
+  if (items.length === 0) {
+    status('先勾选至少一个格式，再检测编码器', true);
+    return;
+  }
+  const issue = await precheckLadder(items);
+  state.encoderIssue = issue?.message ?? null;
+  const text = issue ? issue.message.split('\n')[0] : '编码器可用性检测通过';
+  status(text, issue !== null, issue?.message ?? text);
 }
 
 /**
  * 一站式：生成并跑分。
  *
- * 顺序 = 预检编码器 → 逐项 onestop_encode → 产物一次性入轮 → 整轮跑分。
- * 失败不回滚已成功项；失败项留在 state.failures 里由分区就地展开。
+ * 顺序 = 预检编码器 → 逐项 onestop_encode → 产物一次性入轮 → 只对本次新产物跑分。
+ * 不再隐式探测目标大小（有 pending 时拒绝生成，由分区的「探测目标大小」先走一步），
+ * 也不再整轮重算（那是「跑分」分区的职责）。
  */
 export async function generateLadder(ctx: RoundCtx, state: LadderUiState): Promise<void> {
   if (isBusy()) return;
   try {
     await ensureLadderCatalog();
   } catch (err) {
-    status(`加载编码器目录失败：${errorText(err)}`, true);
+    state.ladderError = `加载编码器目录失败：${errorText(err)}`;
+    status(state.ladderError, true);
     return;
   }
   // ctx 是挂载快照，入口先重取（分区按钮点击时同轮数据可能已变）
   const freshRound = findRound(getState().workspace, ctx.group.id, ctx.round.id);
   if (freshRound) ctx.round = freshRound;
+  syncReference(state, ctx.round);
+  syncQualityKey(state);
+  syncSizeKey(state);
   const referencePath = ctx.round.referencePath;
   if (!referencePath) {
-    status('先选择原图，再让工具自动压一套阶梯', true);
+    status('先选择原图，再生成编码阶梯', true);
     return;
   }
-  if (state.mode === 'size' && !state.singlePoint) {
-    if (!Number.isFinite(state.targetBytes) || state.targetBytes < 1) {
-      status('目标大小无效：请输入大于 0 的数值', true);
-      return;
-    }
-    if (!sizeSearchComplete(state)) await runSizeSearch(ctx, state);
-    if (!sizeSearchComplete(state)) {
-      status('逼近搜索没有完成，未生成任何产物', true);
-      return;
-    }
-  } else if (state.ladder === null) {
+  if (state.mode !== 'size' && state.ladder === null) {
     await loadLadder(state);
+    if (state.ladder === null) {
+      status(state.ladderError ?? '取点失败，未生成任何产物', true);
+      return;
+    }
   }
-  syncLadderKey(state);
-
-  const items = planItemsOf(state);
+  const preview = previewOf(state, ctx.round.candidates);
+  if (preview.pendingFormats.length > 0) {
+    status(`先探测目标大小：还差 ${preview.pendingFormats.length} 个格式`, true);
+    return;
+  }
+  if (preview.failedFormats.length > 0) {
+    status(`有 ${preview.failedFormats.length} 个格式探测失败：可重试或取消勾选`, true);
+    return;
+  }
+  const items = preview.plan;
   if (items.length === 0) {
-    status('请先选择至少一个编码格式或无损组', true);
+    status('请先勾选至少一个编码格式或无损组', true);
     return;
   }
   const issue = await precheckLadder(items);
@@ -723,9 +799,7 @@ export async function generateLadder(ctx: RoundCtx, state: LadderUiState): Promi
 
   const id = busyIdOf('ladder', ctx.round.id);
   state.failures = [];
-  beginBusy(id, '正在自动编码', items.map((item) => item.label));
-  // 逐项进度：detail 以「已完成/总数」开头，分区据此画真实 N/M 进度条
-  let started = 0;
+  beginBusy(id, '正在生成编码阶梯', items.map((item) => item.label));
   try {
     const result = await runLadder({
       ladder: items,
@@ -748,44 +822,69 @@ export async function generateLadder(ctx: RoundCtx, state: LadderUiState): Promi
           ),
         );
       },
-      onProgress: (text) => {
-        started += 1;
-        const completed = Math.min(started, items.length);
+      onProgress: (text, completed) => {
         updateBusy(id, { completed, total: items.length, detail: text });
-        setStatus(`${text}（${completed}/${items.length}）`);
+        setStatus(`${text}（${Math.min(completed + 1, items.length)}/${items.length}）`);
       },
       onConflict: askConflictDialog,
     });
 
-    if (state.mode === 'size' && !state.singlePoint) {
+    if (state.mode === 'size') {
       await applySizeNotes(ctx, state, result.products);
     }
     state.failures = result.failures;
-
     if (result.generated === 0) {
-      status(`自动编码全部失败：${result.failures.join('；') || '未知原因'}`, true);
+      status(`生成全部失败：${result.failures.join('；') || '未知原因'}`, true);
       return;
     }
-    // 产物已在轮里：整轮跑分（与手动入口同一份实现）
-    const fresh = findRound(getState().workspace, ctx.group.id, ctx.round.id);
-    if (fresh) ctx.round = fresh;
-    const ok = await runFullScore(ctx);
-    if (ok && result.failures.length > 0) {
+
+    updateBusy(id, { completed: items.length, total: items.length, detail: '生成完成，准备跑分' });
+    const paths = result.products.map((product) => product.path);
+    updateBusy(id, {
+      completed: 0,
+      total: paths.length,
+      detail: '正在跑分新产物',
+      running: paths,
+    });
+    try {
+      setWorkspace(
+        await coreIpc.roundScoreCandidates({
+          groupId: ctx.group.id,
+          roundId: ctx.round.id,
+          paths,
+          onProgress: (progress) => {
+            updateBusy(id, {
+              completed: progress.completed,
+              total: progress.total,
+              detail: '正在跑分新产物',
+            });
+            setStatus(`跑分中 ${progress.completed}/${progress.total}`);
+          },
+        }),
+      );
+    } catch (err) {
+      status(`已生成 ${result.generated} 项，但跑分失败：${errorText(err)}`, true);
+      return;
+    }
+
+    if (result.failures.length > 0) {
       status(
-        `跑分完成；${result.failures.length} 项生成失败（清单见编码阶梯分区）`,
+        `已生成 ${result.generated} 项并跑分；${result.failures.length} 项生成失败（清单见编码阶梯分区）`,
         true,
         result.failures.join('\n'),
       );
+    } else {
+      status(`已生成 ${result.generated} 项并跑分`);
     }
   } catch (err) {
-    status(`自动编码失败：${errorText(err)}`, true);
+    status(`生成编码阶梯失败：${errorText(err)}`, true);
   } finally {
     endBusy(id);
   }
 }
 
 /**
- * 大小优先的不可达标注：逐产物串行写 note，**最后一次回包才刷新界面**。
+ * 目标大小方式的不可达标注：逐产物串行写 note，**最后一次回包才刷新界面**。
  *
  * 每写一条后端都回整份工作区；串行 + 只刷新一次，避免长任务期间界面被回包刷屏。
  */
@@ -805,11 +904,4 @@ async function applySizeNotes(
     }
   }
   if (last) setWorkspace(last);
-}
-
-/** 勾选的无损组显示名（预览网格的无损行用）。 */
-export function selectedLosslessLabels(state: LadderUiState): string[] {
-  return LOSSLESS_FORMATS.filter((f) => state.selection.losslessFormats.includes(f.format)).map(
-    (f) => f.label,
-  );
 }

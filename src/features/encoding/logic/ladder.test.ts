@@ -1,5 +1,5 @@
 // 一站式（T22 两种模式）的前端接线测试：mock IPC 命令，验证目录加载、核心库取点
-// 的过滤、大小优先搜索结果展开成生成清单——只测纯逻辑，不测 DOM（规格 Testing Decisions）。
+// 的过滤、目标大小方式搜索结果展开成生成清单——只测纯逻辑，不测 DOM（规格 Testing Decisions）。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -76,8 +76,13 @@ describe('onestop 目录与阶梯（T22）', () => {
     expect(LOSSY_FORMATS.map((f) => f.format)).toEqual(['jpeg', 'webp', 'avif', 'jxl']);
     expect(LOSSLESS_FORMATS.map((f) => f.format)).toEqual(['png', 'webp-lossless', 'jxl-lossless']);
 
-    // 默认全选：核心库阶梯原样通过（15 项，与 quality_ladder(75) 一致）
-    expect(filterLadder(fullLadder, defaultSelection())).toEqual(fullLadder);
+    // 默认勾选（决策 0042）：有损四项全选、无损三项不选
+    const selection = defaultSelection();
+    expect(selection.lossyFormats).toEqual(['jpeg', 'webp', 'avif', 'jxl']);
+    expect(selection.losslessFormats).toEqual([]);
+    const defaultPlan = filterLadder(fullLadder, selection);
+    expect(defaultPlan).toHaveLength(12);
+    expect(defaultPlan.every((item) => item.quality !== null)).toBe(true);
   });
 
   it('filterLadder：按格式勾选过滤有损项与无损项，顺序保持', () => {
@@ -100,14 +105,17 @@ describe('onestop 目录与阶梯（T22）', () => {
     });
   });
 
-  it('losslessLadder：大小优先的无损对照组按勾选原样入清单（不参与搜索）', () => {
+  it('losslessLadder：目标大小方式的无损对照组按勾选原样入清单（不参与搜索）', () => {
     invokeMock.mockResolvedValue(catalog);
     return initOnestopCatalog().then(() => {
-      expect(losslessLadder(defaultSelection())).toEqual([
+      const allLossless = { lossyFormats: [], losslessFormats: ['png', 'webp-lossless', 'jxl-lossless'] };
+      expect(losslessLadder(allLossless)).toEqual([
         { format: 'png', quality: null, label: 'PNG' },
         { format: 'webp-lossless', quality: null, label: '无损 WebP' },
         { format: 'jxl-lossless', quality: null, label: '无损 JXL' },
       ]);
+      // 默认不选无损组
+      expect(losslessLadder(defaultSelection())).toEqual([]);
       expect(
         losslessLadder({ lossyFormats: [], losslessFormats: ['jxl-lossless'] }),
       ).toEqual([{ format: 'jxl-lossless', quality: null, label: '无损 JXL' }]);

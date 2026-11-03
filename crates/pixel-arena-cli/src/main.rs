@@ -59,12 +59,12 @@ enum Command {
         #[arg(long, value_name = "FORMAT", num_args = 0..)]
         lossless: Option<Vec<String>>,
 
-        /// 基准质量（0–100，质量优先模式）：在基准附近自动取点，每个有损格式至少
+        /// 基准质量（0–100，质量阶梯方式）：在基准附近自动取点，每个有损格式至少
         /// 3 个质量点 + 无损对照组；不传时基准取 75（输出与默认阶梯完全一致）。
         #[arg(long, value_name = "Q", conflicts_with_all = ["qualities", "target_size"])]
         baseline_quality: Option<u8>,
 
-        /// 目标大小（KB，大小优先模式）：每个有损格式自动搜索逼近该大小，
+        /// 目标大小（KB，目标大小方式）：每个有损格式自动搜索逼近该大小，
         /// 不可达时取最接近点并在 note 列标注；无损对照组照常生成。
         #[arg(long, value_name = "KB", conflicts_with_all = ["qualities"])]
         target_size: Option<u64>,
@@ -431,11 +431,11 @@ fn write_html(rows: &[ScoreRow]) {
 /// 阶梯模式（T21 单源化）：取点逻辑全部来自核心库 ladder 模块，CLI 只做参数收窄与编排。
 /// 互斥组合已由 clap 拒绝（退出码 2），这里只做剩余取值校验。
 enum LadderMode {
-    /// 质量优先：统一基准 0–100 自动取点（默认 75，输出与现行默认阶梯完全一致）。
+    /// 质量阶梯：统一基准 0–100 自动取点（默认 75，输出与现行默认阶梯完全一致）。
     Baseline(u8),
     /// 显式质量枚举（--qualities，既有行为：只生成列出的档位，不做自动取点）。
     Explicit(Vec<u8>),
-    /// 大小优先：目标字节数（--target-size，KB × 1024）。
+    /// 目标大小：目标字节数（--target-size，KB × 1024）。
     TargetSize(u64),
 }
 
@@ -456,7 +456,7 @@ fn resolve_ladder_mode(
     }
     match qualities {
         Some(list) => Ok(LadderMode::Explicit(parse_quality_list(&list)?)),
-        // 默认 = 质量优先基准 75（核心库取点与决策 0003 的 60/75/90 完全一致）
+        // 默认 = 质量阶梯基准 75（核心库取点与决策 0003 的 60/75/90 完全一致）
         None => Ok(LadderMode::Baseline(75)),
     }
 }
@@ -517,7 +517,7 @@ fn build_run_ladder(
 
     match mode {
         LadderMode::Baseline(baseline) => {
-            // 单一来源：核心库质量优先取点（基准 75 = 决策 0003 默认阶梯），按收窄参数过滤。
+            // 单一来源：核心库质量阶梯取点（基准 75 = 决策 0003 默认阶梯），按收窄参数过滤。
             // 只保有损项——无损对照组由下方公共循环统一追加，避免重复。
             for item in quality_ladder(*baseline).map_err(|error| error.to_string())? {
                 let keep = match item.quality {
@@ -538,8 +538,8 @@ fn build_run_ladder(
             }
         }
         LadderMode::TargetSize(target_bytes) => {
-            // 大小优先（US21-23）：每格式自动搜索逼近目标；探测产物落暂存目录即弃
-            eprintln!("大小优先模式：目标 {} 字节", target_bytes);
+            // 目标大小（US21-23）：每格式自动搜索逼近目标；探测产物落暂存目录即弃
+            eprintln!("目标大小模式：目标 {} 字节", target_bytes);
             let scratch = tempfile::tempdir()
                 .map_err(|error| format!("无法创建探测暂存目录：{error}"))?;
             for format in lossy_sel {
@@ -576,7 +576,7 @@ fn build_run_ladder(
         }
     }
 
-    // 无损对照组：三种模式一致（大小优先下无损产物大小固定，不参与搜索）
+    // 无损对照组：三种模式一致（目标大小下无损产物大小固定，不参与搜索）
     for format in lossless_sel {
         ladder.push(LadderItem::new(*format, None));
     }
@@ -602,7 +602,7 @@ struct RunRow {
     reference_bytes: u64,
     candidate_bytes: u64,
     size_ratio: f64,
-    /// 大小优先模式的不可达标注（US22：不可达时结果不骗人）；其余模式为 None。
+    /// 目标大小模式的不可达标注（US22：不可达时结果不骗人）；其余模式为 None。
     note: Option<String>,
 }
 
@@ -648,10 +648,10 @@ struct RunArgs {
     concurrency: Option<usize>,
 }
 
-/// [`build_run_ladder`] 的返回（阶梯 + 大小优先标注 + 失败标记，不再走三元组）。
+/// [`build_run_ladder`] 的返回（阶梯 + 目标大小标注 + 失败标记，不再走三元组）。
 struct BuiltLadder {
     items: Vec<LadderItem>,
-    /// 大小优先不可达标注：格式 → 文本（与 CLI note 列同源）。
+    /// 目标大小不可达标注：格式 → 文本（与 CLI note 列同源）。
     notes: std::collections::HashMap<String, String>,
     any_failed: bool,
 }
@@ -714,7 +714,7 @@ fn run_run(args: RunArgs) -> ExitCode {
         }
     }
 
-    // 阶梯构建：大小优先模式在此完成逼近搜索（探测 = 真实编码，标注/失败在此结算）
+    // 阶梯构建：目标大小模式在此完成逼近搜索（探测 = 真实编码，标注/失败在此结算）
     let BuiltLadder {
         items: ladder,
         notes,
@@ -868,7 +868,7 @@ fn run_quality_text(quality: Option<u8>) -> String {
 }
 
 /// run 结果的 CSV 输出：列 = score 现有列序 + format/quality 两列（插在 candidate 之后）。
-/// 大小优先模式（size_mode）追加尾随 note 列（不可达标注，可达行为空）；
+/// 目标大小模式（size_mode）追加尾随 note 列（不可达标注，可达行为空）；
 /// 其余模式保持既有列序不变。
 fn write_run_csv(rows: &[RunRow], size_mode: bool) {
     // 与 score 的 CSV 同约定：UTF-8 BOM 开头（票 18，见 write_csv 注释）
@@ -904,7 +904,7 @@ fn write_run_csv(rows: &[RunRow], size_mode: bool) {
 
 /// run 结果的 JSON 输出：字段名与 CSV 表头一致；quality 无损组为 null；
 /// 指标无穷大写作字符串 "inf"、NaN 写作 "nan"（哨兵与 score 子命令一致）。
-/// 大小优先模式追加 note 字段（不可达标注，可达为 null）；其余模式无该字段。
+/// 目标大小模式追加 note 字段（不可达标注，可达为 null）；其余模式无该字段。
 fn write_run_json(rows: &[RunRow], size_mode: bool) {
     let items: Vec<serde_json::Value> = rows
         .iter()
@@ -942,7 +942,7 @@ fn write_run_json(rows: &[RunRow], size_mode: bool) {
 
 /// run 结果的 HTML 输出：score 同款自包含中文报告，另加格式/质量两列
 /// （质量无损组显示「无损」，CSV/JSON 里是 lossless/null）。
-/// 大小优先模式追加「备注」列（不可达标注）；其余模式保持既有列不变。
+/// 目标大小模式追加「备注」列（不可达标注）；其余模式保持既有列不变。
 fn write_run_html(rows: &[RunRow], size_mode: bool) {
     let generated_at = utc_now_text();
     let note_header = if size_mode { "<th>备注</th>" } else { "" };

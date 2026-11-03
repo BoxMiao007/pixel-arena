@@ -30,7 +30,7 @@ export interface LadderItemDto {
   label: string;
 }
 
-/** 大小优先的单点（质量 + 探测到的实际产物大小）。 */
+/** 目标大小方式的单点（质量 + 探测到的实际产物大小）。 */
 export interface SizePoint {
   quality: number;
   bytes: number;

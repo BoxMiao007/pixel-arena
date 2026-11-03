@@ -205,7 +205,7 @@ function columnDefs(visible: Set<string>, metricKeys: readonly string[]): Column
     defs.push({
       key: 'note',
       label: '备注',
-      title: '大小优先模式的不可达标注',
+      title: '目标大小方式的不可达标注',
       align: 'start',
       width: COLUMN_WIDTHS.note,
       sortable: false,

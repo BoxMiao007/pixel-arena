@@ -52,7 +52,7 @@
 
   旧轮次只跑过 PSNR/SSIM 时只有这两列。这个顺序与导出（`report.rs` 的 `IMAGE_METRIC_KEYS`：PSNR, SSIM, MS-SSIM, Butteraugli, SSIMULACRA2）**不一致**，是现存的缺陷，见 §2。
 - 「状态」列不可排序。
-- 「备注」列是**条件列**：仅当任一跑分图 `note !== null`（大小优先不可达标注）时，追加为最后一列；文本 + `title` 全文，无备注的行留空单元格。
+- 「备注」列是**条件列**：仅当任一跑分图 `note !== null`（目标大小方式不可达标注）时，追加为最后一列；文本 + `title` 全文，无备注的行留空单元格。
 - 表格 `class="result-table"`，容器宽度按内容收缩（`white-space: nowrap` + 单元格右对齐，名称列左对齐并 `max-width: 16rem`）。
 
 ### 1.2 原图基准固定行

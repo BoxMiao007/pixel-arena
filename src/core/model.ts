@@ -17,7 +17,7 @@ export interface CandidateImage {
   metrics: Record<string, MetricValue> | null;
   /** 编码参数文本（如「JPEG q75」「PNG 无损」）；外部导入为 null。 */
   encodingParams?: string | null;
-  /** 备注（大小优先不可达标注），随评测轮持久化。 */
+  /** 备注（目标大小方式不可达标注），随评测轮持久化。 */
   note?: string | null;
   /** 跑分失败原因（中文，可直接展示）。 */
   error: string | null;

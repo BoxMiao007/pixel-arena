@@ -6,13 +6,7 @@
 // 随会话态模型一并退场，不再有对应出口。
 
 import { describe, expect, it, vi } from 'vitest';
-import {
-  groupLadderByFormat,
-  ladderItemKey,
-  pickLadderItems,
-  runLadder,
-  type LadderItem,
-} from './ladder';
+import { ladderItemKey, runLadder, type LadderItem } from './ladder';
 import { addEncoderCard, moveCard } from './editor-plan';
 import { newImageEntry, type ImageEntry } from './entries';
 import type { ImageSpec } from './advanced';
@@ -26,26 +20,10 @@ const ITEMS: LadderItem[] = [
   { format: 'png', quality: null, label: 'PNG' },
 ];
 
-describe('阶梯分组与逐点勾选（预览网格的数据基础）', () => {
-  it('groupLadderByFormat：首次出现顺序即行顺序，行内保序，无损行单独标记', () => {
-    const rows = groupLadderByFormat(ITEMS);
-    expect(rows.map((row) => row.format)).toEqual(['jpeg', 'avif', 'png']);
-    expect(rows[0].items.map((item) => item.quality)).toEqual([60, 75, 90]);
-    expect(rows[0].lossless).toBe(false);
-    expect(rows[2].lossless).toBe(true);
-    expect(rows[2].items).toHaveLength(1);
-  });
-
+describe('阶梯项键（矩阵格子的唯一键）', () => {
   it('ladderItemKey：有损按质量、无损用稳定后缀（同一格式内唯一）', () => {
     expect(ladderItemKey({ format: 'jpeg', quality: 75, label: 'x' })).toBe('jpeg:75');
     expect(ladderItemKey({ format: 'png', quality: null, label: 'x' })).toBe('png:lossless');
-  });
-
-  it('pickLadderItems：按勾选键保序取子集；null 表示不过滤', () => {
-    const keys = new Set(['jpeg:75', 'png:lossless']);
-    expect(pickLadderItems(ITEMS, keys).map(ladderItemKey)).toEqual(['jpeg:75', 'png:lossless']);
-    expect(pickLadderItems(ITEMS, null)).toHaveLength(ITEMS.length);
-    expect(pickLadderItems(ITEMS, new Set())).toEqual([]);
   });
 });
 
@@ -125,16 +103,19 @@ describe('runLadder：逐项生成 + 失败不回滚 + 冲突协议', () => {
     expect(result.generated).toBe(0);
   });
 
-  it('进度文案只给当前项标签（N/M 走结构化忙状态，不拼进 detail）', async () => {
-    const progress: string[] = [];
+  it('进度文案只给当前项标签，已完成项数走结构化第二参数（N/M 不拼进 detail）', async () => {
+    const progress: { text: string; completed: number }[] = [];
     await runLadder({
       ladder: ITEMS.slice(0, 2),
       encode: () => Promise.resolve({ kind: 'done', product: { path: '/p', encodingParams: 'q' } }),
       addCandidates: () => Promise.resolve(),
-      onProgress: (text) => progress.push(text),
+      onProgress: (text, completed) => progress.push({ text, completed }),
       onConflict: () => Promise.reject(new Error('不该问冲突')),
     });
-    expect(progress).toEqual(['正在生成 JPEG q60', '正在生成 JPEG q75']);
+    expect(progress).toEqual([
+      { text: '正在生成 JPEG q60', completed: 0 },
+      { text: '正在生成 JPEG q75', completed: 1 },
+    ]);
   });
 });
 
