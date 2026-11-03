@@ -411,7 +411,7 @@ describe('createToolsWatcher（8 秒软超时 + 晚到结果忽略）', () => {
     watcher.destroy();
   });
 
-  it('destroy 之后在途结果不再写状态（关抽屉不残留回调）', async () => {
+  it('destroy 之后在途结果不再写状态（关设置窗口不残留回调）', async () => {
     let resolveLoad: (list: ToolStatus[]) => void = () => {};
     let notified = 0;
     const watcher = createToolsWatcher({

@@ -25,7 +25,7 @@ export interface SectionMeta {
   label: string;
 }
 
-/** 抽屉左侧导航的分区顺序（也决定首次打开落在哪一区）。 */
+/** 设置窗口左侧导航的分区顺序（也决定首次打开落在哪一区）。 */
 export const SETTINGS_SECTIONS: readonly SectionMeta[] = [
   { id: 'appearance', label: '外观' },
   { id: 'recording', label: '记录' },

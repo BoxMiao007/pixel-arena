@@ -1,10 +1,10 @@
-// 设置抽屉：右侧滑出，左侧分区导航，底部「全部恢复默认」。
+// 设置对话框：居中弹出，左侧分区导航，底部「全部恢复默认」。
 //
 // 与旧面板的区别都在这几行结构里：
 // - 不再是一条长滚动页：导航切分区，内容区自己滚，保存按钮不再是「一次冒险」；
 // - 改动逐字段即时保存（分区各自调 ctx.save），底部只留一行「已保存 / 保存失败」；
 // - 焦点捕获、Esc、焦点还原由 ui/overlay 的 openModal 负责，这里不重复实现；
-// - 工具状态与下载任务在抽屉之外（../download 是模块级任务），关掉抽屉不打断下载。
+// - 工具状态与下载任务在对话框之外（../download 是模块级任务），关掉对话框不打断下载。
 
 import { defaultSettings } from '../../core/settings';
 import { saveSettings } from '../../core/settings-save';
@@ -24,10 +24,10 @@ import { createRecordingSection } from './sections/recording';
 import { createScoringSection } from './sections/scoring';
 import { createToolsWatcher } from './tools';
 
-/** 当前打开的抽屉（单实例：命令与顶栏按钮可能同时触发）。 */
+/** 当前打开的设置对话框（单实例：命令与顶栏按钮可能同时触发）。 */
 let active: { close: () => void } | null = null;
 
-/** 打开设置抽屉；已打开时忽略（焦点已经在抽屉里）。 */
+/** 打开设置对话框；已打开时忽略（焦点已经在对话框里）。 */
 export function openSettings(): void {
   if (active) return;
   const boot = getState().settings;
@@ -164,11 +164,10 @@ export function openSettings(): void {
     title: '设置',
     body: root,
     footer,
-    placement: 'right',
-    // 期望宽度交给浮层：样式表再用 min(600px, 100vw - 2 * 间距) 收敛，窄窗不顶满。
-    // 600px = 128px 导航 + 约 440px 内容；520 时「关于」的库清单三列会把
-    // BSD-3-Clause 折成两行，编码器行的路径输入框也只剩 ~250px。
-    width: 600,
+    // 宽度交给浮层变量，样式表再用 min(720px, 100%) 收敛，窄窗不顶满。
+    // 720px = 128px 导航 + 约 592px 内容；内容再窄（如 520）「关于」的库清单三列
+    // 会把 BSD-3-Clause 折成两行，编码器行的路径输入框也只剩 ~250px。
+    width: 720,
     onClose: cleanup,
   });
   active = {

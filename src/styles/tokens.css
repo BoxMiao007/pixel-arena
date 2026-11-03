@@ -43,7 +43,7 @@
   --canvas: #222222;
   --canvas-checker: #272727;
   --canvas-ink: #e6e9ec;
-  /* 模态/抽屉遮罩：主题相关，深色更暗 */
+  /* 模态遮罩：主题相关，深色更暗 */
   --scrim: rgba(8, 9, 11, 0.55);
   --scrim-soft: rgba(8, 9, 11, 0.4);
 

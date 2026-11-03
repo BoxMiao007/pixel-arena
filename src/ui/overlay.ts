@@ -1,4 +1,4 @@
-// 浮层原语：模态、右侧抽屉、锚定菜单、确认与输入对话框。
+// 浮层原语：模态、锚定菜单、确认与输入对话框。
 //
 // 统一负责：遮罩、焦点捕获与还原、Esc 关闭、点遮罩关闭、键盘导航（菜单方向键）、
 // 层级栈（Esc 只关最上层）。调用方只关心内容与回调。
@@ -69,8 +69,7 @@ export interface ModalOptions {
   title: string;
   body: HTMLElement;
   footer?: HTMLElement | null;
-  /** 宽窄：center 默认 560px；right 为右侧抽屉（设置中心用）。 */
-  placement?: 'center' | 'right';
+  /** 期望宽度（px）：样式表再与可用宽度取小，窄窗不溢出；默认 560px。 */
   width?: number;
   /** 关闭时回调（含 Esc / 遮罩 / 按钮）。 */
   onClose?: () => void;
@@ -84,7 +83,7 @@ export interface ModalHandle {
   setFooter: (footer: HTMLElement | null) => void;
 }
 
-/** 打开模态（或右侧抽屉）；返回可更新内容与关闭的句柄。 */
+/** 打开模态；返回可更新内容与关闭的句柄。 */
 export function openModal(options: ModalOptions): ModalHandle {
   const previousFocus = document.activeElement as HTMLElement | null;
   const titleId = `modal-title-${Math.random().toString(36).slice(2, 9)}`;
@@ -107,7 +106,7 @@ export function openModal(options: ModalOptions): ModalHandle {
   const dialog = el(
     'div',
     {
-      class: `modal${options.placement === 'right' ? ' modal--right' : ''}`,
+      class: 'modal',
       attrs: {
         role: 'dialog',
         'aria-modal': 'true',
@@ -125,12 +124,12 @@ export function openModal(options: ModalOptions): ModalHandle {
     footer,
   );
   // 宽度只写 CSS 变量，不写死内联 width：样式表要在变量外面套 min() 做窄窗收敛
-  // （右侧抽屉 = min(600px, 100vw - 2 * 边距)），内联 width 会盖掉这层收敛。
+  // （.modal = min(--modal-w, 100%)），内联 width 会盖掉这层收敛。
   if (options.width) dialog.style.setProperty('--modal-w', `${options.width}px`);
 
   const overlay = el(
     'div',
-    { class: `overlay${options.placement === 'right' ? ' overlay--drawer' : ''}` },
+    { class: 'overlay' },
     dialog,
   );
   let closed = false;

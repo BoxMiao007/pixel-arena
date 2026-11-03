@@ -1,6 +1,6 @@
-/* 设置域样式：右侧抽屉的内部布局。
+/* 设置域样式：居中对话框的内部布局。
  *
- * 只写本域自己的结构。浮层外壳（.overlay / .modal--right / .modal__head / .modal__footer）
+ * 只写本域自己的结构。浮层外壳（.overlay / .modal / .modal__head / .modal__footer）
  * 与表单控件（.field / .input / .select / .switch / .badge / .progress）全部来自
  * components.css，颜色与尺寸一律引用 tokens.css 的变量。
  */
@@ -11,6 +11,14 @@
   display: flex;
   height: 100%;
   margin: calc(-1 * var(--s-4));
+}
+
+/* 固定高度：各分区内容量差得远（「关于」的库清单最长），跟着内容长会让窗口
+ * 换分区时跳一下；固定成 640px 后导航与内容区各自滚动。窄窗按「视口 − 浮层
+ * 上下留白」收敛，不顶出屏幕。用 :has 从内容反选外壳，避免给 openModal 再加
+ * 一个只服务本域的选项。 */
+.modal:has(> .modal__body > .settings) {
+  height: min(640px, calc(100vh - 2 * var(--s-8)));
 }
 
 /* ---- 左侧分区导航 ---- */
