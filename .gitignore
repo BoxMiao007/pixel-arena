@@ -37,3 +37,9 @@ skills-lock.json
 
 # 本地临时产物（截图、日志、实验文件）
 /.tmp/
+
+# Agent 本地技能目录：由 agent 工具同步/克隆（可能各自带 .git），属于本机工具，不入库
+/.agents/skills/
+
+# unipi 工具的本地配置（版本记录）
+/.unipi/
