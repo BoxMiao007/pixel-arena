@@ -21,6 +21,7 @@ import {
   conflictingRows,
   previewImageCommand,
   previewVideoCommand,
+  switchEncoder,
   type AdvancedEntry,
   type AdvancedParamRow,
   type ImageSpec,
@@ -170,15 +171,18 @@ export function renderEncoderCard(
   // ---------- 卡头 ----------
   const encoderSelect = el('select', {
     class: 'select enc-card__encoder',
-    attrs: { 'aria-label': `第 ${index + 1} 项的编码器`, title: '选择编码器（同一编码器可多次添加，各自参数独立）' },
+    attrs: {
+      'aria-label': `第 ${index + 1} 项的编码器`,
+      title: '选择编码器（同一编码器可多次添加，各自参数独立；换编码器会清空上一个编码器的高级参数行）',
+    },
     on: {
       change: () => {
-        entry.encoderId = encoderSelect.value;
-        const nextSpec = specOf(catalog, entry);
-        // 换编码器后质量按新规格夹回范围
-        if (nextSpec) {
-          entry.quality = Math.min(Math.max(entry.quality, nextSpec.qualityMin), nextSpec.qualityMax);
-        }
+        const nextId = encoderSelect.value;
+        if (nextId === entry.encoderId) return;
+        entry.encoderId = nextId;
+        // 换编码器 = 换一套参数：上一个编码器的参数行整组清掉（见 switchEncoder），
+        // 质量按新规格夹回范围；宿主重建卡片后行数归零，用户按新编码器重新加。
+        switchEncoder(entry, specOf(catalog, entry));
         callbacks.onChange();
       },
     },

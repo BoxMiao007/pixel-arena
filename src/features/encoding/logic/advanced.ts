@@ -162,6 +162,26 @@ export function newEntry(kind: 'image' | 'video', encoderId: string, spec: Quick
   };
 }
 
+// ---------- 切换编码器 ----------
+
+/**
+ * 同一个条目换编码器：换一套参数，绝不把上一个编码器的参数带过去。
+ *
+ * 高级参数行里每一行都是某个编码器的专属标志（`-preset` / `-sns` / `-sharp-yuv` 之类），
+ * 留给新编码器只会发出对方不认识的命令行，跑分直接失败——所以整组行清空，由用户按
+ * 新编码器的推荐参数重新加。跨编码器同义的三项保留：质量数值（按新规格夹回区间，
+ * 方便同一张图做等质量横比）、质量/目标大小两种模式、目标大小（KB/MB 只是显示口径）；
+ * 新编码器不支持无损时顺手关掉无损开关（否则会发出一个无效的无损命令）。
+ *
+ * @param nextSpec 新编码器的规格；表外编码器（视频 ffmpeg 枚举里没进静态表的）为 null
+ */
+export function switchEncoder(entry: AdvancedEntry, nextSpec: QuickSpec | null): void {
+  entry.rows = [];
+  if (!nextSpec) return;
+  entry.quality = Math.min(Math.max(entry.quality, nextSpec.qualityMin), nextSpec.qualityMax);
+  if (!nextSpec.losslessSupported) entry.lossless = false;
+}
+
 // ---------- 条目增删排序（可同一编码器多次） ----------
 
 /** 添加一个条目（同一编码器可多次添加，票面验收 1）。返回新条目。 */

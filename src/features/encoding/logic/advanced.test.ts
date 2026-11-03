@@ -14,6 +14,7 @@ import {
   addEntry,
   removeEntry,
   moveEntry,
+  switchEncoder,
   mergeArgs,
   quickBaseArgs,
   buildEntryArgs,
@@ -196,6 +197,59 @@ describe('高级创建会话态（视频专用，T6）', () => {
     dropSession('g1');
     expect(sessionFor('g1').entries).toHaveLength(0);
     expect(sessionFor('g1').referencePath).toBeNull();
+  });
+});
+
+// ---------- 切换编码器（同一项换编码器不能继承上一个编码器的参数） ----------
+
+describe('switchEncoder（换编码器 = 换一套参数）', () => {
+  it('清空上一个编码器的高级参数行', () => {
+    const target = entry({
+      encoderId: 'jxl',
+      rows: [
+        row({ name: '预设', flag: '-preset', value: 'picture', kind: 'choice', options: ['picture'] }),
+        row({ name: '预筛', flag: '-sns', value: '50', kind: 'number' }),
+      ],
+    });
+    switchEncoder(target, jpegSpec);
+    expect(target.rows).toEqual([]);
+  });
+
+  it('质量按新规格夹回区间（质量数值本身保留，方便等质量横比）', () => {
+    const target = entry({ encoderId: 'jxl', quality: 100 });
+    switchEncoder(target, jxlSpec); // jxl 上限 95
+    expect(target.quality).toBe(95);
+    expect(target.encoderId).toBe('jxl'); // 编码器由调用方先写入，本节只改参数
+    switchEncoder(target, jpegSpec); // jpeg 1–100，95 原样保留
+    expect(target.quality).toBe(95);
+  });
+
+  it('新编码器不支持无损时关掉无损开关（否则会发出无效命令）', () => {
+    const target = entry({ encoderId: 'webp', lossless: true });
+    switchEncoder(target, jpegSpec);
+    expect(target.lossless).toBe(false);
+  });
+
+  it('新编码器支持无损时保留用户的无损选择', () => {
+    const target = entry({ encoderId: 'jpeg', lossless: true });
+    switchEncoder(target, webpSpec);
+    expect(target.lossless).toBe(true);
+  });
+
+  it('模式与目标大小跨编码器同义，原样保留', () => {
+    const target = entry({ mode: 'size', targetBytes: 320 * 1024, unit: 'MB' });
+    switchEncoder(target, webpSpec);
+    expect(target.mode).toBe('size');
+    expect(target.targetBytes).toBe(320 * 1024);
+    expect(target.unit).toBe('MB');
+  });
+
+  it('表外编码器（无规格）同样清空参数行，不动其余字段', () => {
+    const target = entry({ encoderId: 'my-obscure-enc', rows: [row({ flag: '-mode', value: 'fast' })] });
+    switchEncoder(target, null);
+    expect(target.rows).toEqual([]);
+    expect(target.quality).toBe(75);
+    expect(target.lossless).toBe(false);
   });
 });
 
