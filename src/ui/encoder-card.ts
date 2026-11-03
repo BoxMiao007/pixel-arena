@@ -96,7 +96,7 @@ export function knownParamsOf(catalog: EncoderCardCatalog, entry: AdvancedEntry)
 
 /**
  * 把一条配置恢复成「刚添加时」的默认状态（与 logic/advanced.ts 的 newEntry 同口径）：
- * 质量优先、规格默认质量、目标大小 200 KB、非无损、参数行清空。条目 id 与编码器保留
+ * 质量方式、规格默认质量、目标大小 200 KB、非无损、参数行清空。条目 id 与编码器保留
  * ——用户换过编码器后点恢复默认，应按当前编码器的规格回到默认值。
  */
 export function resetEntryToDefault(
@@ -277,8 +277,8 @@ export function renderEncoderCard(
     if (!entry.lossless) {
       const mode = segmented({
         items: [
-          { id: 'quality', label: '质量优先', title: '按质量值直接编码' },
-          { id: 'size', label: '大小优先', title: '按目标大小自动搜索最接近的质量点' },
+          { id: 'quality', label: '质量', title: '按质量值直接编码' },
+          { id: 'size', label: '目标大小', title: '按目标大小自动搜索最接近的质量点' },
         ],
         value: entry.mode,
         ariaLabel: '编码模式',
@@ -441,7 +441,7 @@ export function renderEncoderCard(
         : previewVideoCommand(videoSpecOf(catalog, entry), entry, referencePath);
     cmdEl.title =
       catalog.kind === 'image' && entry.mode === 'size' && !entry.lossless
-        ? '大小优先：实际质量点由目标大小搜索决定，此预览按当前质量值估算'
+        ? '目标大小：实际质量点由目标大小搜索决定，此预览按当前质量值估算'
         : '输入为原图路径，产物写到原图旁的 Pixel Arena 文件夹';
   };
 

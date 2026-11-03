@@ -80,7 +80,7 @@ describe('条目增删排序', () => {
     expect(newEntryId()).not.toBe(first.id);
   });
 
-  it('新条目默认质量优先、规格默认质量、200 KB、无参数行', () => {
+  it('新条目默认质量方式、规格默认质量、200 KB、无参数行', () => {
     const entry = addEntry(sessionFor('g1'), 'libx264', H264);
     expect(entry).toMatchObject({
       kind: 'video',

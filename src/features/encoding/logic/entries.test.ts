@@ -730,7 +730,7 @@ describe('汇总文案', () => {
 // ---------- 变体摘要与预设参数 ----------
 
 describe('变体摘要与预设参数', () => {
-  it('卡片摘要：质量优先 / 无损 / 大小优先', () => {
+  it('卡片摘要：质量 / 无损 / 目标大小', () => {
     expect(cardSummary(card())).toBe('JPEG q75');
     expect(cardSummary(card({ encoderId: 'webp', lossless: true }))).toBe('WebP 无损');
     expect(cardSummary(card({ encoderId: 'avif', mode: 'size', targetBytes: 200 * 1024 }))).toBe(
