@@ -119,39 +119,10 @@
   align-items: center;
   gap: var(--s-3);
   height: 100%;
-  padding: 0 var(--s-2) 0 var(--s-2);
+  padding: 0 var(--s-2) 0 var(--s-3);
   border-bottom: var(--hairline) solid var(--line);
   background: var(--surface-1);
   min-width: 0;
-}
-
-.titlebar__brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  flex: none;
-  padding-left: 2px;
-}
-
-.brand-mark {
-  width: 14px;
-  height: 14px;
-  border-radius: 2px;
-  /* 棋盘格 = 像素/透明底，是产品主题本身，不是装饰 */
-  background: conic-gradient(
-    var(--accent) 0 25%,
-    var(--surface-4) 0 50%,
-    var(--accent) 0 75%,
-    var(--surface-4) 0
-  );
-  background-size: 7px 7px;
-}
-
-.titlebar__name {
-  font-size: var(--fs-title);
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
 }
 
 .titlebar__doc {
@@ -159,8 +130,6 @@
   align-items: baseline;
   gap: 6px;
   min-width: 0;
-  padding-left: var(--s-3);
-  border-left: var(--hairline) solid var(--line);
   font-size: var(--fs-meta);
   color: var(--text-muted);
 }

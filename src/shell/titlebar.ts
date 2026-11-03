@@ -138,12 +138,6 @@ export function mountTitlebar(host: HTMLElement): TitlebarHandle {
     el(
       'header',
       { class: 'titlebar', attrs: { role: 'banner' } },
-      el(
-        'div',
-        { class: 'titlebar__brand' },
-        el('span', { class: 'brand-mark', attrs: { 'aria-hidden': 'true' } }),
-        el('span', { class: 'titlebar__name', text: '像素竞技场' }),
-      ),
       docTitle,
       status,
       alerts,
