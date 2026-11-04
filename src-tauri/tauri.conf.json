@@ -36,7 +36,8 @@
     "targets": "all",
     "resources": {
       "resources/encoders/*": "encoders/",
-      "../THIRD-PARTY-NOTICES.md": "./"
+      "../THIRD-PARTY-NOTICES.md": "./",
+      "resources/notices/*": "notices/"
     },
     "icon": [
       "icons/32x32.png",

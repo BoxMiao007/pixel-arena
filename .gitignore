@@ -32,6 +32,10 @@ skills-lock.json
 /src-tauri/resources/encoders/*
 !/src-tauri/resources/encoders/README.md
 
+# crate 许可清单（决策 0047）：cargo-about 自动生成，CI 打包前重新生成，不入库
+/src-tauri/resources/notices/*
+!/src-tauri/resources/notices/README.md
+
 # archify 架构图工作目录（candidate.json、交付 HTML 与校验回执均为本地产物）
 /.archify/
 

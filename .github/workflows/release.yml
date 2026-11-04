@@ -75,6 +75,17 @@ jobs:
         if: runner.os == 'macOS'
         run: bash scripts/bundle-encoders.sh
 
+      # 决策 0047：Rust crate 许可清单（cargo-about）——按宿主平台生成，
+      # 随安装包捆绑到 notices/crate-notices.md；配置白名单见 about.toml。
+      # 未列入白名单的许可证会让生成失败并阻止发版，防止混入不兼容许可。
+      - name: 安装 cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      - name: 生成 crate 许可清单
+        run: cargo about generate --workspace --config about.toml about.hbs -o src-tauri/resources/notices/crate-notices.md
+
       - name: 安装前端依赖
         run: npm install
 

@@ -33,7 +33,7 @@ FFmpeg 为 GPL 构建，依 GPL-3.0 须随分发提供对应源码。本应用**
 - libjxl 静态链接的 highway、brotli、skcms 等上游组件，许可声明随 libjxl 上游仓库 third_party/ 目录。
 - 本文件随安装包分发，安装后位于应用资源目录（THIRD-PARTY-NOTICES.md）。
 - 边界：本声明覆盖安装包**捆绑**的组件；应用运行期从官方源下载的组件（一站式模式首次使用的编码器，来源 GitHub Release encoders-v1 与各官方版本化 URL）仍以上游许可为准，本仓库 assets/encoders/ 锚定的工件与官方原版一致。
-- Rust 依赖（Tauri 运行时等）均为 MIT / Apache-2.0 等宽松许可。
+- Rust 依赖（Tauri 运行时等，500+ 个 crate）的逐 crate 许可清单随安装包分发于 `notices/crate-notices.md`，由 cargo-about 自动生成（决策 0047），全部为 MIT / Apache-2.0 等宽松许可。
 
 ---
 

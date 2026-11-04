@@ -1,0 +1,21 @@
+# Rust 依赖 crate 许可清单
+
+由 `cargo about generate` 自动生成。本清单覆盖静态链接进可执行文件的 Rust 依赖（含传递依赖与构建依赖，不含仅测试用的 dev 依赖）；安装包捆绑的编码器与 FFmpeg 许可见 `THIRD-PARTY-NOTICES.md`。
+
+## 许可证概览
+
+{{#each overview}}- <a id="{{id}}"></a>[{{name}}](#{{id}}) × {{count}}
+{{/each}}
+
+## 许可证全文
+
+{{#each licenses}}
+### <a id="{{id}}"></a>{{name}}
+
+被以下 crate 使用：{{#each used_by}}[{{crate.name}} {{crate.version}}]({{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}){{#unless @last}}、{{/unless}}{{/each}}
+
+```text
+{{text}}
+```
+
+{{/each}}

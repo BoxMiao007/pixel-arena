@@ -314,3 +314,9 @@
 - 决策：仓库根新增 `THIRD-PARTY-NOTICES.md`（捆绑组件清单 + 各上游许可证全文 + FFmpeg GPL 源码指引），并经 `tauri.conf.json` 的 `bundle.resources` 以 `"../THIRD-PARTY-NOTICES.md": "./"` 映射进三端安装包（安装后位于应用资源目录）。项目自身代码维持 MIT 不变。
 - 为什么：安装包捆绑的 cjpeg / cwebp / avifenc / cjxl 是 BSD 类许可（须保留版权声明），ffmpeg/ffprobe 三端锁定构建均为 GPL 构建（须随分发提供 GPL-3 全文与源码指引）；本程序以进程方式调用这些独立可执行文件，属「聚合分发」，许可证互不传染，故不必改为 GPL——但合规义务（声明 + GPL 源码提供）必须落实。许可全文取自各上游仓库对应版本（libavif 用其聚合 LICENSE 覆盖内嵌 dav1d 等；libaom 的 BSD-2 与 AOM 专利授权取自源码 fork，官方 googlesource 本地网络不通）。
 - 放弃了：改用 Apache-2.0（增加专利条款对本类工具收益不大，专利风险随上游组件声明覆盖）；把 GPL-3 等全文拆成 licenses/ 多文件（单文件随包分发、可整体展示，维护最简）；Rust crate 依赖的自动许可清单（cargo-about 生成，留作后续可选）。
+
+## 0047 · cargo-about 自动生成 Rust crate 许可清单并随安装包分发
+- 日期：2026-11-05
+- 决策：仓库根新增 `about.toml`（许可白名单）与 `about.hbs`（Markdown 模板），`cargo about generate` 按 CI 宿主平台生成 `src-tauri/resources/notices/crate-notices.md`（不入库，同 encoders 模式：目录放 README 占位、生成物 gitignore），经 `bundle.resources` 的 `resources/notices/*` 映射随安装包捆绑；release.yml 在打包前用 taiki-e/install-action 装 cargo-about 并重新生成。白名单实测覆盖全部 564 个依赖（MIT ×494 / ISC ×23 / Unicode-3.0 ×19 / Apache-2.0 ×11 / BSD-3 ×7 / MPL-2.0 ×5 / BSD-2 ×2 / CDLA-Permissive ×2 / Zlib ×1），未出现任何 Copyleft 强许可。
+- 为什么：THIRD-PARTY-NOTICES.md 只覆盖捆绑的编码器可执行文件，exe 里静态链接的 500+ 个 Rust crate 同样有「保留版权与许可文本」的义务，此前只有一句概括；cargo-about 一步生成且可在 CI 里当闸门——出现白名单外许可证会让构建失败，防止未来依赖混入不兼容许可而不自知。MPL-2.0（servo cssparser 链）为文件级弱 Copyleft，链接无碍，列入白名单。
+- 放弃了：把生成物提交入库（依赖常变，提交即过时；CI 每次发版现生成）；HTML 模板（仓库文档以 Markdown 为主，统一格式）；cargo install 直接进 CI（每平台多花 2~4 分钟编译，taiki-e/install-action 秒装预编译二进制）；把生成命令包成 scripts/ 包装脚本（单条命令，写入 about.toml 注释与 CI 即可，不增加间接层）。
