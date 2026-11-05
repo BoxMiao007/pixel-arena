@@ -155,7 +155,9 @@
 .inspector-resizer {
   position: relative;
   width: var(--splitter-w);
-  background: transparent;
+  /* 命中带填成相邻侧栏的底色（两侧栏都是 surface-1）：不再露出 body 的深色底，
+   * 视觉上栏与工作区之间只剩发丝分隔，没有一条竖着的暗缝。hover/拖拽时仍现出琥珀线。 */
+  background: var(--surface-1);
   cursor: col-resize;
 }
 

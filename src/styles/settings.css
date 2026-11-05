@@ -13,12 +13,11 @@
   margin: calc(-1 * var(--s-4));
 }
 
-/* 固定高度：各分区内容量差得远（「关于」的库清单最长），跟着内容长会让窗口
- * 换分区时跳一下；固定成 640px 后导航与内容区各自滚动。窄窗按「视口 − 浮层
- * 上下留白」收敛，不顶出屏幕。用 :has 从内容反选外壳，避免给 openModal 再加
- * 一个只服务本域的选项。 */
+/* 高度随内容收缩到 max-height，短分区（编码器 / FFmpeg）不再在底部留一大片空白；
+   长分区（关于）到上限后由内容区滚动。切分区时高度会变——以「不留多余留白」为先。 */
 .modal:has(> .modal__body > .settings) {
-  height: min(640px, calc(100vh - 2 * var(--s-8)));
+  height: auto;
+  max-height: min(640px, calc(100vh - 2 * var(--s-8)));
 }
 
 /* ---- 左侧分区导航 ---- */
@@ -107,6 +106,17 @@
 .settings__actions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* 说明 + 动作同一行：说明吃满左侧，按钮靠右，行内不再留空白 */
+.settings__actions--start {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.settings__actions--start .field__hint {
+  flex: 1;
+  min-width: 0;
 }
 
 /* ---- 工具状态行 ---- */
@@ -262,19 +272,19 @@
 }
 
 .settings__libs {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  /* 整张表用同一个网格，而不是每行各建一个：库名列按最宽的名字取宽，版本/许可证
+     紧跟其后，既保持三列对齐，也不会在「库名 → 版本」之间撑出一大片空白。 */
+  display: grid;
+  grid-template-columns: max-content 72px 104px;
+  column-gap: var(--s-2);
+  row-gap: 2px;
+  align-items: baseline;
+  justify-content: start;
 }
 
 .settings__libs-row {
-  display: grid;
-  /* 版本列放得下 vX.Y.Z，许可证列放得下 BSD-3-Clause（12px 等宽约 86px）；
-     两列都 nowrap，宁可省略号也不折行——折行的许可证比截断更难读。 */
-  grid-template-columns: minmax(0, 1fr) 72px 104px;
-  gap: var(--s-2);
-  align-items: baseline;
-  padding: 2px 0;
+  /* 行不生成盒子，子项直接成为上面网格的格子，从而共享同一组列宽。 */
+  display: contents;
   color: var(--text-muted);
   font-size: var(--fs-meta);
 }

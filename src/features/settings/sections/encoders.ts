@@ -29,11 +29,12 @@ export function createEncodersSection(ctx: SettingsCtx): SectionModule {
     title: '重新探测五个编码器的来源、版本与实际路径',
     onClick: () => ctx.tools.refresh(),
   });
-  const actions = el('div', { class: 'settings__actions' }, refreshBtn);
   const intro = el('p', {
     class: 'field__hint',
     text: '留空使用内置编码器；指定外部路径后优先使用，对后续评测立即生效',
   });
+  // 说明与「重新检测」放同一行：避免上面单独留一条只有右侧按钮的空行。
+  const headRow = el('div', { class: 'settings__actions settings__actions--start' }, intro, refreshBtn);
 
   const rows: EncoderRow[] = [];
   const body = el('div', { class: 'settings__encoders' });
@@ -64,7 +65,7 @@ export function createEncodersSection(ctx: SettingsCtx): SectionModule {
     body.append(el('div', { class: 'settings__encoder' }, status.node, path.node));
   }
 
-  const node = el('div', { class: 'settings__group' }, actions, intro, body);
+  const node = el('div', { class: 'settings__group' }, headRow, body);
 
   const paint = (): void => {
     const snapshot = ctx.tools.snapshot();
