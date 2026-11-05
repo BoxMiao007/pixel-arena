@@ -280,7 +280,7 @@
   column-gap: var(--s-4);
   row-gap: 2px;
   align-items: baseline;
-  max-width: 500px;
+  max-width: 300px;
 }
 
 .settings__libs-row {
