@@ -442,6 +442,7 @@
 .rail__meta {
   color: var(--text-subtle);
   font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
 }
 
 .rail__more {

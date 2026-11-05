@@ -34,6 +34,7 @@
   color: var(--text-subtle);
   font-size: var(--fs-meta);
   line-height: 1.5;
+  text-wrap: pretty;
 }
 
 .results-tab__status {
@@ -42,6 +43,7 @@
   border-top: var(--hairline) solid var(--line);
   color: var(--text-subtle);
   font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -462,6 +464,7 @@
   color: var(--text);
   font-size: var(--fs-body);
   font-weight: 600;
+  text-wrap: balance;
 }
 
 .efficiency-tab__ref {

@@ -234,11 +234,14 @@
   align-items: baseline;
   gap: var(--s-2);
   font-size: var(--fs-title);
+  /* 应用版本与同一行的核心库版本保持等宽数字 */
+  font-variant-numeric: tabular-nums;
 }
 
 .settings__about-core {
   color: var(--text-muted);
   font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
 }
 
 .settings__about-intro {

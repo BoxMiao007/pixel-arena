@@ -547,6 +547,7 @@
   color: var(--text);
   font-size: var(--fs-body);
   font-weight: 600;
+  text-wrap: balance;
 }
 
 .empty__hint {

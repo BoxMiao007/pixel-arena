@@ -216,8 +216,10 @@
   width: 100%;
 }
 
+/* 同心圆角：画面容器 --r-md(6) − 网格内边距 --s-1(4) = 2，取 --r-xs。
+   格子贴着容器内缘，内圆角比外圆角更圆会看出「内外弧线不平行」。 */
 .video-pane--cell {
-  border-radius: var(--r-sm);
+  border-radius: var(--r-xs);
   border: var(--hairline) solid var(--line);
 }
 
@@ -285,6 +287,7 @@
   font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text);
+  text-wrap: balance;
 }
 
 .video-stage__error-text,
@@ -471,6 +474,7 @@
   font-size: var(--fs-meta);
   color: var(--text-subtle);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .video-source-row__status {
@@ -632,6 +636,7 @@
 .adv-video-entry__count {
   font-size: var(--fs-meta);
   color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
 }
 
 .adv-video-entry__hint {
