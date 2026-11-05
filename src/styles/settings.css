@@ -13,8 +13,8 @@
   margin: calc(-1 * var(--s-4));
 }
 
-/* 高度随内容收缩到 max-height：短分区（FFmpeg / 编码器）不在底部留一大片空白，
-   长分区（关于）到上限后由内容区滚动。切分区时高度会变——以「不留多余留白」为先。 */
+/* 初始高度按内容自适应（auto）只用于「量一次」：dialog.ts 打开时量出当前分区高度后
+   写成固定内联 height，之后切分区不再伸缩；内容多的分区在分区内滚动。 */
 .modal:has(> .modal__body > .settings) {
   height: auto;
   max-height: min(640px, calc(100vh - 2 * var(--s-8)));

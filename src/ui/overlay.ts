@@ -85,6 +85,8 @@ export interface ModalHandle {
   close: () => void;
   setBody: (body: HTMLElement) => void;
   setFooter: (footer: HTMLElement | null) => void;
+  /** 对话框根元素（需要「按内容量一次高度」的调用方用）。 */
+  element: HTMLElement;
 }
 
 /** 打开模态；返回可更新内容与关闭的句柄。 */
@@ -181,6 +183,7 @@ export function openModal(options: ModalOptions): ModalHandle {
       footer.hidden = next === null;
       footer.replaceChildren(...(next ? [next] : []));
     },
+    element: dialog,
   };
 }
 

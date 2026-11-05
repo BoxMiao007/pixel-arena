@@ -183,4 +183,11 @@ export function openSettings(): void {
   for (const section of sections.values()) section.sync(ctx.settings());
   show(DEFAULT_SECTION);
   tools.refresh();
+
+  // 固定大小：按当前（默认）分区内容量一次高度并写死内联 height；之后切分区高度不再变，
+  // 内容更多的分区改为在分区内滚动（.settings__panel 自带 overflow-y:auto）。
+  requestAnimationFrame(() => {
+    const measured = modal.element.getBoundingClientRect().height;
+    if (measured > 0) modal.element.style.height = `${Math.round(measured)}px`;
+  });
 }
