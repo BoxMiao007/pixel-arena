@@ -274,12 +274,13 @@
 }
 
 .settings__libs {
-  /* 三列等宽铺满整表：列间距拉开、三列平均分布；既不再挤在左边，也不在中间挖一大块空。 */
+  /* 三列等宽、平均分布；整体宽度收到 500px，列与列的间距跟着收一点，不铺满整行。 */
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   column-gap: var(--s-4);
   row-gap: 2px;
   align-items: baseline;
+  max-width: 500px;
 }
 
 .settings__libs-row {
