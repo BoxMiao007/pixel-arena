@@ -28,9 +28,25 @@
 
 ## 完成定义(每次交付前逐项核对)
 
-1. 验证门全部通过:依次实测 `cargo test --workspace`(Rust 单测)→ `npm run typecheck`(前端类型检查)→ `npm test`(前端单测,对比查看器视口模块)→ `cargo run -p pixel-arena-cli -- --version`(CLI 冒烟,应输出核心库版本号);涉及界面的改动另附桌面窗口截图。命令须实测通过后才能作为验证门,没实测过的命令不得写入。
+1. 验证门全部通过:依次实测 `cargo test --workspace`(Rust 单测)→ `npm run typecheck`(前端类型检查)→ `npm test`(前端单测,对比查看器视口模块)→ `cargo run -p pixel-arena-cli -- --version`(CLI 冒烟,应输出核心库版本号);涉及界面的改动另附桌面窗口截图(用下面「调试实例」截,不要动维护者正在用的窗口)。命令须实测通过后才能作为验证门,没实测过的命令不得写入。
 2. 功能实际跑通:能启动的自测核心路径;涉及界面或输出的改动,附截图或运行结果作为交付证据。
 3. 交付说明讲给不写代码的人听:做了什么、怎么看到结果(地址/命令/截图)、有什么限制和后续建议;没把握或未完成的部分明说,不藏在细节里。
+
+## 调试实例(不打扰维护者的界面调试)
+
+要看界面、验交互或截图时,默认起一个隔离的调试实例,用 CDP 驱动它:维护者的窗口不开调试端口、不抢焦点、数据也不被测试流程污染。
+
+- 一次性准备:`cargo build -p pixel-arena`(debug 构建);前端由 `npm run dev` 的 5173 提供,没起就先起。
+- 起实例:`pwsh -File scripts/debug-instance.ps1 start`
+  - 数据目录 `.tmp/debug-profile/data`:`settings.json` / `workspace.json` / `tools/` 都在里面,与维护者的 `%APPDATA%\io.github.boxmiao007.pixelarena` 互不相干;
+  - WebView2 profile `.tmp/debug-profile/data/webview`:localStorage、缓存独立,维护者的 `%LOCALAPPDATA%\io.github.boxmiao007.pixelarena` 不动;
+  - CDP 只开在 `9223`(维护者的窗口永远不带调试参数);窗口自动挪到右下角、不激活,启动后脚本会把前台还给维护者原来的窗口。
+- 驱动与截图:`node scripts/debug-cdp.mjs eval "<js>"`、`shot 图名.png`(落在 `.tmp/debug-shots/`)、`window 900 700`(改窗口大小验 `@media` 断点)、`click x y`、`drag x1 y1 x2 y2`、`key ArrowLeft`、`wait 500`;端口可用 `-p` 或 `PIXEL_ARENA_DEBUG_PORT` 改。
+- 收工:`pwsh -File scripts/debug-instance.ps1 stop`(只关调试实例,维护者的窗口保持运行);`status` 看状态,`reset` 连档案(.tmp/debug-profile 与截图)一起清空。
+- 已知取舍:调试实例是干净档案——外部工具未配置、工作区为空,需要外部工具时从维护者数据目录的 `tools/` 复制过去或在该实例里重配;两个实例可以同时跑,互不影响。`Emulation` 的视口覆盖在 WebView2 里实测不生效,验响应式请用 `window` 改真实窗口。
+- 边界:只有必须验证 WebView 之外的原生界面(系统右键菜单、文件对话框、窗口标题栏)时,才回退到 OS 级截图/点击,并且先告知维护者;平时的取数、断言、截图一律走 CDP。
+
+实现依据:主窗口在 `tauri.conf.json` 里 `"create": false`,由 `src-tauri/src/lib.rs` 的 `create_main_window` 显式创建;`PIXEL_ARENA_DATA_DIR` 覆盖数据目录时把 WebView2 profile 指到 `<数据目录>/webview`(决策 0049)。不要用 `WEBVIEW2_USER_DATA_FOLDER`(Tauri 建 WebView 时会强制填 profile 目录,该变量无效),也不要给维护者的实例加 `--remote-debugging-port`。
 
 ## 提交与推送
 
