@@ -241,10 +241,14 @@
   background: var(--surface-0);
 }
 
-/* 分屏时去掉左右内边距：画布卡片直接铺到侧栏分隔条，画布与右侧检视器之间不再
- * 留一条深色空缝（分隔条本身已填成侧栏底色，见 shell.css 的 rail/inspector-resizer）。 */
+/* 分屏：左右各留一条内边距，画布与左栏、检视器之间各留间隔。 */
 .viewer__stage:has(.viewer__split) {
-  padding-left: 0;
+  padding-left: var(--s-2);
+  padding-right: var(--s-2);
+}
+
+/* 多视图：右侧不留内边距，让竖直滚动条贴到舞台右缘，把这块位置还给网格视图。 */
+.viewer__stage:has(.viewer__grid) {
   padding-right: 0;
 }
 
