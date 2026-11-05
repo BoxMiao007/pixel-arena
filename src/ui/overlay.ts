@@ -75,6 +75,10 @@ export interface ModalOptions {
   onClose?: () => void;
   /** 关闭前询问：返回 false 则拦下（如有未保存改动）。 */
   beforeClose?: () => boolean | Promise<boolean>;
+  /** 点击遮罩是否关闭；默认 true。 */
+  closeOnBackdrop?: boolean;
+  /** Esc 是否关闭；默认 true。 */
+  closeOnEscape?: boolean;
 }
 
 export interface ModalHandle {
@@ -152,15 +156,17 @@ export function openModal(options: ModalOptions): ModalHandle {
 
   function onKeyDown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
+      // 即使不允许 Esc 关闭也要拦下：否则会穿透到全局快捷键（如退出沉浸模式）。
       event.preventDefault();
       event.stopPropagation();
-      void close();
+      if (options.closeOnEscape !== false) void close();
       return;
     }
     trapFocus(dialog)(event);
   }
 
   overlay.addEventListener('pointerdown', (event) => {
+    if (options.closeOnBackdrop === false) return;
     if (event.target === overlay) void close();
   });
   document.addEventListener('keydown', onKeyDown, true);

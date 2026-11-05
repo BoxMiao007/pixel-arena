@@ -164,6 +164,9 @@ export function openSettings(): void {
     title: '设置',
     body: root,
     footer,
+    // 只认右上角 X：点遮罩或按 Esc 都不关，避免误触把设置关掉。
+    closeOnBackdrop: false,
+    closeOnEscape: false,
     // 宽度交给浮层变量，样式表再用 min(720px, 100%) 收敛，窄窗不顶满。
     // 720px = 128px 导航 + 约 592px 内容；内容再窄（如 520）「关于」的库清单三列
     // 会把 BSD-3-Clause 折成两行，编码器行的路径输入框也只剩 ~250px。
