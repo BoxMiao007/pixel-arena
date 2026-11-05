@@ -9,6 +9,8 @@
   --inspector-w: 328px;
   /* 舞台与结果坞之间的命中带：视觉上算进舞台的下边距，所以舞台的 padding-bottom 要减掉它 */
   --splitter-h: 5px;
+  /* 左右栏竖直分隔条的命中带宽；栏折叠或沉浸时元素 [hidden]，该列自动收成 0 */
+  --splitter-w: 5px;
 }
 
 .app.is-dock-collapsed {
@@ -25,13 +27,21 @@
 
 .body {
   display: grid;
-  /* auto 列让 [hidden] 的栏真正让出宽度（沉浸模式三栏只剩中部） */
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* 五列：左栏 / 左分隔条 / 工作区 / 右分隔条 / 右栏。
+   * 分隔条走 auto 列 + [hidden]，栏折叠或沉浸时这几列自动收成 0，不必逐条改列宽 */
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   min-height: 0;
 }
 
+/* 栏宽只在键盘微调与双击复位时做短过渡，让数值跳变有个交代；
+ * 拖拽时（.is-resizing-col）整段关掉，否则栏边缘会追不上指针。 */
+.rail,
+.inspector {
+  transition: width var(--dur) var(--ease-out);
+}
+
 .workspace {
-  grid-column: 2;
+  grid-column: 3;
   display: grid;
   /* 第三行是分隔条的命中带；它的高度做进变量，舞台据此把下边距补回来，
    * 这样画面上下留白在「坞展开 / 折叠 / 沉浸」三种状态下都一致 */
@@ -111,6 +121,63 @@
 .app.is-resizing .stage,
 .app.is-resizing .inspector {
   pointer-events: none;
+}
+
+/* 拖拽栏宽：光标跟手，舞台与检视器不接事件（避免拖到画布上误触），
+ * 并关掉栏宽过渡——拖拽期间宽度逐帧变化，过渡只会让边缘落后于指针。 */
+.app.is-resizing-col {
+  cursor: col-resize;
+}
+
+.app.is-resizing-col .stage,
+.app.is-resizing-col .inspector {
+  pointer-events: none;
+}
+
+.app.is-resizing-col .rail,
+.app.is-resizing-col .inspector {
+  transition: none;
+}
+
+/* ============ 侧栏分隔条 ============ */
+/* 命中带 5px，平时透明；hover / 键盘聚焦 / 正在拖拽时才现出一条发丝线，
+ * 与结果坞的 .dock-resizer 同一套纪律（命中区比视觉线宽，好点中）。
+ * 发丝线放在命中带中间，和栏自身的 border 留出一点距离，不会看成双线。 */
+.rail-resizer {
+  grid-column: 2;
+}
+
+.inspector-resizer {
+  grid-column: 4;
+}
+
+.rail-resizer,
+.inspector-resizer {
+  position: relative;
+  width: var(--splitter-w);
+  background: transparent;
+  cursor: col-resize;
+}
+
+.rail-resizer::after,
+.inspector-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: var(--hairline);
+  background: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.rail-resizer:hover::after,
+.rail-resizer:focus-visible::after,
+.rail-resizer.is-dragging::after,
+.inspector-resizer:hover::after,
+.inspector-resizer:focus-visible::after,
+.inspector-resizer.is-dragging::after {
+  background: var(--accent);
 }
 
 /* ============ 顶栏 ============ */
@@ -557,7 +624,7 @@
 
 /* ============ 检视器 ============ */
 .inspector {
-  grid-column: 3;
+  grid-column: 5;
   width: var(--inspector-w);
   min-width: 0;
   min-height: 0;
@@ -848,7 +915,9 @@
   }
 
   /* 结果坞的展开过渡与内容淡入属于「说明状态变化」的装饰，降级时直接瞬时切换 */
-  .workspace {
+  .workspace,
+  .rail,
+  .inspector {
     transition: none;
   }
 

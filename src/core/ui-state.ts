@@ -14,6 +14,12 @@ export interface UiPrefs {
   railCollapsed: boolean;
   inspectorCollapsed: boolean;
   dockCollapsed: boolean;
+  /**
+   * 左右栏宽度（px）。null 表示用户没手动调过：此时不写内联宽度，
+   * 由 shell.css 的默认值与窄窗口 @media 决定，窗口变窄时栏能跟着缩。
+   */
+  railWidth: number | null;
+  inspectorWidth: number | null;
   /** 结果坞高度（px）。 */
   dockHeight: number;
   /** 检视器各分区的展开态，键为分区 id。 */
@@ -28,6 +34,8 @@ export const UI_DEFAULTS: UiPrefs = {
   railCollapsed: false,
   inspectorCollapsed: false,
   dockCollapsed: false,
+  railWidth: null,
+  inspectorWidth: null,
   dockHeight: 248,
   sections: {},
   viewerMode: 'split',
