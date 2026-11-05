@@ -13,12 +13,11 @@
   margin: calc(-1 * var(--s-4));
 }
 
-/* 固定大小：各分区内容量差得远（「关于」的库清单最长），跟着内容伸缩会让窗口
- * 换分区时跳一下；固定成 640px 后导航与内容区各自滚动。窄窗按「视口 − 浮层
- * 上下留白」收敛，不顶出屏幕。用 :has 从内容反选外壳，避免给 openModal 再加
- * 一个只服务本域的选项。 */
+/* 高度随内容收缩到 max-height：短分区（FFmpeg / 编码器）不在底部留一大片空白，
+   长分区（关于）到上限后由内容区滚动。切分区时高度会变——以「不留多余留白」为先。 */
 .modal:has(> .modal__body > .settings) {
-  height: min(640px, calc(100vh - 2 * var(--s-8)));
+  height: auto;
+  max-height: min(640px, calc(100vh - 2 * var(--s-8)));
 }
 
 /* ---- 左侧分区导航 ---- */
@@ -273,14 +272,12 @@
 }
 
 .settings__libs {
-  /* 整张表用同一个网格，而不是每行各建一个：库名列按最宽的名字取宽，版本/许可证
-     紧跟其后，既保持三列对齐，也不会在「库名 → 版本」之间撑出一大片空白。 */
+  /* 三列等宽铺满整表：列间距拉开、三列平均分布；既不再挤在左边，也不在中间挖一大块空。 */
   display: grid;
-  grid-template-columns: max-content 72px 104px;
-  column-gap: var(--s-2);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: var(--s-4);
   row-gap: 2px;
   align-items: baseline;
-  justify-content: start;
 }
 
 .settings__libs-row {

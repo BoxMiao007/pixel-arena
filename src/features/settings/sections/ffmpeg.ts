@@ -24,9 +24,6 @@ function downloadLabel(installed: boolean): string {
 export function createFfmpegSection(ctx: SettingsCtx): SectionModule {
   const settings = ctx.settings();
   const snapshot = ctx.tools.snapshot();
-  const row = toolRow(
-    describeTool('ffmpeg', snapshot.statuses?.get('ffmpeg'), snapshot.phase, snapshot.error),
-  );
 
   const refreshBtn = button({
     label: '重新检测',
@@ -36,7 +33,12 @@ export function createFfmpegSection(ctx: SettingsCtx): SectionModule {
     title: '重新探测 FFmpeg 路径与版本',
     onClick: () => ctx.tools.refresh(),
   });
-  const actions = el('div', { class: 'settings__actions' }, refreshBtn);
+
+  // 「重新检测」并进状态行（toolRow 的 actions），不再单独占一条左侧全空的行动行。
+  const row = toolRow(
+    describeTool('ffmpeg', snapshot.statuses?.get('ffmpeg'), snapshot.phase, snapshot.error),
+    { actions: [refreshBtn] },
+  );
 
   const path = pathField({
     id: 'settings-ffmpeg-path',
@@ -120,7 +122,7 @@ export function createFfmpegSection(ctx: SettingsCtx): SectionModule {
     paintDownload();
   });
 
-  const node = el('div', { class: 'settings__group' }, actions, row.node, path.node, downloadBox);
+  const node = el('div', { class: 'settings__group' }, row.node, path.node, downloadBox);
   paintDownload();
 
   return {
