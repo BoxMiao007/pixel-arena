@@ -384,6 +384,10 @@
 .enc-card__head {
   display: flex;
   align-items: center;
+  /* 卡放在检视器里只有约 270px 宽：一行塞不下「第 N 项 + 编码器下拉 + 恢复默认 + 三个图标」
+   * 时，让操作组整体折到第二行（右对齐），而不是被卡片右缘裁掉一半按钮。
+   * 宽容器（视频高级创建面板）里仍然是一行。 */
+  flex-wrap: wrap;
   gap: var(--s-2);
   min-width: 0;
 }
@@ -424,13 +428,16 @@
 }
 
 .enc-card__encoder {
-  flex: 1 1 10rem;
-  min-width: 7rem;
+  /* 折行后第一行留给「折叠开关 + 编码器」：下拉吃掉剩余宽度，操作组另起一行 */
+  flex: 1 1 8rem;
+  min-width: 5.5rem;
   max-width: 30rem;
 }
 
 .enc-card__summary {
-  flex: none;
+  /* 收起态摘要在折行时跟着操作组落到第二行，可收缩到省略号 */
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 14rem;
   color: var(--text-subtle);
   font-size: var(--fs-meta);
@@ -756,6 +763,9 @@
   font-size: var(--fs-meta);
   color: var(--text-muted);
   word-break: break-all;
+  /* 失败原因是编码器 stderr 原文，常带换行（例如完整用法提示）：保留行结构，
+   * 否则几十行会被折叠成一整段，读起来像界面坏了。 */
+  white-space: pre-line;
 }
 
 .notice__footer,
