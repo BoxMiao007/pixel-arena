@@ -122,7 +122,7 @@ export function mountTitlebar(host: HTMLElement): TitlebarHandle {
     saved,
     iconButton({
       label: '快捷键（?）',
-      icon: 'keyboard',
+      icon: 'help',
       variant: 'quiet',
       onClick: () => void runCommand('open-help'),
     }),
