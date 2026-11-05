@@ -37,7 +37,7 @@ function emptyStage(): HTMLElement {
   if (!workspace || workspace.groups.length === 0) {
     return emptyState({
       title: '还没有跑分组',
-      hint: '一个跑分组是一间独立的评测室。新建一个，把原图和已压好的跑分图拖进来，或让工具自动压一套编码阶梯。',
+      hint: '先新建一个跑分组，再把原图和跑分图拖进来。',
       icon: 'compare',
       actions: [
         button({ label: '新建图片跑分组', variant: 'primary', onClick: () => void createGroup('image') }),
@@ -51,7 +51,6 @@ function emptyStage(): HTMLElement {
   if (!session && group) {
     return emptyState({
       title: `${group.name} 里还没有评测轮`,
-      hint: '每个评测轮是一组独立的对比：一张原图对若干张跑分图。',
       icon: 'plus',
       actions: [
         button({ label: '新建评测轮', variant: 'primary', onClick: () => void createRound(group) }),
@@ -133,8 +132,16 @@ export function mountInspector(host: HTMLElement): RegionHandle {
     const session = activeRound(getState().workspace);
     if (!session) {
       destroy();
+      // 无轮次有两种原因：没有跑分组，或组里轮次被删光。占位文案要跟着说准，
+      // 否则上方舞台说「还没有评测轮」、这里却说「还没有跑分组」。
+      const workspace = getState().workspace;
+      const hasGroups = (workspace?.groups.length ?? 0) > 0;
       host.replaceChildren(
-        el('div', { class: 'inspector__placeholder' }, '新建跑分组后，这里会出现选图与跑分操作。'),
+        el(
+          'div',
+          { class: 'inspector__placeholder' },
+          hasGroups ? '还没有评测轮。' : '还没有跑分组。',
+        ),
       );
       return;
     }
@@ -299,7 +306,7 @@ export function mountDock(host: HTMLElement): RegionHandle {
       content.replaceChildren(
         emptyState({
           title: '还没有可展示的结果',
-          hint: '选好原图与跑分图后跑一次分，指标表会出现在这里。',
+          hint: '跑分后指标表会出现在这里。',
         }),
       );
       return;

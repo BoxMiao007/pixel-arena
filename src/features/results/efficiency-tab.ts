@@ -120,7 +120,7 @@ function mountEfficiencyTab(host: HTMLElement, ctx: ViewCtx): MountedView {
   const edgeFade: EdgeFade = createEdgeFade(tableHost);
   const empty = el('p', {
     class: 'results-empty-note',
-    text: '跑分后这里按体积排序列出每张图，并标出更划算的',
+    text: '跑分后这里按体积排序列出每张图，并标出更划算的。',
   });
   host.append(head, legend, hint, tableHost, empty);
 

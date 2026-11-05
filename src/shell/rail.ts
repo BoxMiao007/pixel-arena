@@ -213,7 +213,7 @@ export function mountRail(host: HTMLElement): RailHandle {
       list.replaceChildren(
         el('p', {
           class: 'rail__empty',
-          text: '还没有跑分组。新建一个，把原图与跑分图放进来对比。',
+          text: '还没有跑分组。',
         }),
       );
       return;
