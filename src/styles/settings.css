@@ -13,11 +13,16 @@
   margin: calc(-1 * var(--s-4));
 }
 
-/* 初始高度按内容自适应（auto）只用于「量一次」：dialog.ts 打开时量出当前分区高度后
-   写成固定内联 height，之后切分区不再伸缩；内容多的分区在分区内滚动。 */
+/* 高度贴合当前分区内容（auto），顶部固定、向下生长：切分区只动底边、不上下跳，
+   也不会像固定高度那样出现底部空白条或挤压内容。窗口不够高时由 max-height + 内部滚动兜住。 */
 .modal:has(> .modal__body > .settings) {
   height: auto;
-  max-height: min(640px, calc(100vh - 2 * var(--s-8)));
+  max-height: calc(100vh - 2 * var(--s-8));
+}
+
+/* 设置浮层改为顶部对齐（默认是垂直居中）：窗口高度变化时顶部不动，只向下伸展。 */
+.overlay:has(.settings) {
+  align-items: start;
 }
 
 /* ---- 左侧分区导航 ---- */
