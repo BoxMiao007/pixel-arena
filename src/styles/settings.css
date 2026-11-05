@@ -9,7 +9,9 @@
  * 避免出现「外层一条滚动条 + 内层一条滚动条」。padding 用的是同一个令牌，改令牌两边同步。 */
 .settings {
   display: flex;
-  height: 100%;
+  /* 抵消 .modal__body 的 --s-4 内边距：上下各 -16px 的负外边距必须由 height 补回这 32px，
+   * 否则内容区底部会比正文短 32px，在任何窗口高度下都露出一条空白条（历史遗留 bug）。 */
+  height: calc(100% + 2 * var(--s-4));
   margin: calc(-1 * var(--s-4));
 }
 
