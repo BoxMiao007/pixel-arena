@@ -26,8 +26,9 @@ import {
 } from './entries';
 import {
   nothingToRunNotice,
+  runFailureCounts,
   runScorePlan,
-  summaryLines,
+  runSummaryLines,
   type QueueRunExecutor,
   type QueueRunReport,
   type ScoredCandidate,
@@ -214,9 +215,9 @@ function withOptionalBusy<T>(deps: QueueRuntimeDeps, task: () => Promise<T>): Pr
  * 3. 交给 runScorePlan：计划为空时**不调用执行器的任何方法**，只弹提示卡片
  *    （内容按跳过原因分流：全部 clean ≠ 没有编码器配置）；
  * 4. 有待跑：逐变体执行，每个跑完回调 onImageDone，最后弹汇总卡片
- *    （本次 N 个变体、跳过 M 个 + 逐个跳过原因）；
- * 5. 失败进状态栏（`跑分失败：…`）与变体的失败记录，不向上抛——调用方只负责
- *    把自己的界面刷新回来。
+ *    （本次 N 个变体、跳过 M 个 + 逐个跳过原因 + 失败明细）；
+ * 5. 失败进状态栏（`跑分结束：…；N 条失败`，不再说「跑分完成」）与变体的失败记录，
+ *    不向上抛——调用方只负责把自己的界面刷新回来。
  *
  * 返回值：跑前的计划与逐变体结果；没有变体或流程抛错时返回 null。
  */
@@ -246,20 +247,19 @@ export async function runQueuePlanOnce(
       showNotice(notice.lines, { title: notice.title });
       return report;
     }
-    const failedCount = report.images.reduce((sum, image) => sum + image.failures.length, 0);
-    const systemErrors = report.images.filter((image) => image.error !== null).length;
-    if (failedCount === 0 && systemErrors === 0) {
+    const { failureCount, errorVariantCount } = runFailureCounts(report);
+    if (failureCount === 0 && errorVariantCount === 0) {
       deps.setStatus(`跑分完成：${report.plan.runImageCount} 个参数变体已更新`);
     } else {
-      deps.setStatus(
-        `跑分完成：${report.plan.runImageCount} 个参数变体已更新；${failedCount} 条失败` +
-          (systemErrors > 0 ? `，${systemErrors} 个变体出错` : '') +
-          '（详情见列表徽章）',
-        true,
-      );
+      // 失败时不能说「跑分完成」：状态栏用「跑分结束」收尾，并把失败条数与出错变体数
+      // 分开写（一个变体的系统级错误通常同时带来 N 条卡级失败，两者不是同一个数）。
+      const parts = [`${report.plan.runImageCount} 个参数变体已更新`];
+      if (failureCount > 0) parts.push(`${failureCount} 条失败`);
+      if (errorVariantCount > 0) parts.push(`${errorVariantCount} 个变体出错`);
+      deps.setStatus(`跑分结束：${parts.join('；')}（详情见列表徽章）`, true);
     }
-    // 汇总卡片：本次跑分 N 个，跳过 M 个 + 逐个跳过原因
-    showNotice(summaryLines(report.plan), { title: '跑分汇总' });
+    // 汇总卡片：本次跑分 N 个，跳过 M 个 + 逐个跳过原因 + 失败明细（含原因原文）
+    showNotice(runSummaryLines(report), { title: '跑分汇总' });
     return report;
   } catch (err) {
     deps.setStatus(`跑分失败：${String(err)}`, true);

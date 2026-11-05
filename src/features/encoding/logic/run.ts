@@ -140,6 +140,72 @@ export function summaryLines(plan: ScorePlan): string[] {
   return [summary.headline, ...summary.skipLines];
 }
 
+/**
+ * 一次跑分里变体侧的失败计数（状态栏与汇总标题共用同一份口径，避免两处各数一遍）。
+ *
+ * failureCount 是**失败明细条数**：正常失败逐卡一条；系统级错误在 runOneImage 里已经
+ * 折算成计划内每张卡一条，天然被数到。只有一种退化情形要兜底——跑分中途用户把卡删了，
+ * applyRunResults 会把结果丢掉，此时 failures 为空但 error 还在；这种变体按一条失败计。
+ */
+export interface QueueRunFailureCounts {
+  /** 失败条数（逐卡明细；系统级错误已折算进去）。 */
+  failureCount: number;
+  /** 出错变体数（变体级系统错误：纳产物 / 跑分调用本身失败）。 */
+  errorVariantCount: number;
+}
+
+export function runFailureCounts(report: QueueRunReport): QueueRunFailureCounts {
+  let failureCount = 0;
+  let errorVariantCount = 0;
+  for (const image of report.images) {
+    const detailCount = image.failures.length;
+    failureCount += detailCount;
+    if (image.error !== null) {
+      errorVariantCount += 1;
+      if (detailCount === 0) failureCount += 1;
+    }
+  }
+  return { failureCount, errorVariantCount };
+}
+
+/**
+ * 汇总标题行：没失败时与 planSummary(plan).headline 一字不差（`本次跑分 N 张，跳过 M 张`）；
+ * 有失败时追加 `，X 条失败`。
+ *
+ * 为什么不让状态栏与卡片各自拼标题：同一次跑分在两处给出不同数字是最容易漂移的一类
+ * 缺陷；数字口径（哪些算失败）只在这里定义。退化情形（明细被删卡丢掉、只剩系统错误）
+ * 没有「条」可数，如实说「X 个变体出错」，不编一个 0 条失败。
+ */
+export function runSummaryHeadline(report: QueueRunReport): string {
+  const headline = planSummary(report.plan).headline;
+  const { failureCount, errorVariantCount } = runFailureCounts(report);
+  if (failureCount > 0) return `${headline}，${failureCount} 条失败`;
+  if (errorVariantCount > 0) return `${headline}，${errorVariantCount} 个变体出错`;
+  return headline;
+}
+
+/**
+ * 汇总卡片的完整正文行：`[标题, ...跳过原因行, ...失败明细行]`。
+ *
+ * 失败明细必须点名变体（variantSummary）并原样带上失败原因：只写「1 条失败」的卡片
+ * 和不说明没区别，用户点开汇总仍不知道是谁、为什么挂。
+ */
+export function runSummaryLines(report: QueueRunReport): string[] {
+  const failureLines: string[] = [];
+  for (const image of report.images) {
+    const label = variantSummary(image.entry);
+    if (image.failures.length > 0) {
+      for (const failure of image.failures) {
+        failureLines.push(`${label}（${failure.encoderId}）：${failure.reason}`);
+      }
+    } else if (image.error !== null) {
+      // 明细被删卡丢掉的退化情形：至少把变体级错误原文留给用户
+      failureLines.push(`${label}：${image.error}`);
+    }
+  }
+  return [runSummaryHeadline(report), ...planSummary(report.plan).skipLines, ...failureLines];
+}
+
 // ---------- 执行编排 ----------
 
 /** 编码产物（只需面板接线要用的两个字段，AdvancedProductDto 结构性兼容）。 */

@@ -221,7 +221,7 @@ describe('runQueuePlanOnce：有待跑时走既有增量引擎', () => {
     // 跑完立刻回到「已跑分」：主界面「重跑改过的」计数当场归零
     expect(judgeImageEntry(fresh, queueIdentityProbe()).state).toBe('scored');
     expect(notices[0].title).toBe('跑分汇总');
-    expect(notices[0].lines[0]).toBe('本次跑分 1 张，跳过 0 张');
+    expect(notices[0].lines).toEqual(['本次跑分 1 张，跳过 0 张']);
     expect(lastStatus(statuses)).toBe('跑分完成：1 个参数变体已更新');
   });
 
@@ -245,14 +245,38 @@ describe('runQueuePlanOnce：有待跑时走既有增量引擎', () => {
 
     expect(report?.ran).toBe(true);
     expect(report?.images[0]?.error).toContain('跑分服务不可用');
+    expect(statuses[statuses.length - 1]?.text).toContain('跑分结束');
+    expect(statuses[statuses.length - 1]?.text).not.toContain('跑分完成');
     expect(statuses[statuses.length - 1]?.text).toContain('1 条失败');
     expect(statuses[statuses.length - 1]?.text).toContain('1 个变体出错');
     expect(statuses[statuses.length - 1]?.isError).toBe(true);
     expect(fresh.failures).toHaveLength(1);
     expect(fresh.failures[0].reason).toContain('跑分服务不可用');
     expect(judgeImageEntry(fresh, queueIdentityProbe()).state).toBe('failed');
-    // 跑完照旧弹汇总（失败也留在卡片里给用户看）
+    // 跑完照旧弹汇总（失败也留在卡片里给用户看），且卡片必须带原因原文
     expect(notices[0].title).toBe('跑分汇总');
+    expect(notices[0].lines).toEqual([
+      '本次跑分 1 张，跳过 0 张，1 条失败',
+      'JPEG q75（jpeg）：本次未完成跑分：跑分服务不可用',
+    ]);
+  });
+
+  it('变体编码失败（无系统级错误）：状态栏不说「跑分完成」，汇总卡片点名变体与原因', async () => {
+    const fresh = newImageEntry('/photos/a.png');
+    const { deps, statuses, notices } = createMockHost({ fail: { encode: '编码器不可用' } });
+
+    const report = await runQueuePlanOnce({ groupId: 'g1', roundId: 'r1', entries: [fresh], deps });
+
+    expect(report?.images[0]?.error).toBeNull();
+    expect(report?.images[0]?.failures).toHaveLength(1);
+    expect(lastStatus(statuses)).toBe(
+      '跑分结束：1 个参数变体已更新；1 条失败（详情见列表徽章）',
+    );
+    expect(statuses[statuses.length - 1]?.isError).toBe(true);
+    expect(notices[0].lines).toEqual([
+      '本次跑分 1 张，跳过 0 张，1 条失败',
+      'JPEG q75（jpeg）：编码器不可用',
+    ]);
   });
 
   it('宿主忙标志自己抛错：兜底成状态栏「跑分失败」，不把界面带崩', async () => {

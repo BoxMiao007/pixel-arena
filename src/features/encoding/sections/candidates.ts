@@ -21,6 +21,7 @@ import type { CandidateImage } from '../../../core/model';
 import type { MountedView, PanelSection, ViewCtx } from '../../../shell/registry';
 import {
   badgeText,
+  entryFailures,
   entryForArtifact,
   judgeImageEntry,
   variantSummary,
@@ -41,6 +42,7 @@ import {
 } from '../actions';
 import { openEntryEditorModal } from '../overlay/entry-editor-modal';
 import { renderEntryEditor, type EntryEditorView } from '../overlay/entry-editor';
+import { failureBadge } from '../overlay/failure';
 import { dropTarget, liveRoundOf, mountSection, paintBody } from './common';
 
 type StatusKind = 'ok' | 'danger' | 'info' | 'neutral';
@@ -207,6 +209,8 @@ export const candidatesSection: PanelSection = {
           // 变体产物用变体四态（参数改了 → 将重跑），普通图用候选行状态；
           // 正在跑分时以「跑分中」优先，别让用户以为可以再点一次。
           const own = owner === null ? null : judgeOf(owner);
+          // 变体自己的失败明细（已过滤掉被删的卡）：有才能把状态徽标接成失败说明入口
+          const ownerFailures = owner === null ? [] : entryFailures(owner);
           const status = candidateStatus(candidate, running);
           const label = running || own === null ? status.text : own.text;
           const kind = running || own === null ? status.kind : own.kind;
@@ -264,7 +268,19 @@ export const candidatesSection: PanelSection = {
                 ? null
                 : badge('高级', 'neutral', '这张图由参数变体生成：点文件名可继续调参'),
               el('span', { class: 'cand__spacer' }),
-              badge(label, kind, candidate.error ?? undefined),
+              // 「上次失败」不是终点：点徽标能看原因。跑分中不接入口（此时状态是「跑分中」，
+              // 失败明细还是上一轮的），普通图没有变体可解释时仍走原来的 title。
+              owner !== null && !running && ownerFailures.length > 0
+                ? failureBadge(
+                    owner,
+                    label,
+                    kind,
+                    candidate.error ??
+                      ownerFailures
+                        .map((failure) => `${failure.encoderId}：${failure.reason}`)
+                        .join('；'),
+                  )
+                : badge(label, kind, candidate.error ?? undefined),
               iconButton({
                 label: `移除 ${fileName(candidate.path)}`,
                 icon: 'close',
@@ -302,6 +318,8 @@ export const candidatesSection: PanelSection = {
         // 还没生成的参数变体：混在列表尾部，同样可点开调参、可删除
         for (const entry of pending) {
           const { text, kind } = judgeOf(entry);
+          // 失败徽标可点开失败说明：这是「上次失败」唯一能问到原因的地方（列表没有别的详情位）
+          const failures = entryFailures(entry);
           const row = el(
             'div',
             { class: 'cand cand--variant' },
@@ -320,7 +338,16 @@ export const candidatesSection: PanelSection = {
                 }),
                 badge('高级', 'neutral', '参数变体：图片 + 独立参数副本，不改变原条目'),
                 el('span', { class: 'cand__spacer' }),
-                badge(text, kind),
+                failures.length > 0
+                  ? failureBadge(
+                      entry,
+                      text,
+                      kind,
+                      failures
+                        .map((failure) => `${failure.encoderId}：${failure.reason}`)
+                        .join('；'),
+                    )
+                  : badge(text, kind),
                 iconButton({
                   label: `删除参数变体 ${variantSummary(entry)}`,
                   icon: 'trash',

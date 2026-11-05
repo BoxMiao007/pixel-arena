@@ -33,6 +33,8 @@ import {
   planRunBatches,
   rerunChangedButtonLabel,
   runScorePlan,
+  runSummaryHeadline,
+  runSummaryLines,
   summaryLines,
   type QueueRunExecutor,
   type ScoredCandidate,
@@ -224,6 +226,64 @@ describe('summaryLines：汇总卡片的正文行', () => {
       'JPEG q75（已跑分且无变更）',
     ]);
     expect(planSummary(plan).headline).toBe('本次跑分 1 张，跳过 1 张');
+  });
+});
+
+// ---------- 跑分后的汇总口径（失败绝不说「完成」） ----------
+
+describe('runSummaryHeadline / runSummaryLines：失败要说清是谁、为什么', () => {
+  it('无失败：标题与 planSummary 完全一致，正文只有跳过原因', async () => {
+    const fresh = entry({ id: 'img-ok', path: '/photos/ok.png' });
+    const { executor } = createMockExecutor();
+
+    const report = await runScorePlan([fresh], probe, executor);
+
+    expect(runSummaryHeadline(report)).toBe(planSummary(report.plan).headline);
+    expect(runSummaryHeadline(report)).toBe('本次跑分 1 张，跳过 0 张');
+    expect(runSummaryLines(report)).toEqual(['本次跑分 1 张，跳过 0 张']);
+  });
+
+  it('有失败：标题追加条数，明细行同时给出变体摘要与原因原文', async () => {
+    const target = entry({ id: 'img-fail', path: '/photos/fail.png' });
+    const { executor } = createMockExecutor({ encode: () => new Error('编码器不可用') });
+
+    const report = await runScorePlan([target], probe, executor);
+
+    expect(runSummaryHeadline(report)).toBe('本次跑分 1 张，跳过 0 张，1 条失败');
+    expect(runSummaryLines(report)).toEqual([
+      '本次跑分 1 张，跳过 0 张，1 条失败',
+      'JPEG q75（jpeg）：编码器不可用',
+    ]);
+    // 设计守卫禁止中点分隔符：明细行用括号与冒号分隔
+    expect(runSummaryLines(report).join('\n')).not.toContain('·');
+  });
+
+  it('既有跳过又有失败：跳过原因与失败明细都留在正文里', async () => {
+    const clean = scoredEntry({ id: 'img-clean', path: '/photos/done.png' });
+    const failing = entry({ id: 'img-fail', path: '/photos/fail.png' });
+    const { executor } = createMockExecutor({ encode: () => new Error('编码器不可用') });
+
+    const report = await runScorePlan([clean, failing], probe, executor);
+
+    expect(runSummaryHeadline(report)).toBe('本次跑分 1 张，跳过 1 张，1 条失败');
+    expect(runSummaryLines(report)).toEqual([
+      '本次跑分 1 张，跳过 1 张，1 条失败',
+      'JPEG q75（已跑分且无变更）',
+      'JPEG q75（jpeg）：编码器不可用',
+    ]);
+  });
+
+  it('系统级错误（跑分调用抛错）：明细行保留系统错误原文', async () => {
+    const target = entry({ id: 'img-sys', path: '/photos/sys.png' });
+    const { executor } = createMockExecutor({ fail: { scoreCandidates: '跑分 IPC 超时' } });
+
+    const report = await runScorePlan([target], probe, executor);
+
+    expect(runSummaryHeadline(report)).toBe('本次跑分 1 张，跳过 0 张，1 条失败');
+    expect(runSummaryLines(report)).toEqual([
+      '本次跑分 1 张，跳过 0 张，1 条失败',
+      'JPEG q75（jpeg）：本次未完成跑分：跑分 IPC 超时',
+    ]);
   });
 });
 

@@ -50,7 +50,12 @@ import {
   type QueueEditorHostDeps,
   type QueueRuntimeDeps,
 } from './logic/runtime';
-import { candidatesNeedingScore, type ScoredCandidate } from './logic/run';
+import {
+  candidatesNeedingScore,
+  runFailureCounts,
+  type QueueRunReport,
+  type ScoredCandidate,
+} from './logic/run';
 import {
   LOSSLESS_FORMATS,
   LOSSY_FORMATS,
@@ -425,8 +430,11 @@ export async function runChangedEntries(ctx: RoundCtx): Promise<void> {
   const busy = busyIdOf('score', roundId);
   beginBusy(busy, '正在跑分', round.candidates.map((candidate) => candidate.path));
   try {
+    // 保存编排层的返回值：变体失败（含系统级 error）在 report.images 里，不取返回值就只能
+    // 看见跑分图侧的 candidate.error，于是「变体失败」会被漏掉、状态栏照旧说「跑分完成」。
+    let report: QueueRunReport | null = null;
     if (plan.runImageCount > 0) {
-      await runQueuePlanOnce({
+      report = await runQueuePlanOnce({
         groupId,
         roundId,
         entries,
@@ -453,13 +461,42 @@ export async function runChangedEntries(ctx: RoundCtx): Promise<void> {
         }),
       );
     }
+    // 编排层自己抛错（report === null）且没有跑分图要跑：状态栏此刻就是它写下的
+    // 「跑分失败：原因」，再用「跑分结束」覆盖会把唯一的原因吞掉，所以原样收尾。
+    if (report === null && plan.runImageCount > 0 && pending.length === 0) return;
+    const variantCounts = report === null ? null : runFailureCounts(report);
+    // 编排层自己抛错时返回 null：调用方不能把这次跑分当成功收尾。
+    const variantRunIncomplete = plan.runImageCount > 0 && report === null;
+    const variantFailures = variantCounts?.failureCount ?? 0;
+    const variantErrors = variantCounts?.errorVariantCount ?? 0;
+
     const after = findRound(getState().workspace, groupId, roundId);
-    const failed = (after?.candidates ?? []).filter((candidate) => candidate.error !== null).length;
+    // 只数本次真的送去跑分的跑分图（pending），并按路径取跑分后的即时状态：
+    // 数全轮 candidate.error 会把上一次就失败的图算进本次，还会和变体失败重复计数
+    // （变体产物本身也是一张 candidate）。
+    const pendingPaths = new Set(pending.map((candidate) => candidate.path));
+    const candidateFailures = (after?.candidates ?? []).filter(
+      (candidate) => pendingPaths.has(candidate.path) && candidate.error !== null,
+    ).length;
+    const candidateUpdated = pending.length - candidateFailures;
+
+    const hasFailure =
+      variantFailures > 0 || variantErrors > 0 || candidateFailures > 0 || variantRunIncomplete;
     const parts: string[] = [];
-    if (plan.runImageCount > 0) parts.push(`${plan.runImageCount} 个参数变体已更新`);
-    if (pending.length > 0) parts.push(`${pending.length} 张跑分图已更新`);
-    if (failed > 0) parts.push(`${failed} 张失败`);
-    status(`跑分完成${parts.length > 0 ? `：${parts.join('；')}` : ''}`, failed > 0);
+    if (plan.runImageCount > 0) {
+      parts.push(
+        variantRunIncomplete
+          ? `${plan.runImageCount} 个参数变体跑分未完成`
+          : `${plan.runImageCount} 个参数变体已更新`,
+      );
+    }
+    // 失败的那几张已经由后面的「N 张跑分图失败」说明，这里只数成功更新的张数
+    if (candidateUpdated > 0) parts.push(`${candidateUpdated} 张跑分图已更新`);
+    if (variantFailures > 0) parts.push(`${variantFailures} 条失败`);
+    if (candidateFailures > 0) parts.push(`${candidateFailures} 张跑分图失败`);
+    if (variantErrors > 0) parts.push(`${variantErrors} 个变体出错`);
+    // 有任何失败就绝不说「跑分完成」，并走错误态
+    status(`跑分${hasFailure ? '结束' : '完成'}${parts.length > 0 ? `：${parts.join('；')}` : ''}`, hasFailure);
   } catch (err) {
     status(`跑分失败：${errorText(err)}`, true);
   } finally {

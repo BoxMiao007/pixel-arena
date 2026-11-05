@@ -19,6 +19,7 @@ import { renderEncoderCard, type EncoderCardCatalog } from '../../../ui/encoder-
 import type { ImageSpec } from '../logic/advanced';
 import { judgeImageEntry, type ImageEntry, type ImageEntryState } from '../logic/entries';
 import { entryFailures } from '../logic/entries';
+import { failureBadge } from './failure';
 import type { ImageEntryEditorDeps } from '../logic/runtime';
 import {
   addEncoderCard,
@@ -126,13 +127,17 @@ export function renderEntryEditor(entry: ImageEntry, deps: ImageEntryEditorDeps)
     referenceEl.textContent = `本轮原图：${header.referenceName}`;
     referenceEl.title = entry.path;
     const failures = entryFailures(entry);
-    const badgeEl = badge(
-      header.status,
-      BADGE_KIND[verdict.state],
+    // 有失败时徽标本身是入口：不展开编辑区也能点开看原因（与列表里的失败徽标同一张卡片）。
+    // 没失败就走原来的死徽标，避免给出一个点开什么都没有的假入口。
+    const badgeEl =
       failures.length > 0
-        ? failures.map((failure) => `${failure.encoderId}：${failure.reason}`).join(SEP)
-        : undefined,
-    );
+        ? failureBadge(
+            entry,
+            header.status,
+            BADGE_KIND[verdict.state],
+            failures.map((failure) => `${failure.encoderId}：${failure.reason}`).join(SEP),
+          )
+        : badge(header.status, BADGE_KIND[verdict.state]);
     badgeEl.classList.add('enc-badge');
     badgeSlot.replaceChildren(badgeEl);
   };
