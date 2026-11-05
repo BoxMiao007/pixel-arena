@@ -1604,6 +1604,71 @@ fn record_window_size(app: &tauri::AppHandle) {
     *state.settings.lock().expect("设置锁不应中毒") = settings;
 }
 
+/// 调试实例（决策 0049）：覆盖数据根目录的环境变量，语义见 AGENTS.md「调试实例」。
+/// 覆盖后 settings.json / workspace.json / tools/ 与 WebView2 profile 一起落到该目录。
+const DATA_DIR_ENV: &str = "PIXEL_ARENA_DATA_DIR";
+
+/// 主窗口 label（tauri.conf.json 里唯一的窗口，见 [`create_main_window`]）。
+const MAIN_WINDOW_LABEL: &str = "main";
+
+/// 读取数据目录覆盖：变量不存在、或值为空串，都按「未设置」处理（空值若当成路径
+/// 会得到相对当前工作目录的意外位置，比直接忽略更难排查）。
+fn data_dir_override(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    raw.map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+/// 按配置建主窗口，供调试实例把 WebView2 的 profile 目录指到独立位置。
+///
+/// 背景（决策 0049）：Tauri 在创建窗口时若没给 `data_directory`，会强制填
+/// `app_local_data_dir()`，所以 `WEBVIEW2_USER_DATA_FOLDER` 环境变量不起作用；
+/// 而「同一 profile + 不同 browser arguments」是 WebView2 明令不支持组合（调试实例
+/// 要开 `--remote-debugging-port`，维护者的窗口不开）。因此主窗口改由这里显式创建：
+/// 平时沿用 Tauri 默认 profile，被 [`DATA_DIR_ENV`] 覆盖时用 `<数据目录>/webview`。
+fn create_main_window(
+    manager: &tauri::AppHandle,
+    data_dir_override: Option<&Path>,
+) -> tauri::Result<()> {
+    let config = manager
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == MAIN_WINDOW_LABEL)
+        .expect("tauri.conf.json 缺少 main 窗口配置")
+        .clone();
+    let builder = tauri::WebviewWindowBuilder::from_config(manager, &config)?;
+    let builder = match data_dir_override {
+        Some(root) => {
+            let webview_dir = root.join("webview");
+            std::fs::create_dir_all(&webview_dir).expect("无法创建 WebView2 数据目录");
+            builder.data_directory(webview_dir)
+        }
+        None => builder,
+    };
+    builder.build().map(|_| ())
+}
+
+#[cfg(test)]
+mod debug_data_dir_tests {
+    use super::*;
+
+    #[test]
+    fn env_override_absent_or_empty_means_default() {
+        assert_eq!(data_dir_override(None), None);
+        assert_eq!(data_dir_override(Some(std::ffi::OsString::new())), None);
+    }
+
+    #[test]
+    fn env_override_takes_path_as_given() {
+        let path = std::env::temp_dir().join("pixel-arena-debug-profile");
+        assert_eq!(
+            data_dir_override(Some(path.clone().into_os_string())),
+            Some(path)
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1612,11 +1677,15 @@ pub fn run() {
         // 应用窗口内直接导航走，整个界面被外站页面替换
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // 工作区文件与外部工具放应用数据目录：<系统数据目录>/<identifier>/
-            let dir = app
-                .path()
-                .app_data_dir()
-                .expect("无法确定应用数据目录");
+            // 工作区文件与外部工具放应用数据目录：<系统数据目录>/<identifier>/。
+            // 调试实例（决策 0049）可用 PIXEL_ARENA_DATA_DIR 把它整体指到别处，从而与
+            // 维护者正在用的实例并行运行、互不污染。
+            let override_dir = data_dir_override(std::env::var_os(DATA_DIR_ENV));
+            let dir = override_dir.clone().unwrap_or_else(|| {
+                app.path()
+                    .app_data_dir()
+                    .expect("无法确定应用数据目录")
+            });
             std::fs::create_dir_all(&dir).expect("无法创建应用数据目录");
             let tools_dir = dir.join("tools");
             std::fs::create_dir_all(&tools_dir).expect("无法创建工具目录");
@@ -1654,6 +1723,10 @@ pub fn run() {
                 avifdec_external,
             });
             apply_avifdec_env(app.state::<AppState>().inner());
+            // 主窗口在 tauri.conf.json 里 create=false，由这里显式建：调试实例要把
+            // WebView2 profile 指到独立目录，而配置创建路径给不了 data_directory
+            // （决策 0049；同一 profile 里不同 browser arguments 会互相打架）。
+            create_main_window(app.handle(), override_dir.as_deref())?;
             // 记录状态开启时恢复上次窗口大小（关闭 = 配置里的默认尺寸）
             restore_window_size(app.handle());
             Ok(())
