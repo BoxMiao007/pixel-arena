@@ -93,7 +93,7 @@ function createMockHost(options: MockOptions = {}) {
     withBusy: 0,
   };
   const statuses: { text: string; isError: boolean }[] = [];
-  const notices: { title: string; lines: readonly string[] }[] = [];
+  const notices: { title: string; lines: readonly string[]; detail?: { text: string } }[] = [];
 
   const fail = (step: keyof NonNullable<MockOptions['fail']>): void => {
     const message = options.fail?.[step];
@@ -131,8 +131,11 @@ function createMockHost(options: MockOptions = {}) {
     ...(options.keepDefaultNotice
       ? {}
       : {
-          showNotice: (lines: readonly string[], notice: { title: string }) => {
-            notices.push({ title: notice.title, lines });
+          showNotice: (
+            lines: readonly string[],
+            notice: { title: string; detail?: { text: string } },
+          ) => {
+            notices.push({ title: notice.title, lines, detail: notice.detail });
           },
         }),
     ...(options.withoutBusy
@@ -253,12 +256,10 @@ describe('runQueuePlanOnce：有待跑时走既有增量引擎', () => {
     expect(fresh.failures).toHaveLength(1);
     expect(fresh.failures[0].reason).toContain('跑分服务不可用');
     expect(judgeImageEntry(fresh, queueIdentityProbe()).state).toBe('failed');
-    // 跑完照旧弹汇总（失败也留在卡片里给用户看），且卡片必须带原因原文
+    // 跑完照旧弹汇总：标题带失败条数，原因原文进可复制的详情块（不再塞进列表）
     expect(notices[0].title).toBe('跑分汇总');
-    expect(notices[0].lines).toEqual([
-      '本次跑分 1 张，跳过 0 张，1 条失败',
-      'JPEG q75（jpeg）：本次未完成跑分：跑分服务不可用',
-    ]);
+    expect(notices[0].lines).toEqual(['本次跑分 1 张，跳过 0 张，1 条失败']);
+    expect(notices[0].detail?.text).toBe('JPEG q75（jpeg）：本次未完成跑分：跑分服务不可用');
   });
 
   it('变体编码失败（无系统级错误）：状态栏不说「跑分完成」，汇总卡片点名变体与原因', async () => {
@@ -273,10 +274,8 @@ describe('runQueuePlanOnce：有待跑时走既有增量引擎', () => {
       '跑分结束：1 个参数变体已更新；1 条失败（详情见列表徽章）',
     );
     expect(statuses[statuses.length - 1]?.isError).toBe(true);
-    expect(notices[0].lines).toEqual([
-      '本次跑分 1 张，跳过 0 张，1 条失败',
-      'JPEG q75（jpeg）：编码器不可用',
-    ]);
+    expect(notices[0].lines).toEqual(['本次跑分 1 张，跳过 0 张，1 条失败']);
+    expect(notices[0].detail?.text).toBe('JPEG q75（jpeg）：编码器不可用');
   });
 
   it('宿主忙标志自己抛错：兜底成状态栏「跑分失败」，不把界面带崩', async () => {

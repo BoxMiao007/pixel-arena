@@ -28,7 +28,7 @@ import {
   nothingToRunNotice,
   runFailureCounts,
   runScorePlan,
-  runSummaryLines,
+  runSummarySections,
   type QueueRunExecutor,
   type QueueRunReport,
   type ScoredCandidate,
@@ -144,6 +144,8 @@ export async function refreshQueueIdentities(
 export interface QueueNoticeOptions {
   /** 卡片标题（如「无需重跑」「跑分汇总」）。 */
   title: string;
+  /** 原文详情块（失败原因等）：整块可选中、带底色，并给一个复制按钮。 */
+  detail?: { text: string; copyLabel?: string };
 }
 
 // ---------- 执行器与跑一次计划 ----------
@@ -258,8 +260,14 @@ export async function runQueuePlanOnce(
       if (errorVariantCount > 0) parts.push(`${errorVariantCount} 个变体出错`);
       deps.setStatus(`跑分结束：${parts.join('；')}（详情见列表徽章）`, true);
     }
-    // 汇总卡片：本次跑分 N 个，跳过 M 个 + 逐个跳过原因 + 失败明细（含原因原文）
-    showNotice(runSummaryLines(report), { title: '跑分汇总' });
+    // 汇总卡片：标题与跳过原因是短句列表；失败明细按原文放进可复制/可选中的详情块
+    const summary = runSummarySections(report);
+    showNotice([summary.headline, ...summary.skipLines], {
+      title: '跑分汇总',
+      ...(summary.failureLines.length > 0
+        ? { detail: { text: summary.failureLines.join('\n') } }
+        : {}),
+    });
     return report;
   } catch (err) {
     deps.setStatus(`跑分失败：${String(err)}`, true);

@@ -346,7 +346,8 @@ export function variantRuntimeDeps(
       setWorkspace(workspace);
       return rowsOf(workspace, targetGroupId, targetRoundId);
     },
-    showNotice: (lines, options) => showNoticeCard(options.title, lines),
+    // detail（失败原因原文块）原样透传给卡片：那一块要带底色、可选中、可复制
+    showNotice: (lines, options) => showNoticeCard(options.title, lines, { detail: options.detail }),
     setStatus: status,
     loadImageCatalog: () => ipc.advancedImageCatalog(),
   };

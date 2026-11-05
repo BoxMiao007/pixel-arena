@@ -190,7 +190,20 @@ export function runSummaryHeadline(report: QueueRunReport): string {
  * 失败明细必须点名变体（variantSummary）并原样带上失败原因：只写「1 条失败」的卡片
  * 和不说明没区别，用户点开汇总仍不知道是谁、为什么挂。
  */
-export function runSummaryLines(report: QueueRunReport): string[] {
+/** 汇总卡片的三个部分：标题、跳过原因（列表）、失败明细（原文块）。 */
+export interface RunSummarySections {
+  headline: string;
+  skipLines: string[];
+  /** 每行「变体（编码器）：原因」，界面把它们放进可复制/可选中的详情块。 */
+  failureLines: string[];
+}
+
+/**
+ * 汇总卡片的正文分段。失败明细单独成段，是因为它要按「原文」展示（保留换行、
+ * 可整块复制、也可只选一段右键复制），而跳过原因只是短句列表——两者混在一个
+ * 列表里会让长原文把卡片撑成一大段。
+ */
+export function runSummarySections(report: QueueRunReport): RunSummarySections {
   const failureLines: string[] = [];
   for (const image of report.images) {
     const label = variantSummary(image.entry);
@@ -203,7 +216,17 @@ export function runSummaryLines(report: QueueRunReport): string[] {
       failureLines.push(`${label}：${image.error}`);
     }
   }
-  return [runSummaryHeadline(report), ...planSummary(report.plan).skipLines, ...failureLines];
+  return {
+    headline: runSummaryHeadline(report),
+    skipLines: planSummary(report.plan).skipLines,
+    failureLines,
+  };
+}
+
+/** 汇总卡片的纯文本正文（标题 + 跳过原因 + 失败明细；通知/日志与单测用）。 */
+export function runSummaryLines(report: QueueRunReport): string[] {
+  const { headline, skipLines, failureLines } = runSummarySections(report);
+  return [headline, ...skipLines, ...failureLines];
 }
 
 // ---------- 执行编排 ----------

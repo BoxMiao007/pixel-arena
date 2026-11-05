@@ -768,6 +768,31 @@
   white-space: pre-line;
 }
 
+/* 失败原因原文块：带底色与发丝线，等宽字体、保留换行；整块可选中（也能只挑一段
+ * 用系统右键菜单复制），限高滚动——原文几十行时不能把卡片撑到看不见按钮。 */
+.notice__detail {
+  margin: 0;
+  max-height: 36vh;
+  overflow: auto;
+  padding: var(--s-2) var(--s-3);
+  border: var(--hairline) solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-0);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.notice__detail:focus-visible {
+  outline: var(--hairline) solid var(--accent);
+  outline-offset: 2px;
+}
+
 .notice__footer,
 .conflict__actions,
 .issue__actions {

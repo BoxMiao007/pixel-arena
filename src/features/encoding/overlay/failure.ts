@@ -15,8 +15,8 @@ import { showNoticeCard } from './notice';
 export const ENTRY_FAILURE_CARD_TITLE = '失败说明';
 
 /**
- * 打开一个变体的失败说明：标题「失败说明」，首行点名是哪个变体，其余逐卡列出
- * 「编码器 id：原因」。
+ * 打开一个变体的失败说明：标题「失败说明」，首行点名是哪个变体，失败原因放进
+ * 带底色的详情块（整块可选中、右上/底部可一键复制，也能只挑一段用浏览器菜单复制）。
  *
  * 没有有效失败记录时不弹：空卡片会让用户以为界面坏了（点开什么都没有），
  * 还不如什么都不发生。调用方（徽标）也只在有失败时才挂这个入口。
@@ -24,10 +24,11 @@ export const ENTRY_FAILURE_CARD_TITLE = '失败说明';
 export function showEntryFailureCard(entry: ImageEntry): void {
   const failures = entryFailures(entry);
   if (failures.length === 0) return;
-  showNoticeCard(ENTRY_FAILURE_CARD_TITLE, [
-    `参数变体：${variantSummary(entry)}`,
-    ...failures.map((failure) => `${failure.encoderId}：${failure.reason}`),
-  ]);
+  showNoticeCard(
+    ENTRY_FAILURE_CARD_TITLE,
+    [`参数变体：${variantSummary(entry)}`],
+    { detail: { text: failures.map((failure) => `${failure.encoderId}：${failure.reason}`).join('\n') } },
+  );
 }
 
 /** 可点开的失败徽标：外观沿用徽标，只把交互补成按钮。 */

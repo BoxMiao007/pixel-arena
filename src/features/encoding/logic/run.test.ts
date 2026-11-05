@@ -35,6 +35,7 @@ import {
   runScorePlan,
   runSummaryHeadline,
   runSummaryLines,
+  runSummarySections,
   summaryLines,
   type QueueRunExecutor,
   type ScoredCandidate,
@@ -254,6 +255,12 @@ describe('runSummaryHeadline / runSummaryLines：失败要说清是谁、为什�
       '本次跑分 1 张，跳过 0 张，1 条失败',
       'JPEG q75（jpeg）：编码器不可用',
     ]);
+    // 界面按段渲染：失败明细单独成段（详情块），不混进跳过原因的列表
+    expect(runSummarySections(report)).toEqual({
+      headline: '本次跑分 1 张，跳过 0 张，1 条失败',
+      skipLines: [],
+      failureLines: ['JPEG q75（jpeg）：编码器不可用'],
+    });
     // 设计守卫禁止中点分隔符：明细行用括号与冒号分隔
     expect(runSummaryLines(report).join('\n')).not.toContain('·');
   });
