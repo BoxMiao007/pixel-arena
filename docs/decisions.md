@@ -331,3 +331,9 @@
 - 决策：debug 构建支持环境变量 `PIXEL_ARENA_DATA_DIR` 覆盖数据根目录（settings.json / workspace.json / tools 全部随之迁移）；主窗口改为 `tauri.conf.json` 里 `"create": false`、由 `src-tauri/src/lib.rs` 的 `create_main_window` 在 setup 中显式创建，覆盖数据目录时给 WebView2 传 `data_directory = <数据目录>/webview`，未覆盖时沿用 Tauri 默认的 `app_local_data_dir()`。配套 `scripts/debug-instance.ps1`（start / stop / status / reset，独立 CDP 端口 9223，窗口挪到右下角且不激活、启动后把前台还给维护者的窗口）与 `scripts/debug-cdp.mjs`（eval / shot / window / click / drag / key / wait），用法写进 AGENTS.md「调试实例」。
 - 为什么：界面验证必须开 CDP 并在真实 WebView 里跑交互；用维护者那个窗口会抢焦点、改他的工作区与界面偏好（侧栏宽度、标签页之类全在 localStorage 里）。而 WebView2 明令不支持「同一 profile + 不同 browser arguments」（调试实例要开 `--remote-debugging-port`，维护者的窗口不开），Tauri 2 又在创建 WebView 时强制把 profile 填成 `app_local_data_dir()`，`WEBVIEW2_USER_DATA_FOLDER` 因此无效——只能在建窗时自己指定 `data_directory`。
 - 放弃了：用 `WEBVIEW2_USER_DATA_FOLDER` 隔离 profile（Tauri 覆盖，实测无效）；只隔离数据目录、共用 WebView2 profile（localStorage 仍会互相覆盖，界面偏好照样被污染）；复制整份 `%APPDATA%` / `%LOCALAPPDATA%` 再用系统环境变量重定向（Known Folder 路径不读环境变量，且 380 MB 的 WebView2 缓存没必要复制）；用 CDP 的 `Emulation.setDeviceMetricsOverride` 验响应式（WebView2 里实测不生效，改成真实改窗口大小的 `window` 命令）。
+
+## 0050 · 设置弹窗交互与查看器间距的最终口径
+- 日期：2026-11-05
+- 决策：① 设置弹窗关闭方式收敛为「只有右上角 X」：点遮罩、按 Esc 都不关闭（Esc 仍被拦截，避免穿透到全局快捷键）；高度固定 720×640（窄窗按「视口 − 浮层上下留白」收敛），切换分区高度不变、内容多的分区在分区内滚动。修正 `.settings` 因 `height:100%` 叠加上下各 16px 负外边距、少算 32px 而造成内容区底部露出的空白条（改为 `height: calc(100% + 2*var(--s-4))`）。② 「关于」页库清单三列等宽、整表最大宽度 300px，列间距随内容收紧。③ 编码器与 FFmpeg 分区的「重新检测」并入工具状态行，去掉顶部只有右侧按钮的空行。④ 顶栏「快捷键」入口图标由键盘改为帮助「?」圆标，与齿轮同画幅（20×20）。⑤ 查看器：分屏左右各留 `--s-2`（8px）内边距；多视图右侧内边距归零、竖直滚动条贴舞台右缘（网格可用宽度 +8px）；舞台与检视器之间的竖向暗缝消除。⑥ 空态/占位文案精简为一句。
+- 为什么：维护者反复指出设置窗口「高度忽高忽低 / 底部空白条 / 挤压内容」以及查看器两侧留白不一致。固定高度是稳定观感的前提；底部空白条的根因是负外边距没有计入高度（与窗口高度无关），已按 `calc(100% + 2*--s-4)` 修正。
+- 放弃了：按分区内容自动改高度（切换时整窗上下跳，维护者明确否决）；保留遮罩 / Esc 关闭（误触会关掉设置）。
