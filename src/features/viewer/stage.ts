@@ -816,7 +816,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
 
   // ---------- 聚焦栏/格 ----------
   function setFocus(index: number): void {
-    if (mode !== 'split' && mode !== 'grid') return;
+    if (surfaceKind() === 'single') return;
     if (focusIndex === index) return;
     focusIndex = index;
     surface?.setFocus(index);
@@ -1609,7 +1609,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
    * 分屏与网格都显示；单画布模式不建徽标宿主，surface 会直接忽略。
    */
   function syncChips(): void {
-    if (!surface || (mode !== 'grid' && mode !== 'split')) return;
+    if (!surface || surfaceKind() === 'single') return;
     for (let index = 0; index < surface.canvases.length; index++) {
       const path = resolveSlot(index);
       surface.setChips(index, path ? chipsByPath.get(path) ?? [] : []);

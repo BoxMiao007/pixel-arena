@@ -406,8 +406,7 @@
 
 /* 选图按钮给右上角徽标让位：长文件名只在自己的按钮内省略，
  * 不会伸到角标下面把判断盖住。 */
-.viewer__cell .viewer__picker,
-.viewer__split .viewer__pane .viewer__picker {
+.viewer__pane .viewer__picker {
   max-width: calc(100% - 96px);
 }
 

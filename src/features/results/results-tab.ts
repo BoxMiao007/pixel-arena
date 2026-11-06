@@ -22,7 +22,7 @@ import { icon } from '../../ui/icons';
 import { openPopover } from '../../ui/overlay';
 import { button, iconButton } from '../../ui/primitives';
 import { highlightChipList } from '../../ui/highlight-chips';
-import { openImageMenu } from '../../ui/image-menu';
+import { openImageMenu, type ImageMenuOptions } from '../../ui/image-menu';
 import { toast } from '../../ui/toast';
 import { requestRender } from '../../shell/controller';
 import { activeViewerCommands } from '../viewer/stage';
@@ -436,6 +436,25 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
     ]);
   }
 
+  /** 右键菜单"定位视图"项：跳转到查看器中对应的栏/格。 */
+  function locateViewExtra(path: string): ImageMenuOptions['extra'] {
+    return [
+      {
+        label: '定位视图',
+        onSelect: () => {
+          const viewer = activeViewerCommands();
+          if (!viewer?.isMounted()) {
+            toast('查看器未打开', 'danger');
+            return;
+          }
+          if (!viewer.focusPath(path)) {
+            toast('当前视图中未显示此图片', 'danger');
+          }
+        },
+      },
+    ];
+  }
+
   function buildSpec(round: Round): { spec: TableSpec; columns: ColumnDef[] } {
     const metricKeys = collectMetricKeys(round.candidates);
     const visible = visibleOptional(round, metricKeys);
@@ -469,21 +488,7 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
       onContextMenu: (event) => {
         openImageMenu(event.currentTarget as HTMLElement, candidate.path, {
           at: { x: event.clientX, y: event.clientY },
-          extra: [
-            {
-              label: '定位视图',
-              onSelect: () => {
-                const viewer = activeViewerCommands();
-                if (!viewer?.isMounted()) {
-                  toast('查看器未打开', 'danger');
-                  return;
-                }
-                if (!viewer.focusPath(candidate.path)) {
-                  toast('当前视图中未显示此图片', 'danger');
-                }
-              },
-            },
-          ],
+          extra: locateViewExtra(candidate.path),
         });
       },
       detail: expanded.has(candidate.path) ? errorDetail(candidate.error ?? '') : null,
@@ -501,21 +506,7 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
           if (path === null) return;
           openImageMenu(event.currentTarget as HTMLElement, path, {
             at: { x: event.clientX, y: event.clientY },
-            extra: [
-              {
-                label: '定位视图',
-                onSelect: () => {
-                  const viewer = activeViewerCommands();
-                  if (!viewer?.isMounted()) {
-                    toast('查看器未打开', 'danger');
-                    return;
-                  }
-                  if (!viewer.focusPath(path)) {
-                    toast('当前视图中未显示此图片', 'danger');
-                  }
-                },
-              },
-            ],
+            extra: locateViewExtra(path),
           });
         },
       });
@@ -725,20 +716,18 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
 
     // 外部来源（查看器聚焦栏/格）改了 activeCandidate 时，选中行可能不在可视区：
     // 只在选中行存在且不在视口内时平滑滚过去，用户手动点行时由 focusRow 管焦点。
+    const scrollHost = tableHost.querySelector<HTMLElement>('.results-table-scroll');
     const selectedRow = tableHost.querySelector<HTMLElement>('tr.is-selected');
-    if (selectedRow) {
-      const scroll = tableHost.querySelector<HTMLElement>('.results-table-scroll');
-      if (scroll) {
-        const sr = scroll.getBoundingClientRect();
-        const rr = selectedRow.getBoundingClientRect();
-        if (rr.bottom > sr.bottom || rr.top < sr.top) {
-          selectedRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        }
+    if (selectedRow && scrollHost) {
+      const sr = scrollHost.getBoundingClientRect();
+      const rr = selectedRow.getBoundingClientRect();
+      if (rr.bottom > sr.bottom || rr.top < sr.top) {
+        selectedRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
     }
     // 列集合/行数变了之后重新量一次溢出：表格是 table-layout: fixed，列宽变了
     // 容器宽度不变，ResizeObserver 不会触发，只能在这里同步。
-    edgeFade.track(tableHost.querySelector<HTMLElement>('.results-table-scroll'));
+    edgeFade.track(scrollHost);
 
     const sort = sortHolder.value;
     let sortLabel = '按选入顺序';
