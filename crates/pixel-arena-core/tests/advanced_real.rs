@@ -56,13 +56,17 @@ fn value_for(kind: &ParamValueKind) -> Option<Option<String>> {
     }
 }
 
-fn run(spec: &ImageEncoderSpec, rows: Vec<AdvancedParamRow>) -> Result<PathBuf, String> {
+fn run(
+    spec: &ImageEncoderSpec,
+    lossless: bool,
+    rows: Vec<AdvancedParamRow>,
+) -> Result<PathBuf, String> {
     let overrides = overrides_for(spec).expect("调用前已确认编码器可用");
     let out = std::env::temp_dir().join(format!("pixel-arena-adv-real-{}", std::process::id()));
     std::fs::create_dir_all(&out).map_err(|err| err.to_string())?;
     let job = AdvancedImageJob {
         format_id: spec.id.to_string(),
-        lossless: false,
+        lossless,
         mode: AdvancedQuickMode::Quality,
         quality: spec.quality_default,
         target_bytes: 0,
@@ -88,7 +92,7 @@ fn real_advanced_known_params_are_accepted_by_encoders() {
             continue;
         }
         // 基础命令行（无高级参数）必须先能成功
-        run(&spec, Vec::new()).unwrap_or_else(|err| panic!("{} 基础编码应成功：{err}", spec.id));
+        run(&spec, false, Vec::new()).unwrap_or_else(|err| panic!("{} 基础编码应成功：{err}", spec.id));
 
         for known in &spec.known_params {
             let Some(value) = value_for(&known.kind) else {
@@ -96,13 +100,28 @@ fn real_advanced_known_params_are_accepted_by_encoders() {
                 continue;
             };
             let row = AdvancedParamRow::new(known.name, known.flag, value.as_deref());
-            let product = run(&spec, vec![row]).unwrap_or_else(|err| {
+            let product = run(&spec, false, vec![row]).unwrap_or_else(|err| {
                 panic!(
                     "{} 的推荐参数「{}」（{}）真实编码失败：{err}",
                     spec.id, known.name, known.flag
                 )
             });
             assert!(product.is_file(), "产物应落盘：{}", product.display());
+        }
+
+        // 支持无损的格式再跑一遍无损：产物必须与解码后的原图逐像素一致。
+        if spec.lossless_supported {
+            let product = run(&spec, true, Vec::new())
+                .unwrap_or_else(|err| panic!("{} 无损编码应成功：{err}", spec.id));
+            let metrics = pixel_arena_core::score_images(data("photo-ref.png"), &product)
+                .unwrap_or_else(|err| panic!("{} 无损产物应可解码：{err}", spec.id));
+            assert!(
+                metrics.psnr.is_infinite() && (metrics.ssim - 1.0).abs() < 1e-12,
+                "{} 无损产物应与原图逐像素一致（psnr={} ssim={}）",
+                spec.id,
+                metrics.psnr,
+                metrics.ssim
+            );
         }
     }
 }
