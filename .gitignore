@@ -15,6 +15,10 @@ desktop.ini
 node_modules/
 /dist/
 
+# 本地发布产物（release 流程在仓库根组装便携 zip，二进制与临时目录不入库）
+/Pixel-Arena_*_x64-portable.zip
+/PixelArena/
+
 # Tauri 构建时生成的 schema 与平台文件
 /src-tauri/gen/schemas/
 
