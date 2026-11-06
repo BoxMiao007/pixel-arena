@@ -4,7 +4,7 @@
 // 与各自 crate 的 C++ 原版对照值对齐（对照表见 pixel-arena-shared/evidence/T04-交叉验证.md）。
 
 use crate::error::CoreError;
-use image::{DynamicImage, ImageBuffer, ImageReader, Rgb};
+use image::{metadata::Orientation, DynamicImage, ImageBuffer, ImageDecoder, ImageReader, Rgb};
 use ssimulacra2::{ColorPrimaries, TransferCharacteristic};
 use std::io::BufReader;
 use std::path::Path;
@@ -77,6 +77,9 @@ pub fn score_images(
 
 /// 解码图片并统一转为 8-bit sRGB（灰度复制到三通道，alpha 丢弃）。
 ///
+/// EXIF 的 Orientation 会应用到像素上（与浏览器/看图工具的显示方向一致）；
+/// JXL 的原生方向由解码器处理，AVIF 的容器变换由 avifdec 处理（决策 0051）。
+///
 /// 用内容嗅探（魔数）判断格式，扩展名只作提示：扩展名错误或缺失也能解码。
 /// pub(crate)：encode 模块（一站式编码）复用同一套解码口径——喂给编码器的像素
 /// 必须与跑分时解码的像素一致，避免两处解码行为漂移。
@@ -93,16 +96,30 @@ pub(crate) fn decode_srgb(path: &Path) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, 
         path: path.to_path_buf(),
         source,
     })?;
-    let reader = ImageReader::new(BufReader::new(file))
+    let mut decoder = ImageReader::new(BufReader::new(file))
         .with_guessed_format()
         .map_err(|source| CoreError::Decode {
             path: path.to_path_buf(),
             message: source.to_string(),
+        })?
+        .into_decoder()
+        .map_err(|message| CoreError::Decode {
+            path: path.to_path_buf(),
+            message: message.to_string(),
         })?;
-    let decoded: DynamicImage = reader.decode().map_err(|message| CoreError::Decode {
-        path: path.to_path_buf(),
-        message: message.to_string(),
-    })?;
+    // EXIF 方向：相机直出 JPEG（以及带 eXIf/EXIF 的 PNG/WebP）常把画面存成横向，
+    // 再用 Orientation 标记该怎么转。浏览器与主流看图工具默认按它旋转显示，
+    // 这里跟着转，保证「跑分看到的像素」与「查看器里看到的画面」一致。
+    // EXIF 解析失败不阻断解码，按无变换处理（图片本身仍可读）。
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(Orientation::NoTransforms);
+    let mut decoded: DynamicImage =
+        DynamicImage::from_decoder(decoder).map_err(|message| CoreError::Decode {
+            path: path.to_path_buf(),
+            message: message.to_string(),
+        })?;
+    decoded.apply_orientation(orientation);
     Ok(decoded.to_rgb8())
 }
 

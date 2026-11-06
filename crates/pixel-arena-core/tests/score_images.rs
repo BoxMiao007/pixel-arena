@@ -140,3 +140,28 @@ fn 损坏文件报错且不崩溃() {
         "错误信息应定位到文件：{message}"
     );
 }
+
+// ---------- EXIF 方向 ----------
+
+fn fixture(name: &str) -> String {
+    format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn 带exif方向的照片按显示方向解码_可与正立图对齐跑分() {
+    // exif-orient6.jpg：画面存成 64x32、EXIF Orientation=6（显示时顺时针转 90°）；
+    // exif-orient6-upright.png：同一画面按显示方向摆正后的 32x64 像素。
+    // 解码若忽略 EXIF，两边尺寸不一致会直接报错；按方向解码后应能对上。
+    let score = pixel_arena_core::score_images(
+        fixture("exif-orient6.jpg"),
+        fixture("exif-orient6-upright.png"),
+    )
+    .expect("按 EXIF 方向解码后，正立图应能与原图对齐跑分");
+
+    assert!(
+        score.psnr > 40.0,
+        "同一画面的正立副本 PSNR 应很高，实际 {}",
+        score.psnr
+    );
+    assert!(score.ssim > 0.99, "SSIM 应接近 1，实际 {}", score.ssim);
+}
