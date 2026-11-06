@@ -381,7 +381,7 @@ export async function addParamVariant(ctx: RoundCtx): Promise<ImageEntry | null>
   const entry = newVariant(referencePath);
   entries.push(entry);
   await refreshQueueIdentities(variantRuntimeDeps(live.group.id, live.round.id), [referencePath]);
-  status(`已添加参数变体（${variantSummary(entry)}）：调完参数点「生成并跑分」，它就成了本轮的一张跑分图`);
+  status(`已添加参数变体（${variantSummary(entry)}）：调完参数点「开始跑分」，它就成了本轮的一张跑分图`);
   return entry;
 }
 

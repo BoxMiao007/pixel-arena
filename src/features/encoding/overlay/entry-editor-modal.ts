@@ -29,7 +29,7 @@ export function openEntryEditorModal(entry: ImageEntry, deps: ImageEntryEditorDe
     { class: 'entry-modal__footer' },
     el('span', {
       class: 'entry-modal__hint',
-      text: '改动即时生效：点「完成」关窗，点「生成并跑分」才会产出新图。',
+      text: '改动即时生效：点「完成」关窗，点「开始跑分」才会产出新图。',
     }),
     button({
       label: '完成',

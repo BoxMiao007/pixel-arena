@@ -240,7 +240,7 @@ export function renderEntryEditor(entry: ImageEntry, deps: ImageEntryEditorDeps)
       specs.push(...loaded);
       loading = false;
       hintBox.textContent =
-        loaded.length === 0 ? '' : '改动即时生效；点「生成并跑分」才会写工作区。';
+        loaded.length === 0 ? '' : '改动即时生效；点「开始跑分」才会写工作区。';
     })
     .catch((err: unknown) => {
       loading = false;
