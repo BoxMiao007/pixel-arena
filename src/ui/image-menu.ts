@@ -50,14 +50,12 @@ export function openImageMenu(
   const items: MenuItem[] = [
     {
       label: '打开图片',
-      hint: '系统默认程序',
       onSelect: () => {
         void ipc.imageOpenPath(path).catch((err: unknown) => toast(failText('打开图片', err), 'danger'));
       },
     },
     {
       label: '打开文件位置',
-      hint: '在资源管理器中定位',
       onSelect: () => {
         void ipc
           .imageRevealPath(path)
