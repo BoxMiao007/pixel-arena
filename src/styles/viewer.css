@@ -235,21 +235,9 @@
   display: flex;
   flex: 1;
   min-height: 0;
-  /* 下边距扣掉分隔条那条命中带（--splitter-h），画面上下留白才一样宽；
-   * 坞折叠 / 沉浸模式下 --splitter-h 归零，这里自动回满 */
-  padding: var(--s-2) var(--s-2) calc(var(--s-2) - var(--splitter-h, 0px));
+  /* 主视图铺满边框：不留内边距，画布 / 分屏 / 网格贴到舞台四边。 */
+  padding: 0;
   background: var(--surface-0);
-}
-
-/* 分屏：左右各留一条内边距，画布与左栏、检视器之间各留间隔。 */
-.viewer__stage:has(.viewer__split) {
-  padding-left: var(--s-2);
-  padding-right: var(--s-2);
-}
-
-/* 多视图：右侧不留内边距，让竖直滚动条贴到舞台右缘，把这块位置还给网格视图。 */
-.viewer__stage:has(.viewer__grid) {
-  padding-right: 0;
 }
 
 .viewer__surface,
@@ -304,7 +292,7 @@
   overflow-y: hidden;
   overscroll-behavior-x: contain;
   border: var(--hairline) solid var(--line);
-  border-radius: var(--r-md);
+  border-radius: 0;
 }
 
 /* 每栏有最小宽度（JS 写 --pane-min）：6 张跑分图时宁可横向滚动，
@@ -467,9 +455,9 @@
 /* ============ 滑动对比的分割线 ============ */
 .viewer__divider {
   position: absolute;
-  top: var(--s-2);
-  bottom: var(--s-2);
-  left: calc(var(--s-2) + (100% - var(--s-2) * 2) * var(--divider, 0.5));
+  top: 0;
+  bottom: 0;
+  left: calc(100% * var(--divider, 0.5));
   z-index: 3;
   width: 16px;
   transform: translateX(-8px);
@@ -640,7 +628,7 @@
 /* ============ 覆盖层：加载 / 错误 / 空态 / 引导 ============ */
 .viewer__overlay {
   position: absolute;
-  inset: var(--s-2);
+  inset: 0;
   z-index: 5;
   display: grid;
   place-items: center;
