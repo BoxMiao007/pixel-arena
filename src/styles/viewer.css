@@ -308,9 +308,9 @@
 /* ---- 网格：行高有下限，放不下就在网格区内部滚动（不再靠页面级「放大」按钮） ---- */
 .viewer__grid {
   display: grid;
-  /* 格间不留缝：用 1px 网格底色透出来当分隔线，与分屏栏间的发丝线同一观感 */
-  gap: 1px;
-  background: var(--line);
+  /* 格间分隔：gap 0 + 每格右/下各带一条发丝线（与分屏栏间同做法），
+   * 避免 1px gap 在非整数列宽下被亚像素渲染成宽窄不一。 */
+  gap: 0;
   overflow: auto;
   overscroll-behavior: contain;
   align-content: stretch;
@@ -320,6 +320,9 @@
 .viewer__cell {
   min-width: 0;
   min-height: 0;
+  /* 格间分隔：每格右/下各一条发丝线，网格最右列和最末行的线贴边不可见。 */
+  border-right: var(--hairline) solid var(--line);
+  border-bottom: var(--hairline) solid var(--line);
 }
 
 /* 聚焦栏/格：::after 伪元素覆盖在画布上面，不会被 canvas 绘制遮挡。 */
