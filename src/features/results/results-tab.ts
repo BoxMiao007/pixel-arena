@@ -691,6 +691,20 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
     const { spec, columns } = buildSpec(round);
     if (!table) table = mountTable(tableHost, spec);
     else table.update(spec);
+
+    // 外部来源（查看器聚焦栏/格）改了 activeCandidate 时，选中行可能不在可视区：
+    // 只在选中行存在且不在视口内时平滑滚过去，用户手动点行时由 focusRow 管焦点。
+    const selectedRow = tableHost.querySelector<HTMLElement>('tr.is-selected');
+    if (selectedRow) {
+      const scroll = tableHost.querySelector<HTMLElement>('.results-table-scroll');
+      if (scroll) {
+        const sr = scroll.getBoundingClientRect();
+        const rr = selectedRow.getBoundingClientRect();
+        if (rr.bottom > sr.bottom || rr.top < sr.top) {
+          selectedRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    }
     // 列集合/行数变了之后重新量一次溢出：表格是 table-layout: fixed，列宽变了
     // 容器宽度不变，ResizeObserver 不会触发，只能在这里同步。
     edgeFade.track(tableHost.querySelector<HTMLElement>('.results-table-scroll'));

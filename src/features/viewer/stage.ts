@@ -11,8 +11,9 @@ import { chooseCandidates, chooseReference } from '../../core/actions';
 import { highlightChips, type HighlightChip } from '../../core/highlight';
 import { isProxyFormat } from '../../core/model';
 import { copyText, fileName, truncateFileName } from '../../core/util';
-import { getPref, roundScoped, setPref } from '../../core/ui-state';
+import { getPref, roundScoped, setActiveCandidate, setPref } from '../../core/ui-state';
 import type { MountedView, ViewCtx } from '../../shell/registry';
+import { requestRender } from '../../shell/controller';
 import { el } from '../../ui/dom';
 import { icon } from '../../ui/icons';
 import { openImageMenu } from '../../ui/image-menu';
@@ -818,6 +819,13 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     focusIndex = index;
     surface?.setFocus(index);
     syncChrome();
+
+    // 联动评分表：把聚焦格对应的跑分图写入 activeCandidate，
+    // 让结果坞自动高亮对应行。原图不算跑分图，不设选中。
+    const path = resolveSlot(index);
+    const isCandidate = path !== null && path !== round.reference?.path;
+    setActiveCandidate(round.roundId, isCandidate ? path : null);
+    requestRender();
   }
 
   // ---------- 选图 ----------

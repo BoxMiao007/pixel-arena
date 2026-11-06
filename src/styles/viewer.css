@@ -322,9 +322,14 @@
   min-height: 0;
 }
 
-/* 聚焦栏/格：当前选图目标（细内描边，不用粗边框） */
-.viewer__pane.is-focused {
-  box-shadow: inset 0 0 0 1px var(--accent);
+/* 聚焦栏/格：::after 伪元素覆盖在画布上面，不会被 canvas 绘制遮挡。 */
+.viewer__pane.is-focused::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  pointer-events: none;
 }
 
 /* ---- 每栏/每格的选图按钮 ---- */
