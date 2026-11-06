@@ -237,7 +237,7 @@ pub fn image_specs() -> Vec<ImageEncoderSpec> {
             known_params: vec![
                 param("预设", "-preset", text_options(&["default", "picture", "photo", "drawing", "icon", "text"], "picture"), "按内容类型的调参组合（照片选 photo，图标选 icon）"),
                 param("压缩努力", "-m", ParamValueKind::Number { min: 0, max: 6, step: 1, default: 4 }, "压缩努力程度 0–6（默认 4），越大越慢、体积越小"),
-                param("锐化色度", "-sharp-yuv", ParamValueKind::Bool, "锐化 YUV 采样，文字与锐边更清晰（推荐开启）"),
+                param("锐化色度", "-sharp_yuv", ParamValueKind::Bool, "锐化 YUV 采样，文字与锐边更清晰（推荐开启）"),
                 param("噪声整形", "-sns", ParamValueKind::Number { min: 0, max: 100, step: 1, default: 50 }, "空间噪声整形 0–100（默认 50），过高会糊掉细节"),
             ],
         },
@@ -280,7 +280,9 @@ pub fn image_specs() -> Vec<ImageEncoderSpec> {
             base_args: vec!["--quiet".to_string()],
             known_params: vec![
                 param("编码努力", "-e", ParamValueKind::Number { min: 1, max: 10, step: 1, default: 7 }, "编码努力程度 1–10（默认 7），越大越慢、体积越小"),
-                param("Modular 模式", "--modular", ParamValueKind::Bool, "Modular 编码，非照片内容（图标/插画）更小"),
+                // cjxl 的 --modular 必须带值（0/1），裸写 --modular 会把下一个参数
+                // 当成取值而报错；布尔开关行只追加标志本身，所以把取值写进标志。
+                param("Modular 模式", "--modular=1", ParamValueKind::Bool, "Modular 编码，非照片内容（图标/插画）更小"),
                 param("并行线程", "--num_threads", ParamValueKind::Number { min: 1, max: 64, step: 1, default: 1 }, "并行线程数（默认 1），多核机器可加速"),
             ],
         },
