@@ -255,7 +255,6 @@
 .viewer__pane {
   position: relative;
   overflow: hidden;
-  border: var(--hairline) solid var(--line);
   border-radius: 0;
   background-color: var(--canvas);
   background-image: conic-gradient(
@@ -291,8 +290,6 @@
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
-  border: var(--hairline) solid var(--line);
-  border-radius: 0;
 }
 
 /* 每栏有最小宽度（JS 写 --pane-min）：6 张跑分图时宁可横向滚动，
@@ -311,7 +308,9 @@
 /* ---- 网格：行高有下限，放不下就在网格区内部滚动（不再靠页面级「放大」按钮） ---- */
 .viewer__grid {
   display: grid;
-  gap: var(--s-1);
+  /* 格间不留缝：用 1px 网格底色透出来当分隔线，与分屏栏间的发丝线同一观感 */
+  gap: 1px;
+  background: var(--line);
   overflow: auto;
   overscroll-behavior: contain;
   align-content: stretch;

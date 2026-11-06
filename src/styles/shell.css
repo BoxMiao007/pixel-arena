@@ -7,10 +7,11 @@
   height: 100%;
   --rail-w: 208px;
   --inspector-w: 328px;
-  /* 舞台与结果坞之间的命中带：视觉上算进舞台的下边距，所以舞台的 padding-bottom 要减掉它 */
-  --splitter-h: 5px;
-  /* 左右栏竖直分隔条的命中带宽；栏折叠或沉浸时元素 [hidden]，该列自动收成 0 */
-  --splitter-w: 5px;
+  /* 分隔条不占布局（主视图铺满到边界线）：轨道 0 宽 / 0 高，
+   * 命中带由 ::before 浮在边界线两侧（--splitter-hit），拖拽手感不变。 */
+  --splitter-h: 0px;
+  --splitter-w: 0px;
+  --splitter-hit: 6px;
 }
 
 .app.is-dock-collapsed {
@@ -154,11 +155,20 @@
 .rail-resizer,
 .inspector-resizer {
   position: relative;
+  z-index: 10;
   width: var(--splitter-w);
-  /* 命中带填成相邻侧栏的底色（两侧栏都是 surface-1）：不再露出 body 的深色底，
-   * 视觉上栏与工作区之间只剩发丝分隔，没有一条竖着的暗缝。hover/拖拽时仍现出琥珀线。 */
-  background: var(--surface-1);
   cursor: col-resize;
+}
+
+/* 0 宽元素的可点区域：以边界线为中心向两侧各伸出半条命中带，压在相邻区域上方 */
+.rail-resizer::before,
+.inspector-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--splitter-hit) / -2);
+  width: var(--splitter-hit);
 }
 
 .rail-resizer::after,
@@ -167,8 +177,8 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 2px;
-  width: var(--hairline);
+  left: -1px;
+  width: 2px;
   background: transparent;
   transition: background-color var(--dur-fast) var(--ease-out);
 }
@@ -591,9 +601,9 @@
   overflow: hidden;
 }
 
-/* 对比查看器自带内边距（模式条贴齐舞台边缘、画布再留 8px）：
- * 外壳这一层不再重复留白，否则工具栏那条横线会比画布窄一圈，上下留白也对不上。 */
-.stage:has(.viewer-host) {
+/* 对比查看器 / 视频查看器铺满舞台：外壳这一层不留白，画面直接贴到四边。 */
+.stage:has(.viewer-host),
+.stage:has(.video-stage) {
   padding: 0;
 }
 
@@ -747,11 +757,21 @@
   overflow: hidden;
 }
 
-/* 分隔条：视觉 5px，命中区就是这 5px */
+/* 分隔条：布局上 0 高（画面直接接到结果坞），命中带浮在边界线上下 */
 .dock-resizer {
   position: relative;
+  z-index: 10;
   background: transparent;
   cursor: row-resize;
+}
+
+.dock-resizer::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--splitter-hit) / -2);
+  height: var(--splitter-hit);
 }
 
 .dock-resizer::after {
@@ -759,8 +779,8 @@
   position: absolute;
   left: 0;
   right: 0;
-  top: 2px;
-  height: var(--hairline);
+  top: -1px;
+  height: 2px;
   background: transparent;
   transition: background-color var(--dur-fast) var(--ease-out);
 }
