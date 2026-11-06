@@ -206,18 +206,20 @@ export function mountSurface(options: SurfaceOptions): ViewerSurface {
       const canvas = decorateCanvas(el('canvas', { class: 'viewer__canvas' }), index === 0);
       const statusHost = buildStatusHost();
       const picker = buildPicker(() => options.onPick(index));
+      const chipHost = buildChipHost();
       const wrapper = el(
         'div',
         { class: 'viewer__pane', dataset: { index: String(index) } },
         canvas,
         picker,
+        chipHost,
         statusHost,
       );
       const focus = (): void => options.onFocus(index);
       wrapper.addEventListener('pointerdown', focus);
       cleanups.push(() => wrapper.removeEventListener('pointerdown', focus));
       root.appendChild(wrapper);
-      panes.push({ wrapper, canvas, picker, statusHost, pickerEmpty: false, chipHost: null });
+      panes.push({ wrapper, canvas, picker, statusHost, pickerEmpty: false, chipHost });
     }
   } else {
     root = el('div', { class: 'viewer__grid' });
@@ -233,8 +235,7 @@ export function mountSurface(options: SurfaceOptions): ViewerSurface {
       const canvas = decorateCanvas(el('canvas', { class: 'viewer__canvas' }), index === 0);
       const statusHost = buildStatusHost();
       const picker = buildPicker(() => options.onPick(index));
-      // 判断徽标只给网格：分屏是「原图 + 一张张并排」，格子没有更强的归属，
-      // 而多视图每格就是一张跑分图，角标才读得通。
+      // 判断徽标（画质最好 / 体积最小 / 综合最优）：分屏与网格都在右上角显示。
       const chipHost = buildChipHost();
       const wrapper = el(
         'div',

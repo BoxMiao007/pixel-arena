@@ -77,6 +77,8 @@ export interface ViewerCommands {
   isBlinkMode: () => boolean;
   /** 真正挂在文档里才响应键位（外壳若漏了 destroy，键位不会打到已卸载的舞台）。 */
   isMounted: () => boolean;
+  /** 按文件路径定位并选中对应的栏/格（评分表"定位视图"用）。 */
+  focusPath: (path: string) => boolean;
 }
 
 let activeCommands: ViewerCommands | null = null;
@@ -828,6 +830,37 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     requestRender();
   }
 
+  /**
+   * 按文件路径定位到对应的栏/格并选中。
+   * 当前模式是分屏或网格时扫描每个槽位；找到就聚焦并滚进可视区。
+   * 当前模式是单槽（滑动 / 叠加 / 差异 / 闪烁）时切换对比图为该路径。
+   * 返回 true 表示定位成功。
+   */
+  function focusPath(targetPath: string): boolean {
+    if (isSingleSlotMode(mode)) {
+      // 单槽模式：把对比图换成目标路径
+      const isKnown =
+        round.candidates.some((c) => c.path === targetPath) ||
+        round.reference?.path === targetPath;
+      if (!isKnown) return false;
+      if (targetPath !== round.reference?.path) pickCandidate(targetPath);
+      return true;
+    }
+    // 分屏 / 网格：扫描槽位找到匹配的栏/格
+    if (!surface) return false;
+    const count = surface.canvases.length;
+    for (let i = 0; i < count; i++) {
+      if (resolveSlot(i) === targetPath) {
+        setFocus(i);
+        // 网格可能滚出可视区，把格子滚进来
+        const pane = stage.querySelector<HTMLElement>(`.viewer__pane[data-index="${i}"]`);
+        pane?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        return true;
+      }
+    }
+    return false;
+  }
+
   // ---------- 选图 ----------
   function openPicker(index: number): void {
     const picker = stage.querySelector<HTMLElement>(`.viewer__pane[data-index="${index}"] .viewer__picker`);
@@ -1572,11 +1605,11 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
   }
 
   /**
-   * 网格每格右上角的判断徽标（画质最好 / 体积最小 / 综合最优）。
-   * 分屏与单画布不建徽标宿主，surface 会直接忽略这些调用。
+   * 每栏/每格右上角的判断徽标（画质最好 / 体积最小 / 综合最优）。
+   * 分屏与网格都显示；单画布模式不建徽标宿主，surface 会直接忽略。
    */
   function syncChips(): void {
-    if (!surface || mode !== 'grid') return;
+    if (!surface || (mode !== 'grid' && mode !== 'split')) return;
     for (let index = 0; index < surface.canvases.length; index++) {
       const path = resolveSlot(index);
       surface.setChips(index, path ? chipsByPath.get(path) ?? [] : []);
@@ -1657,6 +1690,7 @@ export function mountViewerStage(host: HTMLElement, ctx: ViewCtx): MountedView {
     oneToOne: () => zoomTo(1),
     isBlinkMode: () => mode === 'blink',
     isMounted: () => !destroyed && root.isConnected,
+    focusPath,
   };
   activeCommands = commands;
 

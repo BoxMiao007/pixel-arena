@@ -25,6 +25,7 @@ import { highlightChipList } from '../../ui/highlight-chips';
 import { openImageMenu } from '../../ui/image-menu';
 import { toast } from '../../ui/toast';
 import { requestRender } from '../../shell/controller';
+import { activeViewerCommands } from '../viewer/stage';
 import type { DockTab, MountedView, ViewCtx } from '../../shell/registry';
 import {
   formatMetricFor,
@@ -464,10 +465,25 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
       }),
       selected: activePath === candidate.path,
       onActivate: () => activate(candidate.path),
-      // 右键图片菜单：另存为 / 打开图片 / 打开文件位置 / 复制路径（与查看器画布同一份）。
+      // 右键图片菜单：另存为 / 打开图片 / 打开文件位置 / 复制路径 / 定位视图。
       onContextMenu: (event) => {
         openImageMenu(event.currentTarget as HTMLElement, candidate.path, {
           at: { x: event.clientX, y: event.clientY },
+          extra: [
+            {
+              label: '定位视图',
+              onSelect: () => {
+                const viewer = activeViewerCommands();
+                if (!viewer?.isMounted()) {
+                  toast('查看器未打开', 'danger');
+                  return;
+                }
+                if (!viewer.focusPath(candidate.path)) {
+                  toast('当前视图中未显示此图片', 'danger');
+                }
+              },
+            },
+          ],
         });
       },
       detail: expanded.has(candidate.path) ? errorDetail(candidate.error ?? '') : null,
@@ -485,6 +501,21 @@ function mountResultsTab(host: HTMLElement, ctx: ViewCtx): ResultsTabView {
           if (path === null) return;
           openImageMenu(event.currentTarget as HTMLElement, path, {
             at: { x: event.clientX, y: event.clientY },
+            extra: [
+              {
+                label: '定位视图',
+                onSelect: () => {
+                  const viewer = activeViewerCommands();
+                  if (!viewer?.isMounted()) {
+                    toast('查看器未打开', 'danger');
+                    return;
+                  }
+                  if (!viewer.focusPath(path)) {
+                    toast('当前视图中未显示此图片', 'danger');
+                  }
+                },
+              },
+            ],
           });
         },
       });
